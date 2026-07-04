@@ -1,0 +1,13 @@
+name = "fast-hrms"
+compatibility_date = "2026-07-04"
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "HRMS_DB"
+database_name = "fast-hrms"
+database_id = "replace-with-your-d1-database-id"
+
+# Optional. Enable only if you decide to store generated salary PDFs permanently.
+# [[r2_buckets]]
+# binding = "SALARY_SLIPS"
+# bucket_name = "fast-hrms-salary-slips"

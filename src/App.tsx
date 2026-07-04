@@ -1,0 +1,1509 @@
+import {
+  Banknote,
+  BriefcaseBusiness,
+  Building2,
+  CalendarCheck,
+  CheckCircle2,
+  Clock3,
+  Download,
+  FileText,
+  History,
+  Menu,
+  Settings,
+  Sparkles,
+  LayoutDashboard,
+  LogOut,
+  Plus,
+  RefreshCcw,
+  Search,
+  ShieldCheck,
+  UserRound,
+  UsersRound,
+  Coffee,
+} from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+
+type Role = "Superadmin" | "Employee";
+type View =
+  | "dashboard"
+  | "employees"
+  | "departments"
+  | "attendance"
+  | "leave"
+  | "payroll"
+  | "holidays"
+  | "reports"
+  | "settings"
+  | "audit"
+  | "profile";
+
+type User = {
+  id: number;
+  email: string;
+  role: Role;
+  employeeId?: number;
+  employeeName?: string;
+};
+
+type Employee = {
+  id: number;
+  user_id?: number;
+  employee_code: string;
+  full_name: string;
+  email: string;
+  phone?: string;
+  department_id?: number;
+  department_name?: string;
+  designation_id?: number;
+  designation_name?: string;
+  joining_date: string;
+  monthly_salary: number;
+  employment_status: "Active" | "Inactive";
+  address?: string;
+  bank_name?: string;
+  account_number?: string;
+  ifsc_code?: string;
+};
+
+type Department = { id: number; name: string };
+type Designation = { id: number; name: string };
+type LeaveType = { id: number; name: string; is_paid: number; monthly_balance: number; yearly_balance: number };
+type Holiday = { id: number; name: string; holiday_date: string; description?: string };
+type AuditLog = { id: number; action: string; entity_type: string; entity_id?: number; details?: string; actor_email?: string; created_at: string };
+type CompanySettings = {
+  company_name: string;
+  company_logo_url?: string;
+  company_address?: string;
+  working_days: string;
+  office_start_time: string;
+  office_end_time: string;
+  late_mark_time: string;
+  half_day_min_hours: number;
+  shift_min_hours: number;
+  deduct_absent_days: number;
+};
+
+type AttendanceRecord = {
+  id: number;
+  employee_id: number;
+  employee_name?: string;
+  employee_code?: string;
+  department_name?: string;
+  attendance_date: string;
+  check_in?: string;
+  check_out?: string;
+  break_start?: string;
+  break_end?: string;
+  total_hours: number;
+  status: "Present" | "Absent" | "Half Day" | "Late" | "On Leave";
+  notes?: string;
+  early_checkout_reason?: string;
+  late_checkin_reason?: string;
+};
+
+type LeaveRequest = {
+  id: number;
+  employee_id: number;
+  employee_name?: string;
+  leave_type_id: number;
+  leave_type_name?: string;
+  is_paid?: number;
+  start_date: string;
+  end_date: string;
+  days: number;
+  reason?: string;
+  status: "Pending" | "Approved" | "Rejected";
+  admin_note?: string;
+  created_at?: string;
+};
+
+type Salary = {
+  id: number;
+  employee_id: number;
+  employee_name?: string;
+  employee_code?: string;
+  salary_month: number;
+  salary_year: number;
+  working_days: number;
+  paid_days: number;
+  paid_leave_days: number;
+  unpaid_leave_days: number;
+  absent_days: number;
+  gross_salary: number;
+  deductions: number;
+  net_salary: number;
+  status: "Pending" | "Done";
+};
+
+type DashboardSummary = {
+  totalEmployees: number;
+  presentToday: number;
+  absentToday: number;
+  pendingLeaveRequests: number;
+  approvedLeavesThisMonth: number;
+  pendingSalaries: number;
+  salaryDoneCount: number;
+  estimatedMonthlyPayroll: number;
+};
+
+type EmployeeSummary = {
+  todayAttendance?: AttendanceRecord;
+  monthAttendance: { present: number; late: number; halfDay: number; absent: number };
+  leaveBalance: number;
+  recentLeaves: LeaveRequest[];
+  currentSalary?: Salary;
+  latestSalary?: Salary;
+};
+
+const currency = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
+const today = new Date().toISOString().slice(0, 10);
+
+async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers ?? {}),
+    },
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: "Request failed" })) as { error?: string };
+    throw new Error(payload.error ?? "Request failed");
+  }
+  return response.json() as Promise<T>;
+}
+
+function classNames(...items: Array<string | false | null | undefined>) {
+  return items.filter(Boolean).join(" ");
+}
+
+function statusTone(status: string) {
+  if (["Done", "Approved", "Present"].includes(status)) return "bg-emerald-50 text-emerald-700";
+  if (["Pending", "Late", "Half Day"].includes(status)) return "bg-amber-50 text-amber-700";
+  if (["Rejected", "Absent", "Inactive"].includes(status)) return "bg-rose-50 text-rose-700";
+  return "bg-slate-100 text-slate-700";
+}
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="space-y-1.5">
+      <span className="label">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  sub,
+}: {
+  icon: typeof UsersRound;
+  label: string;
+  value: string | number;
+  sub?: string;
+}) {
+  return (
+    <div className="card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-slate-500">{label}</p>
+          <p className="mt-2 text-2xl font-bold text-ink">{value}</p>
+          {sub ? <p className="mt-1 text-xs text-slate-500">{sub}</p> : null}
+        </div>
+        <div className="rounded-md bg-sky-50 p-2 text-brand">
+          <Icon size={20} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ title, action }: { title: string; action?: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-dashed border-line bg-white p-8 text-center">
+      <p className="font-semibold text-ink">{title}</p>
+      {action ? <div className="mt-4">{action}</div> : null}
+    </div>
+  );
+}
+
+export function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<View>("dashboard");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api<{ user: User }>("/me")
+      .then(({ user }) => setUser(user))
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function login(email: string, password: string) {
+    setError("");
+    try {
+      const payload = await api<{ user: User }>("/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
+      setUser(payload.user);
+      setView("dashboard");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Login failed");
+    }
+  }
+
+  async function logout() {
+    await api("/logout", { method: "POST" }).catch(() => undefined);
+    setUser(null);
+    setView("dashboard");
+  }
+
+  if (loading) {
+    return <div className="flex min-h-screen items-center justify-center bg-cloud text-sm font-semibold">Loading Fast HRMS...</div>;
+  }
+
+  if (!user) {
+    return <LoginScreen error={error} onLogin={login} />;
+  }
+
+  return <Shell user={user} view={view} onView={setView} onLogout={logout} />;
+}
+
+function LoginScreen({ error, onLogin }: { error: string; onLogin: (email: string, password: string) => Promise<void> }) {
+  const [email, setEmail] = useState("admin@fast.local");
+  const [password, setPassword] = useState("password123");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    await onLogin(email, password);
+    setBusy(false);
+  }
+
+  return (
+    <main className="min-h-screen bg-cloud">
+      <div className="mx-auto grid min-h-screen max-w-6xl items-center gap-8 px-4 py-8 lg:grid-cols-[1fr_420px]">
+        <section>
+          <div className="inline-flex items-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-semibold text-brand">
+            <ShieldCheck size={18} />
+            Cloudflare-ready HRMS
+          </div>
+          <h1 className="mt-5 max-w-3xl text-4xl font-bold leading-tight text-ink md:text-5xl">Fast HRMS for small teams</h1>
+          <p className="mt-4 max-w-2xl text-base leading-7 text-slate-600">
+            Manage employees, attendance, leave, payroll, and salary slips from one focused dashboard built for a company of around 20 people.
+          </p>
+          <div className="mt-8 grid max-w-3xl gap-3 sm:grid-cols-3">
+            {["Secure login", "D1 database", "Pages deploy"].map((item) => (
+              <div key={item} className="rounded-lg border border-line bg-white p-4 text-sm font-semibold text-ink shadow-soft">
+                {item}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <form onSubmit={submit} className="card p-5 sm:p-6">
+          <div className="mb-5">
+            <h2 className="text-xl font-bold text-ink">Sign in</h2>
+            <p className="mt-1 text-sm text-slate-500">Seed users use password123.</p>
+          </div>
+          {error ? <div className="mb-4 rounded-md bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
+          <div className="space-y-4">
+            <Field label="Email">
+              <input className="input" value={email} onChange={(event) => setEmail(event.target.value)} />
+            </Field>
+            <Field label="Password">
+              <input className="input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+            </Field>
+            <button className="btn btn-primary w-full" disabled={busy}>
+              {busy ? "Signing in..." : "Login"}
+            </button>
+          </div>
+          <div className="mt-5 grid gap-2 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
+            <button type="button" className="text-left font-semibold text-brand" onClick={() => setEmail("admin@fast.local")}>
+              Superadmin: admin@fast.local
+            </button>
+            <button type="button" className="text-left font-semibold text-brand" onClick={() => setEmail("riya@fast.local")}>
+              Employee: riya@fast.local
+            </button>
+          </div>
+        </form>
+      </div>
+    </main>
+  );
+}
+
+function Shell({ user, view, onView, onLogout }: { user: User; view: View; onView: (view: View) => void; onLogout: () => void }) {
+  const isAdmin = user.role === "Superadmin";
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const nav = [
+    { id: "dashboard" as View, label: "Dashboard", icon: LayoutDashboard, show: true },
+    { id: "employees" as View, label: "Employees", icon: UsersRound, show: isAdmin },
+    { id: "departments" as View, label: "Departments", icon: Building2, show: isAdmin },
+    { id: "attendance" as View, label: "Attendance", icon: CalendarCheck, show: true },
+    { id: "leave" as View, label: "Leave", icon: FileText, show: true },
+    { id: "payroll" as View, label: "Payroll", icon: Banknote, show: true },
+    { id: "holidays" as View, label: "Holidays", icon: Sparkles, show: true },
+    { id: "reports" as View, label: "Reports", icon: Download, show: isAdmin },
+    { id: "settings" as View, label: "Settings", icon: Settings, show: isAdmin },
+    { id: "audit" as View, label: "Audit Logs", icon: History, show: isAdmin },
+    { id: "profile" as View, label: "Profile", icon: UserRound, show: !isAdmin },
+  ].filter((item) => item.show);
+
+  function choose(next: View) {
+    onView(next);
+    setMobileOpen(false);
+  }
+
+  return (
+    <div className="min-h-screen bg-cloud">
+      <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 border-r border-line bg-white p-4 lg:block">
+        <div className="flex items-center gap-3 px-2 py-3">
+          <div className="rounded-md bg-brand p-2 text-white">
+            <BriefcaseBusiness size={20} />
+          </div>
+          <div>
+            <p className="font-bold text-ink">Fast HRMS</p>
+            <p className="text-xs text-slate-500">{user.role}</p>
+          </div>
+        </div>
+        <nav className="mt-6 space-y-1">
+          {nav.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => choose(item.id)}
+              className={classNames(
+                "flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-semibold transition",
+                view === item.id ? "bg-sky-50 text-brand" : "text-slate-600 hover:bg-slate-50 hover:text-ink",
+              )}
+            >
+              <item.icon size={18} />
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      <div className="lg:pl-64">
+        <header className="sticky top-0 z-10 border-b border-line bg-white/95 backdrop-blur">
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Welcome</p>
+              <h2 className="text-lg font-bold text-ink">{user.employeeName ?? user.email}</h2>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className="btn btn-soft lg:hidden" onClick={() => setMobileOpen((open) => !open)} title="Menu">
+                <Menu size={17} />
+              </button>
+              <span className="hidden rounded-md bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 sm:inline-flex">{user.role}</span>
+              <button className="btn btn-soft" onClick={onLogout} title="Logout">
+                <LogOut size={17} />
+                <span className="hidden sm:inline">Logout</span>
+              </button>
+            </div>
+          </div>
+          <nav className={classNames("grid gap-2 px-4 pb-3 sm:grid-cols-2 lg:hidden", mobileOpen ? "grid" : "hidden")}>
+            {nav.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => choose(item.id)}
+                className={classNames("btn justify-start", view === item.id ? "btn-primary" : "btn-soft")}
+              >
+                <item.icon size={17} />
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </header>
+
+        <main className="mx-auto max-w-7xl px-4 py-6">
+          {view === "dashboard" ? user.role === "Superadmin" ? <AdminDashboard /> : <EmployeeDashboard /> : null}
+          {view === "employees" && isAdmin ? <Employees /> : null}
+          {view === "departments" && isAdmin ? <Departments /> : null}
+          {view === "attendance" ? <Attendance isAdmin={isAdmin} /> : null}
+          {view === "leave" ? <Leave isAdmin={isAdmin} /> : null}
+          {view === "payroll" ? <Payroll isAdmin={isAdmin} /> : null}
+          {view === "holidays" ? <Holidays isAdmin={isAdmin} /> : null}
+          {view === "reports" && isAdmin ? <Reports /> : null}
+          {view === "settings" && isAdmin ? <SettingsPage /> : null}
+          {view === "audit" && isAdmin ? <AuditLogs /> : null}
+          {view === "profile" && !isAdmin ? <Profile /> : null}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function AdminDashboard() {
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api<{ summary: DashboardSummary }>("/admin/summary")
+      .then((data) => setSummary(data.summary))
+      .catch((err) => setError(err.message));
+  }, []);
+
+  if (error) return <EmptyState title={error} />;
+  if (!summary) return <EmptyState title="Loading dashboard..." />;
+
+  return (
+    <section className="space-y-5">
+      <PageTitle title="Superadmin Dashboard" description="Company-wide attendance, leave, and payroll snapshot." />
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard icon={UsersRound} label="Total employees" value={summary.totalEmployees} />
+        <StatCard icon={CalendarCheck} label="Present today" value={summary.presentToday} />
+        <StatCard icon={Clock3} label="Absent today" value={summary.absentToday} />
+        <StatCard icon={FileText} label="Pending leave requests" value={summary.pendingLeaveRequests} />
+        <StatCard icon={CheckCircle2} label="Approved leaves this month" value={summary.approvedLeavesThisMonth} />
+        <StatCard icon={Banknote} label="Pending salaries" value={summary.pendingSalaries} />
+        <StatCard icon={CheckCircle2} label="Salary done count" value={summary.salaryDoneCount} />
+        <StatCard icon={Banknote} label="Estimated monthly payroll" value={currency.format(summary.estimatedMonthlyPayroll)} />
+      </div>
+    </section>
+  );
+}
+
+function EmployeeDashboard() {
+  const [summary, setSummary] = useState<EmployeeSummary | null>(null);
+  const [settings, setSettings] = useState<CompanySettings | null>(null);
+  const [message, setMessage] = useState("");
+  
+  // Timer State
+  const [elapsed, setElapsed] = useState<number>(0);
+  
+  // Reason Prompts
+  const [promptCheckIn, setPromptCheckIn] = useState(false);
+  const [promptCheckOut, setPromptCheckOut] = useState(false);
+  const [reason, setReason] = useState("");
+
+  async function load() {
+    const data = await api<{ summary: EmployeeSummary }>("/employee/summary");
+    const settingsData = await api<{ settings: CompanySettings }>("/settings");
+    setSummary(data.summary);
+    setSettings(settingsData.settings);
+  }
+
+  useEffect(() => {
+    load().catch((err) => setMessage(err.message));
+  }, []);
+  
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+    if (summary?.todayAttendance?.check_in && !summary.todayAttendance.check_out) {
+      interval = setInterval(() => {
+        const now = new Date();
+        const checkInParts = summary.todayAttendance!.check_in!.split(":");
+        let baseTime = new Date();
+        baseTime.setHours(Number(checkInParts[0]), Number(checkInParts[1]), 0, 0);
+        let seconds = Math.floor((now.getTime() - baseTime.getTime()) / 1000);
+        
+        if (summary.todayAttendance?.break_start) {
+          const bsParts = summary.todayAttendance.break_start.split(":");
+          let bsTime = new Date();
+          bsTime.setHours(Number(bsParts[0]), Number(bsParts[1]), 0, 0);
+          
+          if (summary.todayAttendance.break_end) {
+            const beParts = summary.todayAttendance.break_end.split(":");
+            let beTime = new Date();
+            beTime.setHours(Number(beParts[0]), Number(beParts[1]), 0, 0);
+            seconds -= Math.floor((beTime.getTime() - bsTime.getTime()) / 1000);
+          } else {
+             seconds -= Math.floor((now.getTime() - bsTime.getTime()) / 1000);
+          }
+        }
+        setElapsed(Math.max(0, seconds));
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [summary]);
+
+  function formatTime(s: number) {
+    const h = Math.floor(s / 3600).toString().padStart(2, "0");
+    const m = Math.floor((s % 3600) / 60).toString().padStart(2, "0");
+    const sec = (s % 60).toString().padStart(2, "0");
+    return `${h}:${m}:${sec}`;
+  }
+  
+  async function punch(action: "check-in" | "check-out" | "break-start" | "break-end", reasonData?: string) {
+    setMessage("");
+    try {
+      const body = reasonData ? (action === "check-in" ? { late_checkin_reason: reasonData } : { early_checkout_reason: reasonData }) : {};
+      await api(`/attendance/${action}`, { method: "POST", body: Object.keys(body).length ? JSON.stringify(body) : undefined });
+      setPromptCheckIn(false);
+      setPromptCheckOut(false);
+      setReason("");
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Attendance update failed");
+    }
+  }
+  
+  function handleCheckInClick() {
+    if (settings) {
+       const now = new Date();
+       const current = `${now.getHours().toString().padStart(2,"0")}:${now.getMinutes().toString().padStart(2,"0")}`;
+       if (current > settings.late_mark_time) {
+         setPromptCheckIn(true);
+         return;
+       }
+    }
+    punch("check-in");
+  }
+  
+  function handleCheckOutClick() {
+    if (settings) {
+       const hoursWorked = elapsed / 3600;
+       if (hoursWorked < settings.shift_min_hours) {
+         setPromptCheckOut(true);
+         return;
+       }
+    }
+    punch("check-out");
+  }
+
+  if (!summary) return <EmptyState title={message || "Loading dashboard..."} />;
+  const hasCheckedIn = Boolean(summary.todayAttendance?.check_in);
+  const hasCheckedOut = Boolean(summary.todayAttendance?.check_out);
+  const onBreak = Boolean(summary.todayAttendance?.break_start && !summary.todayAttendance?.break_end);
+
+  return (
+    <section className="space-y-5 animate-fade-in">
+      {promptCheckIn && (
+         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+           <div className="card w-full max-w-md p-6">
+             <h3 className="text-lg font-bold text-ink">Late Check-in</h3>
+             <p className="mt-2 text-sm text-slate-500">You are checking in late. Please provide a reason.</p>
+             <input autoFocus className="input mt-4" placeholder="Traffic, transit delay, etc." value={reason} onChange={e => setReason(e.target.value)} />
+             <div className="mt-5 flex gap-3 justify-end">
+               <button className="btn btn-soft" onClick={() => setPromptCheckIn(false)}>Cancel</button>
+               <button className="btn btn-primary" disabled={!reason.trim()} onClick={() => punch("check-in", reason)}>Check in</button>
+             </div>
+           </div>
+         </div>
+      )}
+      {promptCheckOut && (
+         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+           <div className="card w-full max-w-md p-6">
+             <h3 className="text-lg font-bold text-ink">Early Check-out</h3>
+             <p className="mt-2 text-sm text-slate-500">You haven't completed your minimum shift hours. Please provide a reason.</p>
+             <input autoFocus className="input mt-4" placeholder="Personal work, medical, etc." value={reason} onChange={e => setReason(e.target.value)} />
+             <div className="mt-5 flex gap-3 justify-end">
+               <button className="btn btn-soft" onClick={() => setPromptCheckOut(false)}>Cancel</button>
+               <button className="btn btn-primary" disabled={!reason.trim()} onClick={() => punch("check-out", reason)}>Check out</button>
+             </div>
+           </div>
+         </div>
+      )}
+      <PageTitle title="Employee Dashboard" description="Your attendance, leave, and salary at a glance." />
+      {message ? <div className="rounded-md bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+      <div className="grid gap-5 md:grid-cols-[1.2fr_0.8fr]">
+        <div className="card p-6 border-t-4 border-t-brand">
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="label">Today attendance</p>
+              <h3 className="mt-2 text-3xl font-extrabold text-ink bg-clip-text text-transparent bg-gradient-to-r from-slate-800 to-slate-600">{summary.todayAttendance?.status ?? "Not marked"}</h3>
+              <p className="mt-2 text-sm text-slate-500 flex gap-3 items-center">
+                <span><span className="font-medium">In:</span> {summary.todayAttendance?.check_in ?? "--"}</span>
+                <span className="h-4 w-px bg-slate-300 block"></span>
+                <span><span className="font-medium">Out:</span> {summary.todayAttendance?.check_out ?? "--"}</span>
+              </p>
+            </div>
+            
+            <div className="flex flex-col items-end gap-3">
+              {hasCheckedIn && !hasCheckedOut && (
+                <div className="text-2xl font-mono font-bold text-brand bg-brand/5 px-4 py-1.5 rounded-lg border border-brand/10">
+                  {formatTime(elapsed)}
+                </div>
+              )}
+              <div className="flex gap-2">
+                {!hasCheckedIn ? (
+                   <button className="btn btn-primary px-8" onClick={handleCheckInClick}><Clock3 size={18} /> Check in</button>
+                ) : !hasCheckedOut ? (
+                   <>
+                     {onBreak ? (
+                       <button className="btn btn-success" onClick={() => punch("break-end")}><CheckCircle2 size={18} /> End Break</button>
+                     ) : (
+                       <button className="btn btn-soft" onClick={() => punch("break-start")}><Coffee size={18} /> Take Break</button>
+                     )}
+                     <button className="btn btn-danger" onClick={handleCheckOutClick}><LogOut size={18} /> Check out</button>
+                   </>
+                ) : (
+                   <span className="badge bg-slate-100 text-slate-600 px-4 py-2 text-sm border border-slate-200">Shift Completed</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <StatCard icon={CalendarCheck} label="Present" value={summary.monthAttendance.present} sub="This month" />
+          <StatCard icon={Clock3} label="Late" value={summary.monthAttendance.late} sub="This month" />
+        </div>
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatCard icon={FileText} label="Leave balance" value={summary.leaveBalance} sub="Paid leave estimate" />
+        <StatCard icon={Banknote} label="Salary status" value={summary.currentSalary?.status ?? "Pending"} sub="Current month" />
+        <div className="card p-4">
+          <p className="text-sm font-medium text-slate-500">Latest salary slip</p>
+          {summary.latestSalary ? (
+            <a className="btn btn-soft mt-4 w-full" href={`/api/salary-slips/${summary.latestSalary.id}`} target="_blank" rel="noreferrer">
+              <Download size={17} />
+              Download
+            </a>
+          ) : (
+            <p className="mt-4 text-sm text-slate-500">No salary slip yet.</p>
+          )}
+        </div>
+      </div>
+      <DataTable
+        title="Recent Leave Status"
+        rows={summary.recentLeaves}
+        columns={[
+          ["Type", (row) => row.leave_type_name ?? "-"],
+          ["Dates", (row) => `${row.start_date} to ${row.end_date}`],
+          ["Days", (row) => row.days],
+          ["Status", (row) => <Badge value={row.status} />],
+        ]}
+      />
+    </section>
+  );
+}
+
+function PageTitle({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <h1 className="text-2xl font-bold text-ink">{title}</h1>
+        <p className="mt-1 text-sm text-slate-500">{description}</p>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function Badge({ value }: { value: string }) {
+  return <span className={classNames("badge", statusTone(value))}>{value}</span>;
+}
+
+function DataTable<T extends { id: number }>({
+  title,
+  rows,
+  columns,
+}: {
+  title: string;
+  rows: T[];
+  columns: Array<[string, (row: T) => React.ReactNode]>;
+}) {
+  return (
+    <div className="card overflow-hidden">
+      <div className="border-b border-line px-4 py-3">
+        <h3 className="font-bold text-ink">{title}</h3>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-left text-sm">
+          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              {columns.map(([label]) => (
+                <th key={label} className="px-4 py-3 font-bold">
+                  {label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {rows.length ? (
+              rows.map((row) => (
+                <tr key={row.id} className="bg-white">
+                  {columns.map(([label, render]) => (
+                    <td key={label} className="px-4 py-3 align-top text-slate-700">
+                      {render(row)}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td className="px-4 py-8 text-center text-slate-500" colSpan={columns.length}>
+                  No records found.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Employees() {
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [designations, setDesignations] = useState<Designation[]>([]);
+  const [query, setQuery] = useState("");
+  const [editing, setEditing] = useState<Employee | null>(null);
+  const [open, setOpen] = useState(false);
+
+  async function load() {
+    const data = await api<{ employees: Employee[]; departments: Department[]; designations: Designation[] }>("/employees");
+    setEmployees(data.employees);
+    setDepartments(data.departments);
+    setDesignations(data.designations);
+  }
+
+  useEffect(() => {
+    load().catch(console.error);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const needle = query.toLowerCase();
+    return employees.filter((employee) => [employee.full_name, employee.email, employee.employee_code].join(" ").toLowerCase().includes(needle));
+  }, [employees, query]);
+
+  async function save(employee: Partial<Employee> & { password?: string }) {
+    await api(editing ? `/employees/${editing.id}` : "/employees", {
+      method: editing ? "PUT" : "POST",
+      body: JSON.stringify(employee),
+    });
+    setOpen(false);
+    setEditing(null);
+    await load();
+  }
+
+  return (
+    <section className="space-y-5">
+      <PageTitle
+        title="Employee Management"
+        description="Add people, assign departments and salaries, and manage login access."
+        action={
+          <button className="btn btn-primary" onClick={() => setOpen(true)}>
+            <Plus size={17} />
+            Add employee
+          </button>
+        }
+      />
+      <div className="card p-3">
+        <div className="flex items-center gap-2">
+          <Search size={18} className="text-slate-400" />
+          <input className="input border-0 focus:ring-0" placeholder="Search employees" value={query} onChange={(event) => setQuery(event.target.value)} />
+        </div>
+      </div>
+      <DataTable
+        title="Employees"
+        rows={filtered}
+        columns={[
+          ["Employee", (row) => <div className="font-semibold text-ink">{row.full_name}<div className="text-xs font-normal text-slate-500">{row.employee_code}</div></div>],
+          ["Email", (row) => row.email],
+          ["Department", (row) => row.department_name ?? "-"],
+          ["Designation", (row) => row.designation_name ?? "-"],
+          ["Salary", (row) => currency.format(row.monthly_salary)],
+          ["Status", (row) => <Badge value={row.employment_status} />],
+          [
+            "Action",
+            (row) => (
+              <button
+                className="btn btn-soft"
+                onClick={() => {
+                  setEditing(row);
+                  setOpen(true);
+                }}
+              >
+                Edit
+              </button>
+            ),
+          ],
+        ]}
+      />
+      {open ? (
+        <EmployeeModal
+          employee={editing}
+          departments={departments}
+          designations={designations}
+          onClose={() => {
+            setOpen(false);
+            setEditing(null);
+          }}
+          onSave={save}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function EmployeeModal({
+  employee,
+  departments,
+  designations,
+  onClose,
+  onSave,
+}: {
+  employee: Employee | null;
+  departments: Department[];
+  designations: Designation[];
+  onClose: () => void;
+  onSave: (employee: Partial<Employee> & { password?: string }) => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    employee_code: employee?.employee_code ?? "",
+    full_name: employee?.full_name ?? "",
+    email: employee?.email ?? "",
+    phone: employee?.phone ?? "",
+    department_id: employee?.department_id ?? departments[0]?.id ?? "",
+    designation_id: employee?.designation_id ?? designations[0]?.id ?? "",
+    joining_date: employee?.joining_date ?? today,
+    monthly_salary: employee?.monthly_salary ?? 0,
+    employment_status: employee?.employment_status ?? "Active",
+    address: employee?.address ?? "",
+    bank_name: employee?.bank_name ?? "",
+    account_number: employee?.account_number ?? "",
+    ifsc_code: employee?.ifsc_code ?? "",
+    password: "",
+  });
+  const [busy, setBusy] = useState(false);
+
+  function update(name: string, value: string | number) {
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    await onSave(form as Partial<Employee> & { password?: string });
+    setBusy(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 overflow-y-auto bg-slate-900/40 p-4">
+      <form onSubmit={submit} className="card mx-auto max-w-3xl p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-bold text-ink">{employee ? "Edit employee" : "Add employee"}</h2>
+            <p className="text-sm text-slate-500">Employee profile, salary, bank details, and login.</p>
+          </div>
+          <button type="button" className="btn btn-soft" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          <Field label="Employee ID"><input required className="input" value={form.employee_code} onChange={(e) => update("employee_code", e.target.value)} /></Field>
+          <Field label="Full name"><input required className="input" value={form.full_name} onChange={(e) => update("full_name", e.target.value)} /></Field>
+          <Field label="Email"><input required className="input" value={form.email} onChange={(e) => update("email", e.target.value)} /></Field>
+          <Field label="Phone"><input className="input" value={form.phone} onChange={(e) => update("phone", e.target.value)} /></Field>
+          <Field label="Department">
+            <select className="input" value={form.department_id} onChange={(e) => update("department_id", Number(e.target.value))}>
+              {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Designation">
+            <select className="input" value={form.designation_id} onChange={(e) => update("designation_id", Number(e.target.value))}>
+              {designations.map((designation) => <option key={designation.id} value={designation.id}>{designation.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Joining date"><input type="date" className="input" value={form.joining_date} onChange={(e) => update("joining_date", e.target.value)} /></Field>
+          <Field label="Monthly salary"><input type="number" className="input" value={form.monthly_salary} onChange={(e) => update("monthly_salary", Number(e.target.value))} /></Field>
+          <Field label="Employment status">
+            <select className="input" value={form.employment_status} onChange={(e) => update("employment_status", e.target.value)}>
+              <option>Active</option>
+              <option>Inactive</option>
+            </select>
+          </Field>
+          <Field label={employee ? "Reset password" : "Login password"}><input className="input" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder={employee ? "Leave blank to keep current" : "password123"} /></Field>
+          <Field label="Bank name"><input className="input" value={form.bank_name} onChange={(e) => update("bank_name", e.target.value)} /></Field>
+          <Field label="Account number"><input className="input" value={form.account_number} onChange={(e) => update("account_number", e.target.value)} /></Field>
+          <Field label="IFSC code"><input className="input" value={form.ifsc_code} onChange={(e) => update("ifsc_code", e.target.value)} /></Field>
+          <Field label="Address"><textarea className="input min-h-24" value={form.address} onChange={(e) => update("address", e.target.value)} /></Field>
+        </div>
+        <div className="mt-5 flex justify-end gap-3">
+          <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={busy}>{busy ? "Saving..." : "Save employee"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function Departments() {
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [designations, setDesignations] = useState<Designation[]>([]);
+  const [departmentName, setDepartmentName] = useState("");
+  const [designationName, setDesignationName] = useState("");
+  const [message, setMessage] = useState("");
+
+  async function load() {
+    const data = await api<{ departments: Department[]; designations: Designation[] }>("/meta");
+    setDepartments(data.departments);
+    setDesignations(data.designations);
+  }
+
+  useEffect(() => {
+    load().catch(console.error);
+  }, []);
+
+  async function create(kind: "departments" | "designations", name: string) {
+    setMessage("");
+    try {
+      await api(`/${kind}`, { method: "POST", body: JSON.stringify({ name }) });
+      setDepartmentName("");
+      setDesignationName("");
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Unable to save");
+    }
+  }
+
+  async function remove(kind: "departments" | "designations", id: number) {
+    setMessage("");
+    try {
+      await api(`/${kind}/${id}`, { method: "DELETE" });
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Unable to delete");
+    }
+  }
+
+  return (
+    <section className="space-y-5">
+      <PageTitle title="Departments & Designations" description="Keep company structure simple and reusable." />
+      {message ? <div className="rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ManagerList title="Departments" value={departmentName} onValue={setDepartmentName} rows={departments} onCreate={() => create("departments", departmentName)} onDelete={(id) => remove("departments", id)} />
+        <ManagerList title="Designations" value={designationName} onValue={setDesignationName} rows={designations} onCreate={() => create("designations", designationName)} onDelete={(id) => remove("designations", id)} />
+      </div>
+    </section>
+  );
+}
+
+function ManagerList({
+  title,
+  value,
+  onValue,
+  rows,
+  onCreate,
+  onDelete,
+}: {
+  title: string;
+  value: string;
+  onValue: (value: string) => void;
+  rows: Department[];
+  onCreate: () => void;
+  onDelete: (id: number) => void;
+}) {
+  return (
+    <div className="card p-4">
+      <h3 className="font-bold text-ink">{title}</h3>
+      <div className="mt-4 flex gap-2">
+        <input className="input" value={value} onChange={(event) => onValue(event.target.value)} placeholder={`Add ${title.toLowerCase()}`} />
+        <button className="btn btn-primary" onClick={onCreate} disabled={!value.trim()}><Plus size={17} /></button>
+      </div>
+      <div className="mt-4 divide-y divide-line">
+        {rows.map((row) => (
+          <div key={row.id} className="flex items-center justify-between gap-3 py-3">
+            <span className="font-semibold text-slate-700">{row.name}</span>
+            <button className="btn btn-soft" onClick={() => onDelete(row.id)}>Delete</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Attendance({ isAdmin }: { isAdmin: boolean }) {
+  const [rows, setRows] = useState<AttendanceRecord[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [filters, setFilters] = useState({ employeeId: "", start: today.slice(0, 8) + "01", end: today });
+
+  async function load() {
+    const search = new URLSearchParams(filters).toString();
+    const data = await api<{ attendance: AttendanceRecord[]; employees?: Employee[] }>(`/attendance?${search}`);
+    setRows(data.attendance);
+    setEmployees(data.employees ?? []);
+  }
+
+  useEffect(() => {
+    load().catch(console.error);
+  }, []);
+
+  async function mark(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await api("/attendance/manual", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(form.entries())),
+    });
+    await load();
+  }
+
+  return (
+    <section className="space-y-5">
+      <PageTitle
+        title="Attendance"
+        description={isAdmin ? "Filter, manually mark, edit, and export company attendance." : "View your own attendance history."}
+        action={isAdmin ? <a className="btn btn-soft" href={`/api/attendance.csv?${new URLSearchParams(filters).toString()}`}><Download size={17} />CSV</a> : null}
+      />
+      {isAdmin ? (
+        <div className="card grid gap-3 p-4 md:grid-cols-4">
+          <Field label="Employee">
+            <select className="input" value={filters.employeeId} onChange={(e) => setFilters({ ...filters, employeeId: e.target.value })}>
+              <option value="">All employees</option>
+              {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
+            </select>
+          </Field>
+          <Field label="Start"><input className="input" type="date" value={filters.start} onChange={(e) => setFilters({ ...filters, start: e.target.value })} /></Field>
+          <Field label="End"><input className="input" type="date" value={filters.end} onChange={(e) => setFilters({ ...filters, end: e.target.value })} /></Field>
+          <button className="btn btn-primary self-end" onClick={load}><RefreshCcw size={17} />Apply</button>
+        </div>
+      ) : null}
+      {isAdmin ? (
+        <form onSubmit={mark} className="card grid gap-3 p-4 md:grid-cols-6">
+          <Field label="Employee"><select name="employee_id" className="input">{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}</select></Field>
+          <Field label="Date"><input name="attendance_date" className="input" type="date" defaultValue={today} /></Field>
+          <Field label="Check in"><input name="check_in" className="input" type="time" defaultValue="09:30" /></Field>
+          <Field label="Check out"><input name="check_out" className="input" type="time" defaultValue="18:30" /></Field>
+          <Field label="Status"><select name="status" className="input"><option>Present</option><option>Absent</option><option>Half Day</option><option>Late</option><option>On Leave</option></select></Field>
+          <button className="btn btn-primary self-end">Mark</button>
+        </form>
+      ) : null}
+      <DataTable
+        title="Attendance History"
+        rows={rows}
+        columns={[
+          ["Employee", (row) => row.employee_name ?? row.employee_code ?? "You"],
+          ["Date", (row) => row.attendance_date],
+          ["Check in", (row) => (
+             <div>
+               <div>{row.check_in ?? "-"}</div>
+               {row.late_checkin_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.late_checkin_reason}</div>}
+             </div>
+          )],
+          ["Check out", (row) => (
+             <div>
+               <div>{row.check_out ?? "-"}</div>
+               {row.early_checkout_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.early_checkout_reason}</div>}
+             </div>
+          )],
+          ["Break", (row) => (
+            row.break_start && row.break_end 
+              ? `${row.break_start} - ${row.break_end}` 
+              : row.break_start ? "On break" : "-"
+          )],
+          ["Hours", (row) => row.total_hours],
+          ["Status", (row) => <Badge value={row.status} />],
+        ]}
+      />
+    </section>
+  );
+}
+
+function Leave({ isAdmin }: { isAdmin: boolean }) {
+  const [rows, setRows] = useState<LeaveRequest[]>([]);
+  const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
+
+  async function load() {
+    const data = await api<{ leaves: LeaveRequest[]; leaveTypes: LeaveType[] }>("/leaves");
+    setRows(data.leaves);
+    setLeaveTypes(data.leaveTypes);
+  }
+
+  useEffect(() => {
+    load().catch(console.error);
+  }, []);
+
+  async function apply(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await api("/leaves", { method: "POST", body: JSON.stringify(Object.fromEntries(form.entries())) });
+    event.currentTarget.reset();
+    await load();
+  }
+
+  async function decide(id: number, status: "Approved" | "Rejected") {
+    const admin_note = window.prompt(`${status} note`) ?? "";
+    await api(`/leaves/${id}/decision`, { method: "POST", body: JSON.stringify({ status, admin_note }) });
+    await load();
+  }
+
+  async function saveType(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    await api("/leave-types", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
+    form.reset();
+    await load();
+  }
+
+  async function removeType(id: number) {
+    if (!window.confirm("Delete this leave type?")) return;
+    await api(`/leave-types/${id}`, { method: "DELETE" });
+    await load();
+  }
+
+  return (
+    <section className="space-y-5">
+      <PageTitle title="Leave Management" description={isAdmin ? "Approve, reject, and review leave requests." : "Apply and track your leave history."} />
+      {isAdmin ? (
+        <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
+          <form onSubmit={saveType} className="card grid gap-3 p-4 sm:grid-cols-2">
+            <Field label="Leave type"><input required name="name" className="input" placeholder="Paid Leave" /></Field>
+            <Field label="Paid">
+              <select name="is_paid" className="input" defaultValue="1">
+                <option value="1">Paid</option>
+                <option value="0">Unpaid</option>
+              </select>
+            </Field>
+            <Field label="Monthly balance"><input name="monthly_balance" className="input" type="number" step="0.5" defaultValue="1" /></Field>
+            <Field label="Yearly balance"><input name="yearly_balance" className="input" type="number" step="0.5" defaultValue="12" /></Field>
+            <button className="btn btn-primary sm:col-span-2"><Plus size={17} />Save leave type</button>
+          </form>
+          <div className="card p-4">
+            <h3 className="font-bold text-ink">Leave Types</h3>
+            <div className="mt-3 divide-y divide-line">
+              {leaveTypes.map((type) => (
+                <div key={type.id} className="flex items-center justify-between gap-3 py-3">
+                  <div>
+                    <p className="font-semibold text-ink">{type.name}</p>
+                    <p className="text-xs text-slate-500">{type.is_paid ? "Paid" : "Unpaid"} · {type.monthly_balance}/month · {type.yearly_balance}/year</p>
+                  </div>
+                  <button className="btn btn-soft" onClick={() => removeType(type.id)}>Delete</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {!isAdmin ? (
+        <form onSubmit={apply} className="card grid gap-3 p-4 md:grid-cols-5">
+          <Field label="Leave type"><select name="leave_type_id" className="input">{leaveTypes.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}</select></Field>
+          <Field label="Start"><input name="start_date" className="input" type="date" defaultValue={today} /></Field>
+          <Field label="End"><input name="end_date" className="input" type="date" defaultValue={today} /></Field>
+          <Field label="Reason"><input name="reason" className="input" placeholder="Reason" /></Field>
+          <button className="btn btn-primary self-end">Apply</button>
+        </form>
+      ) : null}
+      <DataTable
+        title="Leave Requests"
+        rows={rows}
+        columns={[
+          ["Employee", (row) => row.employee_name ?? "You"],
+          ["Type", (row) => row.leave_type_name ?? "-"],
+          ["Dates", (row) => `${row.start_date} to ${row.end_date}`],
+          ["Days", (row) => row.days],
+          ["Status", (row) => <Badge value={row.status} />],
+          [
+            "Action",
+            (row) =>
+              isAdmin && row.status === "Pending" ? (
+                <div className="flex gap-2">
+                  <button className="btn btn-soft" onClick={() => decide(row.id, "Approved")}>Approve</button>
+                  <button className="btn btn-soft" onClick={() => decide(row.id, "Rejected")}>Reject</button>
+                </div>
+              ) : (
+                row.admin_note ?? "-"
+              ),
+          ],
+        ]}
+      />
+    </section>
+  );
+}
+
+function Payroll({ isAdmin }: { isAdmin: boolean }) {
+  const now = new Date();
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [year, setYear] = useState(now.getFullYear());
+  const [rows, setRows] = useState<Salary[]>([]);
+
+  async function load() {
+    const data = await api<{ salaries: Salary[] }>(`/payroll?month=${month}&year=${year}`);
+    setRows(data.salaries);
+  }
+
+  useEffect(() => {
+    load().catch(console.error);
+  }, []);
+
+  async function generate() {
+    await api("/payroll/generate", { method: "POST", body: JSON.stringify({ month, year }) });
+    await load();
+  }
+
+  async function markDone(id: number) {
+    await api(`/payroll/${id}`, { method: "PUT", body: JSON.stringify({ status: "Done" }) });
+    await load();
+  }
+
+  return (
+    <section className="space-y-5">
+      <PageTitle title="Salary & Payroll" description={isAdmin ? "Calculate salary, mark payout status, and download salary slips." : "View salary history and download slips."} />
+      <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
+        <Field label="Month"><input className="input" type="number" min={1} max={12} value={month} onChange={(e) => setMonth(Number(e.target.value))} /></Field>
+        <Field label="Year"><input className="input" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
+        <button className="btn btn-soft" onClick={load}><RefreshCcw size={17} />Load</button>
+        {isAdmin ? <button className="btn btn-primary" onClick={generate}><Banknote size={17} />Generate payroll</button> : null}
+      </div>
+      <DataTable
+        title="Salary Records"
+        rows={rows}
+        columns={[
+          ["Employee", (row) => row.employee_name ?? "You"],
+          ["Paid days", (row) => row.paid_days],
+          ["Unpaid leave", (row) => row.unpaid_leave_days],
+          ["Absent", (row) => row.absent_days],
+          ["Gross", (row) => currency.format(row.gross_salary)],
+          ["Deductions", (row) => currency.format(row.deductions)],
+          ["Net", (row) => <span className="font-bold text-ink">{currency.format(row.net_salary)}</span>],
+          ["Status", (row) => <Badge value={row.status} />],
+          [
+            "Action",
+            (row) => (
+              <div className="flex gap-2">
+                <a className="btn btn-soft" href={`/api/salary-slips/${row.id}`} target="_blank" rel="noreferrer"><Download size={17} /></a>
+                {isAdmin && row.status !== "Done" ? <button className="btn btn-soft" onClick={() => markDone(row.id)}>Done</button> : null}
+              </div>
+            ),
+          ],
+        ]}
+      />
+    </section>
+  );
+}
+
+function Holidays({ isAdmin }: { isAdmin: boolean }) {
+  const [rows, setRows] = useState<Holiday[]>([]);
+  const [message, setMessage] = useState("");
+
+  async function load() {
+    const data = await api<{ holidays: Holiday[] }>("/holidays");
+    setRows(data.holidays);
+  }
+
+  useEffect(() => {
+    load().catch((err) => setMessage(err.message));
+  }, []);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    const form = event.currentTarget;
+    const body = Object.fromEntries(new FormData(form).entries());
+    try {
+      await api("/holidays", { method: "POST", body: JSON.stringify(body) });
+      form.reset();
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Unable to save holiday");
+    }
+  }
+
+  async function remove(id: number) {
+    if (!window.confirm("Delete this holiday?")) return;
+    await api(`/holidays/${id}`, { method: "DELETE" });
+    await load();
+  }
+
+  return (
+    <section className="space-y-5">
+      <PageTitle title="Holidays" description={isAdmin ? "Manage company holidays for everyone." : "View upcoming company holidays."} />
+      {message ? <div className="rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
+      {isAdmin ? (
+        <form onSubmit={save} className="card grid gap-3 p-4 md:grid-cols-4">
+          <Field label="Holiday name"><input required name="name" className="input" placeholder="Holiday name" /></Field>
+          <Field label="Date"><input required name="holiday_date" className="input" type="date" defaultValue={today} /></Field>
+          <Field label="Description"><input name="description" className="input" placeholder="Optional note" /></Field>
+          <button className="btn btn-primary self-end"><Plus size={17} />Add</button>
+        </form>
+      ) : null}
+      <DataTable
+        title="Holiday List"
+        rows={rows}
+        columns={[
+          ["Holiday", (row) => <span className="font-semibold text-ink">{row.name}</span>],
+          ["Date", (row) => row.holiday_date],
+          ["Description", (row) => row.description || "-"],
+          ["Action", (row) => isAdmin ? <button className="btn btn-soft" onClick={() => remove(row.id)}>Delete</button> : "-"],
+        ]}
+      />
+    </section>
+  );
+}
+
+function Reports() {
+  const [meta, setMeta] = useState<{ employees: Employee[]; departments: Department[] }>({ employees: [], departments: [] });
+  const [filters, setFilters] = useState({ employeeId: "", departmentId: "", start: today.slice(0, 8) + "01", end: today, month: String(new Date().getMonth() + 1), year: String(new Date().getFullYear()) });
+
+  useEffect(() => {
+    api<{ employees: Employee[]; departments: Department[] }>("/reports/meta")
+      .then(setMeta)
+      .catch(console.error);
+  }, []);
+
+  const common = new URLSearchParams({ employeeId: filters.employeeId, departmentId: filters.departmentId, start: filters.start, end: filters.end }).toString();
+  const month = new URLSearchParams({ employeeId: filters.employeeId, departmentId: filters.departmentId, month: filters.month, year: filters.year }).toString();
+
+  return (
+    <section className="space-y-5">
+      <PageTitle title="Reports" description="Export simple attendance, leave, and salary reports as CSV." />
+      <div className="card grid gap-3 p-4 md:grid-cols-5">
+        <Field label="Employee">
+          <select className="input" value={filters.employeeId} onChange={(e) => setFilters({ ...filters, employeeId: e.target.value })}>
+            <option value="">All employees</option>
+            {meta.employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
+          </select>
+        </Field>
+        <Field label="Department">
+          <select className="input" value={filters.departmentId} onChange={(e) => setFilters({ ...filters, departmentId: e.target.value })}>
+            <option value="">All departments</option>
+            {meta.departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Start"><input className="input" type="date" value={filters.start} onChange={(e) => setFilters({ ...filters, start: e.target.value })} /></Field>
+        <Field label="End"><input className="input" type="date" value={filters.end} onChange={(e) => setFilters({ ...filters, end: e.target.value })} /></Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Month"><input className="input" type="number" min={1} max={12} value={filters.month} onChange={(e) => setFilters({ ...filters, month: e.target.value })} /></Field>
+          <Field label="Year"><input className="input" type="number" value={filters.year} onChange={(e) => setFilters({ ...filters, year: e.target.value })} /></Field>
+        </div>
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        <ReportCard title="Attendance report" href={`/api/attendance.csv?${common}`} />
+        <ReportCard title="Leave report" href={`/api/reports/leaves.csv?${common}`} />
+        <ReportCard title="Salary report" href={`/api/reports/salaries.csv?${month}`} />
+      </div>
+    </section>
+  );
+}
+
+function ReportCard({ title, href }: { title: string; href: string }) {
+  return (
+    <div className="card p-4">
+      <h3 className="font-bold text-ink">{title}</h3>
+      <p className="mt-2 text-sm text-slate-500">Download a filtered CSV for admin review.</p>
+      <a className="btn btn-primary mt-4 w-full" href={href}><Download size={17} />Export CSV</a>
+    </div>
+  );
+}
+
+function SettingsPage() {
+  const [settings, setSettings] = useState<CompanySettings | null>(null);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    api<{ settings: CompanySettings }>("/settings")
+      .then((data) => setSettings(data.settings))
+      .catch((err) => setMessage(err.message));
+  }, []);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+    try {
+      const data = await api<{ settings: CompanySettings }>("/settings", { method: "PUT", body: JSON.stringify(body) });
+      setSettings(data.settings);
+      setMessage("Settings saved.");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Unable to save settings");
+    }
+  }
+
+  if (!settings) return <EmptyState title={message || "Loading settings..."} />;
+
+  return (
+    <section className="space-y-5">
+      <PageTitle title="Company Settings" description="Configure company details, office timing, attendance rules, and salary deductions." />
+      {message ? <div className="rounded-md bg-sky-50 px-3 py-2 text-sm font-semibold text-brand">{message}</div> : null}
+      <form onSubmit={save} className="card grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3">
+        <Field label="Company name"><input required name="company_name" className="input" defaultValue={settings.company_name} /></Field>
+        <Field label="Logo URL"><input name="company_logo_url" className="input" defaultValue={settings.company_logo_url || ""} /></Field>
+        <Field label="Working days"><input name="working_days" className="input" defaultValue={settings.working_days} /></Field>
+        <Field label="Office start"><input required name="office_start_time" type="time" className="input" defaultValue={settings.office_start_time} /></Field>
+        <Field label="Office end"><input required name="office_end_time" type="time" className="input" defaultValue={settings.office_end_time} /></Field>
+        <Field label="Late mark time"><input required name="late_mark_time" type="time" className="input" defaultValue={settings.late_mark_time} /></Field>
+        <Field label="Half-day min hours"><input required name="half_day_min_hours" type="number" step="0.5" min="0" className="input" defaultValue={settings.half_day_min_hours} /></Field>
+        <Field label="Shift min hours"><input required name="shift_min_hours" type="number" step="0.5" min="0" className="input" defaultValue={settings.shift_min_hours} /></Field>
+        <Field label="Deduct absent days">
+          <select name="deduct_absent_days" className="input" defaultValue={String(settings.deduct_absent_days)}>
+            <option value="1">Yes</option>
+            <option value="0">No</option>
+          </select>
+        </Field>
+        <Field label="Company address"><textarea name="company_address" className="input min-h-24" defaultValue={settings.company_address || ""} /></Field>
+        <div className="sm:col-span-2 lg:col-span-3">
+          <button className="btn btn-primary"><Settings size={17} />Save settings</button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function AuditLogs() {
+  const [rows, setRows] = useState<AuditLog[]>([]);
+
+  useEffect(() => {
+    api<{ logs: AuditLog[] }>("/audit-logs")
+      .then((data) => setRows(data.logs))
+      .catch(console.error);
+  }, []);
+
+  return (
+    <section className="space-y-5">
+      <PageTitle title="Audit Logs" description="Track important admin actions in one place." />
+      <DataTable
+        title="Recent Activity"
+        rows={rows}
+        columns={[
+          ["When", (row) => row.created_at],
+          ["Admin", (row) => row.actor_email || "-"],
+          ["Action", (row) => <span className="font-semibold text-ink">{row.action}</span>],
+          ["Entity", (row) => `${row.entity_type}${row.entity_id ? ` #${row.entity_id}` : ""}`],
+          ["Details", (row) => row.details || "-"],
+        ]}
+      />
+    </section>
+  );
+}
+
+function Profile() {
+  const [employee, setEmployee] = useState<Employee | null>(null);
+
+  useEffect(() => {
+    api<{ employee: Employee }>("/profile")
+      .then((data) => setEmployee(data.employee))
+      .catch(console.error);
+  }, []);
+
+  if (!employee) return <EmptyState title="Loading profile..." />;
+
+  return (
+    <section className="space-y-5">
+      <PageTitle title="My Profile" description="Your employee and payroll details." />
+      <div className="card grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3">
+        {[
+          ["Employee ID", employee.employee_code],
+          ["Name", employee.full_name],
+          ["Email", employee.email],
+          ["Phone", employee.phone],
+          ["Department", employee.department_name],
+          ["Designation", employee.designation_name],
+          ["Joining date", employee.joining_date],
+          ["Monthly salary", currency.format(employee.monthly_salary)],
+          ["Bank", employee.bank_name],
+          ["Account", employee.account_number],
+          ["IFSC", employee.ifsc_code],
+          ["Address", employee.address],
+        ].map(([label, value]) => (
+          <div key={label}>
+            <p className="label">{label}</p>
+            <p className="mt-1 font-semibold text-ink">{value || "-"}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}

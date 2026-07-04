@@ -5,7 +5,7 @@ pages_build_output_dir = "dist"
 [[d1_databases]]
 binding = "HRMS_DB"
 database_name = "fast-hrms"
-database_id = "replace-with-your-d1-database-id"
+database_id = "9c932d68-00d1-43aa-80bb-b581884f589a"
 
 # Optional. Enable only if you decide to store generated salary PDFs permanently.
 # [[r2_buckets]]

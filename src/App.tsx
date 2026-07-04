@@ -477,6 +477,7 @@ function AdminDashboard() {
 function EmployeeDashboard() {
   const [summary, setSummary] = useState<EmployeeSummary | null>(null);
   const [settings, setSettings] = useState<CompanySettings | null>(null);
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [message, setMessage] = useState("");
   
   // Timer State
@@ -490,8 +491,10 @@ function EmployeeDashboard() {
   async function load() {
     const data = await api<{ summary: EmployeeSummary }>("/employee/summary");
     const settingsData = await api<{ settings: CompanySettings }>("/settings");
+    const attData = await api<{ attendance: AttendanceRecord[] }>("/attendance");
     setSummary(data.summary);
     setSettings(settingsData.settings);
+    setAttendance(attData.attendance);
   }
 
   useEffect(() => {
@@ -672,6 +675,32 @@ function EmployeeDashboard() {
           ["Type", (row) => row.leave_type_name ?? "-"],
           ["Dates", (row) => `${row.start_date} to ${row.end_date}`],
           ["Days", (row) => row.days],
+          ["Status", (row) => <Badge value={row.status} />],
+        ]}
+      />
+      <DataTable
+        title="My Daily Work & Duration Log"
+        rows={attendance}
+        columns={[
+          ["Date", (row) => row.attendance_date],
+          ["Check in", (row) => (
+             <div>
+               <div>{row.check_in ?? "-"}</div>
+               {row.late_checkin_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.late_checkin_reason}</div>}
+             </div>
+          )],
+          ["Check out", (row) => (
+             <div>
+               <div>{row.check_out ?? "-"}</div>
+               {row.early_checkout_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.early_checkout_reason}</div>}
+             </div>
+          )],
+          ["Break", (row) => (
+            row.break_start && row.break_end 
+              ? `${row.break_start} - ${row.break_end}` 
+              : row.break_start ? "On break" : "-"
+          )],
+          ["Duration (Hours)", (row) => row.total_hours !== undefined ? `${Number(row.total_hours).toFixed(1)} hrs` : "-"],
           ["Status", (row) => <Badge value={row.status} />],
         ]}
       />
@@ -1020,6 +1049,16 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
   const [rows, setRows] = useState<AttendanceRecord[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [filters, setFilters] = useState({ employeeId: "", start: today.slice(0, 8) + "01", end: today });
+  const [editingAttendance, setEditingAttendance] = useState<AttendanceRecord | null>(null);
+  const [attendanceForm, setAttendanceForm] = useState({
+    employee_id: 0,
+    attendance_date: "",
+    check_in: "",
+    check_out: "",
+    break_start: "",
+    break_end: "",
+    status: "Present"
+  });
 
   async function load() {
     const search = new URLSearchParams(filters).toString();
@@ -1040,6 +1079,67 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
       body: JSON.stringify(Object.fromEntries(form.entries())),
     });
     await load();
+  }
+
+  function handleEditClick(record: AttendanceRecord) {
+    setEditingAttendance(record);
+    setAttendanceForm({
+      employee_id: record.employee_id,
+      attendance_date: record.attendance_date,
+      check_in: record.check_in ?? "",
+      check_out: record.check_out ?? "",
+      break_start: record.break_start ?? "",
+      break_end: record.break_end ?? "",
+      status: record.status
+    });
+  }
+
+  async function saveEdit(e: FormEvent) {
+    e.preventDefault();
+    if (!editingAttendance) return;
+    try {
+      await api("/attendance/manual", {
+        method: "POST",
+        body: JSON.stringify(attendanceForm),
+      });
+      setEditingAttendance(null);
+      await load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to edit attendance record");
+    }
+  }
+
+  const columns: Array<[string, (row: AttendanceRecord) => React.ReactNode]> = [
+    ["Employee", (row) => row.employee_name ?? row.employee_code ?? "You"],
+    ["Date", (row) => row.attendance_date],
+    ["Check in", (row) => (
+       <div>
+         <div>{row.check_in ?? "-"}</div>
+         {row.late_checkin_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.late_checkin_reason}</div>}
+       </div>
+    )],
+    ["Check out", (row) => (
+       <div>
+         <div>{row.check_out ?? "-"}</div>
+         {row.early_checkout_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.early_checkout_reason}</div>}
+       </div>
+    )],
+    ["Break", (row) => (
+      row.break_start && row.break_end 
+        ? `${row.break_start} - ${row.break_end}` 
+        : row.break_start ? "On break" : "-"
+    )],
+    ["Hours", (row) => row.total_hours !== undefined ? Number(row.total_hours).toFixed(1) : "-"],
+    ["Status", (row) => <Badge value={row.status} />],
+  ];
+
+  if (isAdmin) {
+    columns.push([
+      "Action",
+      (row) => (
+        <button className="btn btn-soft" onClick={() => handleEditClick(row)}>Edit</button>
+      )
+    ]);
   }
 
   return (
@@ -1075,30 +1175,50 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
       <DataTable
         title="Attendance History"
         rows={rows}
-        columns={[
-          ["Employee", (row) => row.employee_name ?? row.employee_code ?? "You"],
-          ["Date", (row) => row.attendance_date],
-          ["Check in", (row) => (
-             <div>
-               <div>{row.check_in ?? "-"}</div>
-               {row.late_checkin_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.late_checkin_reason}</div>}
-             </div>
-          )],
-          ["Check out", (row) => (
-             <div>
-               <div>{row.check_out ?? "-"}</div>
-               {row.early_checkout_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.early_checkout_reason}</div>}
-             </div>
-          )],
-          ["Break", (row) => (
-            row.break_start && row.break_end 
-              ? `${row.break_start} - ${row.break_end}` 
-              : row.break_start ? "On break" : "-"
-          )],
-          ["Hours", (row) => row.total_hours],
-          ["Status", (row) => <Badge value={row.status} />],
-        ]}
+        columns={columns}
       />
+
+      {editingAttendance && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+          <form onSubmit={saveEdit} className="card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">Edit Attendance Details</h3>
+            <p className="text-xs text-slate-500">Modify times or status for {editingAttendance.employee_name} on {editingAttendance.attendance_date}.</p>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Check In">
+                <input className="input" type="time" value={attendanceForm.check_in} onChange={(e) => setAttendanceForm({ ...attendanceForm, check_in: e.target.value })} />
+              </Field>
+              <Field label="Check Out">
+                <input className="input" type="time" value={attendanceForm.check_out} onChange={(e) => setAttendanceForm({ ...attendanceForm, check_out: e.target.value })} />
+              </Field>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Break Start">
+                <input className="input" type="time" value={attendanceForm.break_start} onChange={(e) => setAttendanceForm({ ...attendanceForm, break_start: e.target.value })} />
+              </Field>
+              <Field label="Break End">
+                <input className="input" type="time" value={attendanceForm.break_end} onChange={(e) => setAttendanceForm({ ...attendanceForm, break_end: e.target.value })} />
+              </Field>
+            </div>
+
+            <Field label="Status">
+              <select className="input" value={attendanceForm.status} onChange={(e) => setAttendanceForm({ ...attendanceForm, status: e.target.value })}>
+                <option>Present</option>
+                <option>Absent</option>
+                <option>Half Day</option>
+                <option>Late</option>
+                <option>On Leave</option>
+              </select>
+            </Field>
+
+            <div className="flex gap-3 justify-end pt-2">
+              <button type="button" className="btn btn-soft" onClick={() => setEditingAttendance(null)}>Cancel</button>
+              <button type="submit" className="btn btn-primary">Save Changes</button>
+            </div>
+          </form>
+        </div>
+      )}
     </section>
   );
 }
@@ -1219,6 +1339,14 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [year, setYear] = useState(now.getFullYear());
   const [rows, setRows] = useState<Salary[]>([]);
+  const [editingSalary, setEditingSalary] = useState<Salary | null>(null);
+  const [editForm, setEditForm] = useState({
+    working_days: 0,
+    paid_days: 0,
+    gross_salary: 0,
+    deductions: 0,
+    net_salary: 0,
+  });
 
   async function load() {
     const data = await api<{ salaries: Salary[] }>(`/payroll?month=${month}&year=${year}`);
@@ -1237,6 +1365,42 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
   async function markDone(id: number) {
     await api(`/payroll/${id}`, { method: "PUT", body: JSON.stringify({ status: "Done" }) });
     await load();
+  }
+
+  function handleEditClick(salary: Salary) {
+    setEditingSalary(salary);
+    setEditForm({
+      working_days: salary.working_days,
+      paid_days: salary.paid_days,
+      gross_salary: salary.gross_salary,
+      deductions: salary.deductions,
+      net_salary: salary.net_salary,
+    });
+  }
+
+  function handleFormChange(field: string, val: number) {
+    setEditForm((prev) => {
+      const next = { ...prev, [field]: val };
+      if (field === "gross_salary" || field === "deductions") {
+        next.net_salary = Math.max(0, next.gross_salary - next.deductions);
+      }
+      return next;
+    });
+  }
+
+  async function saveOverride(e: FormEvent) {
+    e.preventDefault();
+    if (!editingSalary) return;
+    try {
+      await api(`/payroll/${editingSalary.id}`, {
+        method: "PUT",
+        body: JSON.stringify(editForm),
+      });
+      setEditingSalary(null);
+      await load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to save salary details");
+    }
   }
 
   return (
@@ -1264,13 +1428,48 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
             "Action",
             (row) => (
               <div className="flex gap-2">
-                <a className="btn btn-soft" href={`/api/salary-slips/${row.id}`} target="_blank" rel="noreferrer"><Download size={17} /></a>
-                {isAdmin && row.status !== "Done" ? <button className="btn btn-soft" onClick={() => markDone(row.id)}>Done</button> : null}
+                <a className="btn btn-soft" href={`/api/salary-slips/${row.id}`} target="_blank" rel="noreferrer" title="Download Slip"><Download size={17} /></a>
+                {isAdmin && (
+                  <>
+                    <button className="btn btn-soft" onClick={() => handleEditClick(row)}>Edit</button>
+                    {row.status !== "Done" ? <button className="btn btn-soft" onClick={() => markDone(row.id)}>Done</button> : null}
+                  </>
+                )}
               </div>
             ),
           ],
         ]}
       />
+
+      {editingSalary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+          <form onSubmit={saveOverride} className="card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">Edit Salary Details</h3>
+            <p className="text-xs text-slate-500">Modify attendance days, gross salary, or add custom deductions for {editingSalary.employee_name}.</p>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Working Days">
+                <input className="input" type="number" step="any" value={editForm.working_days} onChange={(e) => handleFormChange("working_days", Number(e.target.value))} />
+              </Field>
+              <Field label="Paid Days">
+                <input className="input" type="number" step="any" value={editForm.paid_days} onChange={(e) => handleFormChange("paid_days", Number(e.target.value))} />
+              </Field>
+            </div>
+            <Field label="Gross Salary">
+              <input className="input" type="number" step="any" value={editForm.gross_salary} onChange={(e) => handleFormChange("gross_salary", Number(e.target.value))} />
+            </Field>
+            <Field label="Deductions (Custom)">
+              <input className="input" type="number" step="any" value={editForm.deductions} onChange={(e) => handleFormChange("deductions", Number(e.target.value))} />
+            </Field>
+            <Field label="Net Payable Salary">
+              <input className="input" type="number" step="any" value={editForm.net_salary} onChange={(e) => handleFormChange("net_salary", Number(e.target.value))} />
+            </Field>
+            <div className="flex gap-3 justify-end pt-2">
+              <button type="button" className="btn btn-soft" onClick={() => setEditingSalary(null)}>Cancel</button>
+              <button type="submit" className="btn btn-primary">Save Changes</button>
+            </div>
+          </form>
+        </div>
+      )}
     </section>
   );
 }

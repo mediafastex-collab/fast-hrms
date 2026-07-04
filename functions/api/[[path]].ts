@@ -68,7 +68,7 @@ async function route(context: Context) {
   if (method === "POST" && path === "/leave-types") return saveLeaveType(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/leave-types/")) return deleteLeaveType(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path === "/payroll/generate") return generatePayroll(db, user, await readBody(context.request));
-  if (method === "PUT" && path.startsWith("/payroll/")) return updateSalaryStatus(db, user, Number(path.split("/").pop()), await readBody(context.request));
+  if (method === "PUT" && path.startsWith("/payroll/")) return updateSalary(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "POST" && path === "/holidays") return saveHoliday(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/holidays/")) return deleteHoliday(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/settings") return json({ settings: await companySettings(db) });
@@ -205,7 +205,8 @@ async function saveEmployee(db: D1Database, actor: AppUser, body: Record<string,
   const password = text(body.password) || "password123";
   validateEmployee(body);
   const hash = await hashPassword(password);
-  const userResult = await db.prepare("INSERT INTO users (email, password_hash, role) VALUES (?, ?, 'Employee')").bind(email, hash).run();
+  const isActive = (text(body.employment_status) || "Active") === "Active" ? 1 : 0;
+  const userResult = await db.prepare("INSERT INTO users (email, password_hash, role, is_active) VALUES (?, ?, 'Employee', ?)").bind(email, hash, isActive).run();
   const userId = userResult.meta.last_row_id;
   const result = await db.prepare(
     `INSERT INTO employees (user_id, employee_code, full_name, email, phone, department_id, designation_id, joining_date, monthly_salary,
@@ -222,14 +223,16 @@ async function updateEmployee(db: D1Database, actor: AppUser, id: number, body: 
   validateEmployee(body);
   const existing = await db.prepare("SELECT user_id FROM employees WHERE id = ?").bind(id).first<{ user_id: number }>();
   if (!existing) return json({ error: "Employee not found" }, 404);
+  const statusVal = text(body.employment_status) || "Active";
   await db.prepare(
     `UPDATE employees SET employee_code = ?, full_name = ?, email = ?, phone = ?, department_id = ?, designation_id = ?, joining_date = ?,
       monthly_salary = ?, employment_status = ?, address = ?, bank_name = ?, account_number = ?, ifsc_code = ?, updated_at = CURRENT_TIMESTAMP
      WHERE id = ?`,
   )
-    .bind(text(body.employee_code), text(body.full_name), text(body.email).toLowerCase(), text(body.phone), numOrNull(body.department_id), numOrNull(body.designation_id), text(body.joining_date), number(body.monthly_salary), text(body.employment_status) || "Active", text(body.address), text(body.bank_name), text(body.account_number), text(body.ifsc_code), id)
+    .bind(text(body.employee_code), text(body.full_name), text(body.email).toLowerCase(), text(body.phone), numOrNull(body.department_id), numOrNull(body.designation_id), text(body.joining_date), number(body.monthly_salary), statusVal, text(body.address), text(body.bank_name), text(body.account_number), text(body.ifsc_code), id)
     .run();
-  await db.prepare("UPDATE users SET email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(text(body.email).toLowerCase(), existing.user_id).run();
+  const isActive = statusVal === "Active" ? 1 : 0;
+  await db.prepare("UPDATE users SET email = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(text(body.email).toLowerCase(), isActive, existing.user_id).run();
   if (text(body.password)) {
     await db.prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(await hashPassword(text(body.password)), existing.user_id).run();
   }
@@ -337,14 +340,20 @@ async function endBreak(db: D1Database, user: AppUser) {
 async function manualAttendance(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
   const checkInAt = text(body.check_in);
   const checkOutAt = text(body.check_out);
-  const hours = checkInAt && checkOutAt ? hoursBetween(checkInAt, checkOutAt) : 0;
+  const breakStart = text(body.break_start) || null;
+  const breakEnd = text(body.break_end) || null;
+  let hours = checkInAt && checkOutAt ? hoursBetween(checkInAt, checkOutAt) : 0;
+  if (breakStart && breakEnd) {
+    hours = Math.max(0, hours - hoursBetween(breakStart, breakEnd));
+  }
   await db.prepare(
-    `INSERT INTO attendance (employee_id, attendance_date, check_in, check_out, total_hours, status)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO attendance (employee_id, attendance_date, check_in, check_out, break_start, break_end, total_hours, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(employee_id, attendance_date) DO UPDATE SET check_in = excluded.check_in, check_out = excluded.check_out,
-       total_hours = excluded.total_hours, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
+       break_start = excluded.break_start, break_end = excluded.break_end, total_hours = excluded.total_hours, 
+       status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
   )
-    .bind(number(body.employee_id), text(body.attendance_date), checkInAt, checkOutAt, hours, text(body.status) || "Present")
+    .bind(number(body.employee_id), text(body.attendance_date), checkInAt, checkOutAt, breakStart, breakEnd, hours, text(body.status) || "Present")
     .run();
   await audit(db, actor, "Attendance edited", "attendance", number(body.employee_id), text(body.attendance_date));
   return json({ ok: true });
@@ -457,13 +466,37 @@ async function generatePayroll(db: D1Database, actor: AppUser, body: Record<stri
   return json({ ok: true });
 }
 
-async function updateSalaryStatus(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
+async function updateSalary(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
   const status = text(body.status);
-  if (!["Pending", "Done"].includes(status)) return json({ error: "Invalid salary status" }, 400);
-  await db.prepare("UPDATE salaries SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, id).run();
-  const salary = await db.prepare("SELECT s.*, e.user_id FROM salaries s JOIN employees e ON e.id = s.employee_id WHERE s.id = ?").bind(id).first<Record<string, number | string>>();
-  if (salary) await notify(db, Number(salary.user_id), `Salary marked ${status.toLowerCase()}`, `Your salary status is now ${status}.`);
-  await audit(db, actor, `Salary marked ${status.toLowerCase()}`, "salaries", id, "");
+  if (status && !["Pending", "Done"].includes(status)) return json({ error: "Invalid salary status" }, 400);
+
+  // Get current record to find employee
+  const existing = await db.prepare("SELECT s.*, e.user_id, e.id AS employee_id FROM salaries s JOIN employees e ON e.id = s.employee_id WHERE s.id = ?").bind(id).first<Record<string, unknown>>();
+  if (!existing) return json({ error: "Salary record not found" }, 404);
+
+  const newStatus = status || String(existing.status);
+  const workingDays = body.working_days !== undefined ? Number(body.working_days) : Number(existing.working_days);
+  const paidDays = body.paid_days !== undefined ? Number(body.paid_days) : Number(existing.paid_days);
+  const grossSalary = body.gross_salary !== undefined ? Number(body.gross_salary) : Number(existing.gross_salary);
+  const deductions = body.deductions !== undefined ? Number(body.deductions) : Number(existing.deductions);
+  const netSalary = body.net_salary !== undefined ? Number(body.net_salary) : Number(existing.net_salary);
+
+  await db.prepare(
+    `UPDATE salaries SET status = ?, working_days = ?, paid_days = ?, gross_salary = ?, deductions = ?, net_salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).bind(newStatus, workingDays, paidDays, grossSalary, deductions, netSalary, id).run();
+
+  const updatedSalary = await db.prepare("SELECT * FROM salaries WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  const employee = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(existing.employee_id).first<Record<string, unknown>>();
+  const settings = await companySettings(db);
+
+  if (updatedSalary && employee) {
+    await upsertSlip(db, updatedSalary, employee, settings);
+  }
+
+  if (status && status !== existing.status) {
+    await notify(db, Number(existing.user_id), `Salary marked ${status.toLowerCase()}`, `Your salary status is now ${status}.`);
+  }
+  await audit(db, actor, "Salary updated", "salaries", id, "");
   return json({ ok: true });
 }
 

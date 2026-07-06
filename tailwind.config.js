@@ -4,16 +4,16 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: "#172033",
-        cloud: "#f7fafc",
-        line: "#dbe4ef",
-        brand: "#1677c8",
+        ink: "#1c1917",
+        cloud: "#faf7f2",
+        line: "#ece5db",
+        brand: "#ea580c",
         mint: "#18a058",
         coral: "#e46f55",
         amber: "#c98918"
       },
       boxShadow: {
-        soft: "0 18px 50px rgba(23,32,51,0.08)"
+        soft: "0 18px 50px rgba(124,45,18,0.10)"
       }
     }
   },

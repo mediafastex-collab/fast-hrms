@@ -20,6 +20,8 @@ import {
   UserRound,
   UsersRound,
   Coffee,
+  X,
+  Image as ImageIcon,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
@@ -65,7 +67,7 @@ type Employee = {
   ifsc_code?: string;
 };
 
-type Department = { id: number; name: string };
+type Department = { id: number; name: string; shift_min_hours?: number | null; half_day_min_hours?: number | null; late_mark_time?: string | null };
 type Designation = { id: number; name: string };
 type LeaveType = { id: number; name: string; is_paid: number; monthly_balance: number; yearly_balance: number };
 type Holiday = { id: number; name: string; holiday_date: string; description?: string };
@@ -133,6 +135,7 @@ type Salary = {
   deductions: number;
   net_salary: number;
   status: "Pending" | "Done";
+  payment_proof?: string;
 };
 
 type DashboardSummary = {
@@ -157,6 +160,31 @@ type EmployeeSummary = {
 
 const currency = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
 const today = new Date().toISOString().slice(0, 10);
+const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+// Seconds since midnight for an HH:MM or HH:MM:SS string.
+function timeToSeconds(value?: string): number | null {
+  if (!value) return null;
+  const [h = 0, m = 0, s = 0] = value.split(":").map(Number);
+  return h * 3600 + m * 60 + s;
+}
+
+// Actual worked duration as "Hh Mm Ss" = (check-out − check-in) − break. Falls back to stored hours.
+function workedHMS(row: AttendanceRecord): string {
+  const ci = timeToSeconds(row.check_in);
+  const co = timeToSeconds(row.check_out);
+  if (ci == null || co == null) {
+    return row.total_hours !== undefined ? `${Number(row.total_hours).toFixed(1)} hrs` : "-";
+  }
+  let sec = Math.max(0, co - ci);
+  const bs = timeToSeconds(row.break_start);
+  const be = timeToSeconds(row.break_end);
+  if (bs != null && be != null) sec = Math.max(0, sec - Math.max(0, be - bs));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -474,8 +502,23 @@ function AdminDashboard() {
   );
 }
 
+const QUOTES = [
+  "The only way to do great work is to love what you do. — Steve Jobs",
+  "Success is not final, failure is not fatal: it is the courage to continue that counts. — Winston Churchill",
+  "Believe you can and you're halfway there. — Theodore Roosevelt",
+  "It always seems impossible until it's done. — Nelson Mandela",
+  "Your time is limited, don't waste it living someone else's life. — Steve Jobs",
+  "I find that the harder I work, the more luck I seem to have. — Thomas Jefferson",
+  "Don't watch the clock; do what it does. Keep going. — Sam Levenson",
+  "The future depends on what you do today. — Mahatma Gandhi",
+];
+
 function EmployeeDashboard() {
   const [summary, setSummary] = useState<EmployeeSummary | null>(null);
+  const quote = useMemo(() => {
+    const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 1000 / 60 / 60 / 24);
+    return QUOTES[dayOfYear % QUOTES.length];
+  }, []);
   const [settings, setSettings] = useState<CompanySettings | null>(null);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [message, setMessage] = useState("");
@@ -582,6 +625,9 @@ function EmployeeDashboard() {
 
   return (
     <section className="space-y-5 animate-fade-in">
+      <div className="card border-l-4 border-l-brand p-6 bg-white">
+        <p className="text-lg font-medium text-ink italic">"{quote}"</p>
+      </div>
       {promptCheckIn && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
            <div className="card w-full max-w-md p-6">
@@ -700,7 +746,7 @@ function EmployeeDashboard() {
               ? `${row.break_start} - ${row.break_end}` 
               : row.break_start ? "On break" : "-"
           )],
-          ["Duration (Hours)", (row) => row.total_hours !== undefined ? `${Number(row.total_hours).toFixed(1)} hrs` : "-"],
+          ["Worked", (row) => workedHMS(row)],
           ["Status", (row) => <Badge value={row.status} />],
         ]}
       />
@@ -966,6 +1012,9 @@ function Departments() {
   const [departmentName, setDepartmentName] = useState("");
   const [designationName, setDesignationName] = useState("");
   const [message, setMessage] = useState("");
+  const [editingDept, setEditingDept] = useState<Department | null>(null);
+  const [checkingEmployeesDept, setCheckingEmployeesDept] = useState<Department | null>(null);
+  const [allEmployees, setAllEmployees] = useState<Employee[]>([]);
 
   async function load() {
     const data = await api<{ departments: Department[]; designations: Designation[] }>("/meta");
@@ -976,6 +1025,12 @@ function Departments() {
   useEffect(() => {
     load().catch(console.error);
   }, []);
+
+  useEffect(() => {
+    if (checkingEmployeesDept && allEmployees.length === 0) {
+      api<{ employees: Employee[] }>("/employees").then(d => setAllEmployees(d.employees)).catch(console.error);
+    }
+  }, [checkingEmployeesDept, allEmployees.length]);
 
   async function create(kind: "departments" | "designations", name: string) {
     setMessage("");
@@ -1004,9 +1059,78 @@ function Departments() {
       <PageTitle title="Departments & Designations" description="Keep company structure simple and reusable." />
       {message ? <div className="rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
       <div className="grid gap-4 lg:grid-cols-2">
-        <ManagerList title="Departments" value={departmentName} onValue={setDepartmentName} rows={departments} onCreate={() => create("departments", departmentName)} onDelete={(id) => remove("departments", id)} />
-        <ManagerList title="Designations" value={designationName} onValue={setDesignationName} rows={designations} onCreate={() => create("designations", designationName)} onDelete={(id) => remove("designations", id)} />
+        <ManagerList title="Departments" value={departmentName} onValue={setDepartmentName} rows={departments} onCreate={() => create("departments", departmentName)} onDelete={(id) => remove("departments", id)} onEdit={setEditingDept} onCheckEmployees={setCheckingEmployeesDept} />
+        <ManagerList title="Designations" value={designationName} onValue={setDesignationName} rows={designations} onCreate={() => create("designations", designationName)} onDelete={(id) => remove("designations", id)} onEdit={(row) => {
+          const newName = window.prompt("Edit designation name:", row.name);
+          if (newName && newName.trim() !== "") {
+            api(`/designations/${row.id}`, { method: "PUT", body: JSON.stringify({ name: newName.trim() }) }).then(load).catch(err => alert(err.message));
+          }
+        }} />
       </div>
+
+      {editingDept && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">Edit Department</h3>
+            <p className="text-xs text-slate-500">Update {editingDept.name} and its shift hours. Leave shift fields blank to use the company default.</p>
+            <Field label="Name">
+              <input className="input" value={editingDept.name} onChange={(e) => setEditingDept({ ...editingDept, name: e.target.value })} />
+            </Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Full day hours">
+                <input className="input" type="number" step="0.5" min="0" placeholder="e.g. 8" value={editingDept.shift_min_hours ?? ""} onChange={(e) => setEditingDept({ ...editingDept, shift_min_hours: e.target.value === "" ? null : Number(e.target.value) })} />
+              </Field>
+              <Field label="Half day hours">
+                <input className="input" type="number" step="0.5" min="0" placeholder="e.g. 4" value={editingDept.half_day_min_hours ?? ""} onChange={(e) => setEditingDept({ ...editingDept, half_day_min_hours: e.target.value === "" ? null : Number(e.target.value) })} />
+              </Field>
+            </div>
+            <Field label="Late mark time">
+              <input className="input" type="time" value={editingDept.late_mark_time ?? ""} onChange={(e) => setEditingDept({ ...editingDept, late_mark_time: e.target.value || null })} />
+            </Field>
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" className="btn btn-soft" onClick={() => setEditingDept(null)}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={async () => {
+                await api(`/departments/${editingDept.id}`, { method: "PUT", body: JSON.stringify(editingDept) });
+                setEditingDept(null);
+                await load();
+              }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {checkingEmployeesDept && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">{checkingEmployeesDept.name} Employees</h3>
+            <p className="text-xs text-slate-500">All employees in the {checkingEmployeesDept.name} department</p>
+            <div className="max-h-96 overflow-y-auto">
+              {allEmployees.length === 0 ? (
+                <div className="p-4 text-center text-stone-500">Loading...</div>
+              ) : (
+                <div className="space-y-2">
+                  {allEmployees.filter((e) => e.department_id === checkingEmployeesDept.id).length === 0 ? (
+                    <div className="p-4 text-center text-stone-500">No employees found in this department.</div>
+                  ) : (
+                    allEmployees.filter((e) => e.department_id === checkingEmployeesDept.id).map((emp) => {
+                      const desig = designations.find(d => d.id === emp.designation_id)?.name || "Unknown Designation";
+                      return (
+                        <div key={emp.id} className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 p-3">
+                          <div className="font-semibold text-stone-800">{emp.full_name}</div>
+                          <div className="text-sm text-stone-500">{desig}</div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button type="button" className="btn btn-soft" onClick={() => setCheckingEmployeesDept(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -1018,6 +1142,8 @@ function ManagerList({
   rows,
   onCreate,
   onDelete,
+  onEdit,
+  onCheckEmployees,
 }: {
   title: string;
   value: string;
@@ -1025,6 +1151,8 @@ function ManagerList({
   rows: Department[];
   onCreate: () => void;
   onDelete: (id: number) => void;
+  onEdit?: (row: any) => void;
+  onCheckEmployees?: (row: any) => void;
 }) {
   return (
     <div className="card p-4">
@@ -1037,7 +1165,11 @@ function ManagerList({
         {rows.map((row) => (
           <div key={row.id} className="flex items-center justify-between gap-3 py-3">
             <span className="font-semibold text-slate-700">{row.name}</span>
-            <button className="btn btn-soft" onClick={() => onDelete(row.id)}>Delete</button>
+            <div className="flex shrink-0 gap-2">
+              {onCheckEmployees ? <button type="button" className="btn btn-soft" onClick={() => onCheckEmployees(row)}>Employees</button> : null}
+              {onEdit ? <button type="button" className="btn btn-soft" onClick={() => onEdit(row)}>Edit</button> : null}
+              <button type="button" className="btn btn-soft" onClick={() => onDelete(row.id)}>Delete</button>
+            </div>
           </div>
         ))}
       </div>
@@ -1125,11 +1257,11 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
        </div>
     )],
     ["Break", (row) => (
-      row.break_start && row.break_end 
-        ? `${row.break_start} - ${row.break_end}` 
+      row.break_start && row.break_end
+        ? `${row.break_start} - ${row.break_end}`
         : row.break_start ? "On break" : "-"
     )],
-    ["Hours", (row) => row.total_hours !== undefined ? Number(row.total_hours).toFixed(1) : "-"],
+    ["Worked", (row) => <span className="font-semibold text-ink">{workedHMS(row)}</span>],
     ["Status", (row) => <Badge value={row.status} />],
   ];
 
@@ -1336,10 +1468,23 @@ function Leave({ isAdmin }: { isAdmin: boolean }) {
 
 function Payroll({ isAdmin }: { isAdmin: boolean }) {
   const now = new Date();
-  const [month, setMonth] = useState(now.getMonth() + 1);
-  const [year, setYear] = useState(now.getFullYear());
+  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const [month, setMonth] = useState(lastMonth.getMonth() + 1); // Custom-view month
+  const [year, setYear] = useState(lastMonth.getFullYear());
+  const [period, setPeriod] = useState("Last 6 Months");
+  // Separate month/year for generating payroll (defaults to last completed month).
+  const [genMonth, setGenMonth] = useState(lastMonth.getMonth() + 1);
+  const [genYear, setGenYear] = useState(lastMonth.getFullYear());
   const [rows, setRows] = useState<Salary[]>([]);
   const [editingSalary, setEditingSalary] = useState<Salary | null>(null);
+  const [payModalOpen, setPayModalOpen] = useState<{ id: number; employee: string } | null>(null);
+  const [paymentProofFile, setPaymentProofFile] = useState<File | null>(null);
+  const [payBusy, setPayBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  // A month is generatable only if it's strictly before the current month.
+  const curIndex = now.getFullYear() * 12 + (now.getMonth() + 1);
+  const genIsPast = genYear * 12 + genMonth < curIndex;
   const [editForm, setEditForm] = useState({
     working_days: 0,
     paid_days: 0,
@@ -1348,8 +1493,60 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
     net_salary: 0,
   });
 
+  async function processPaymentProof(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          const MAX_WIDTH = 800; const MAX_HEIGHT = 800;
+          let width = img.width; let height = img.height;
+          if (width > height) { if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; } }
+          else { if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; } }
+          canvas.width = width; canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx?.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL("image/jpeg", 0.6));
+        };
+        img.onerror = reject;
+      };
+      reader.onerror = reject;
+    });
+  }
+
+  async function markPaidSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!payModalOpen) return;
+    setPayBusy(true);
+    try {
+      let base64 = "";
+      if (paymentProofFile) base64 = await processPaymentProof(paymentProofFile);
+      await api(`/payroll/${payModalOpen.id}`, { method: "PUT", body: JSON.stringify({ status: "Paid", payment_proof: base64 || null }) });
+      setPayModalOpen(null); setPaymentProofFile(null); await load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setPayBusy(false);
+    }
+  }
+
+  async function setPaid(id: number, isPaid: boolean) {
+    await api(`/payroll/${id}`, { method: "PUT", body: JSON.stringify({ status: isPaid ? "Paid" : "Unpaid" }) });
+    await load();
+  }
+
+  async function deleteProof(id: number) {
+    if (!window.confirm("Delete the uploaded payment screenshot?")) return;
+    await api(`/payroll/${id}`, { method: "PUT", body: JSON.stringify({ payment_proof: "" }) });
+    await load();
+  }
+
   async function load() {
-    const data = await api<{ salaries: Salary[] }>(`/payroll?month=${month}&year=${year}`);
+    const params = new URLSearchParams({ period, month: String(month), year: String(year) });
+    const data = await api<{ salaries: Salary[] }>(`/payroll?${params.toString()}`);
     setRows(data.salaries);
   }
 
@@ -1358,13 +1555,14 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
   }, []);
 
   async function generate() {
-    await api("/payroll/generate", { method: "POST", body: JSON.stringify({ month, year }) });
-    await load();
-  }
-
-  async function markDone(id: number) {
-    await api(`/payroll/${id}`, { method: "PUT", body: JSON.stringify({ status: "Done" }) });
-    await load();
+    setMessage("");
+    if (!genIsPast) { setMessage("Payroll can only be generated for completed (past) months."); return; }
+    try {
+      await api("/payroll/generate", { method: "POST", body: JSON.stringify({ month: genMonth, year: genYear }) });
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to generate payroll");
+    }
   }
 
   function handleEditClick(salary: Salary) {
@@ -1405,34 +1603,73 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <section className="space-y-5">
-      <PageTitle title="Salary & Payroll" description={isAdmin ? "Calculate salary, mark payout status, and download salary slips." : "View salary history and download slips."} />
+      <PageTitle title="Salary & Payroll" description={isAdmin ? "Generate salary for completed months, mark it paid, and issue payslips." : "Your salary history. Payslip PDF is available once your salary is marked paid."} />
+      {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+
+      {/* View controls — defaults to the last 6 months */}
       <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
-        <Field label="Month"><input className="input" type="number" min={1} max={12} value={month} onChange={(e) => setMonth(Number(e.target.value))} /></Field>
-        <Field label="Year"><input className="input" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
-        <button className="btn btn-soft" onClick={load}><RefreshCcw size={17} />Load</button>
-        {isAdmin ? <button className="btn btn-primary" onClick={generate}><Banknote size={17} />Generate payroll</button> : null}
+        <Field label="Show">
+          <select className="input" value={period} onChange={(e) => setPeriod(e.target.value)}>
+            <option value="Last 6 Months">Last 6 Months</option>
+            <option value="Last 3 Months">Last 3 Months</option>
+            <option value="Last Month">Last Month</option>
+            <option value="Custom">Specific Month</option>
+          </select>
+        </Field>
+        {period === "Custom" && (
+          <>
+            <Field label="Month">
+              <select className="input" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+                {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+              </select>
+            </Field>
+            <Field label="Year"><input className="input" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
+          </>
+        )}
+        <button type="button" className="btn btn-soft" onClick={load}><RefreshCcw size={17} />Apply</button>
       </div>
+
+      {/* Admin-only: generate payroll for a completed (past) month */}
+      {isAdmin && (
+        <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
+          <Field label="Generate for month">
+            <select className="input" value={genMonth} onChange={(e) => setGenMonth(Number(e.target.value))}>
+              {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="Year"><input className="input" type="number" value={genYear} onChange={(e) => setGenYear(Number(e.target.value))} /></Field>
+          <button type="button" className="btn btn-primary" onClick={generate} disabled={!genIsPast} title={genIsPast ? "" : "Only completed (past) months can be generated"}>
+            <Banknote size={17} />Generate payroll
+          </button>
+          {!genIsPast ? <p className="self-center text-xs font-semibold text-amber-600">Current & future months are locked.</p> : null}
+        </div>
+      )}
       <DataTable
         title="Salary Records"
         rows={rows}
         columns={[
-          ["Employee", (row) => row.employee_name ?? "You"],
-          ["Paid days", (row) => row.paid_days],
-          ["Unpaid leave", (row) => row.unpaid_leave_days],
-          ["Absent", (row) => row.absent_days],
-          ["Gross", (row) => currency.format(row.gross_salary)],
-          ["Deductions", (row) => currency.format(row.deductions)],
-          ["Net", (row) => <span className="font-bold text-ink">{currency.format(row.net_salary)}</span>],
+          ["Employee", (row) => row.employee_name ?? row.employee_code],
+          ["Period", (row) => `${row.salary_month}/${row.salary_year}`],
+          ["Gross", (row) => `₹${row.gross_salary}`],
+          ["Net", (row) => `₹${row.net_salary}`],
           ["Status", (row) => <Badge value={row.status} />],
           [
             "Action",
             (row) => (
               <div className="flex gap-2">
                 <a className="btn btn-soft" href={`/api/salary-slips/${row.id}`} target="_blank" rel="noreferrer" title="Download Slip"><Download size={17} /></a>
+                {row.payment_proof && (
+                  <a className="btn btn-soft" href={row.payment_proof} download={`payment_proof_${row.employee_name}_${row.salary_month}.jpg`} title="Payment Proof">
+                    <ImageIcon size={17} /><span className="hidden sm:inline">Proof</span>
+                  </a>
+                )}
                 {isAdmin && (
                   <>
-                    <button className="btn btn-soft" onClick={() => handleEditClick(row)}>Edit</button>
-                    {row.status !== "Done" ? <button className="btn btn-soft" onClick={() => markDone(row.id)}>Done</button> : null}
+                    {row.payment_proof && <button type="button" className="btn btn-soft" onClick={() => deleteProof(row.id)} title="Delete payment screenshot"><X size={16} /></button>}
+                    <button type="button" className="btn btn-soft" onClick={() => handleEditClick(row)}>Edit</button>
+                    {row.status !== "Done"
+                      ? <button type="button" className="btn btn-primary" onClick={() => setPayModalOpen({ id: row.id, employee: row.employee_name || "Employee" })}>Mark paid</button>
+                      : <button type="button" className="btn btn-soft" onClick={() => setPaid(row.id, false)}>Mark unpaid</button>}
                   </>
                 )}
               </div>
@@ -1440,6 +1677,22 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
           ],
         ]}
       />
+
+      {payModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+          <form onSubmit={markPaidSubmit} className="card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">Mark as Paid</h3>
+            <p className="text-xs text-slate-500">Upload a payment screenshot for {payModalOpen.employee}.</p>
+            <Field label="Payment Screenshot (Optional)">
+              <input type="file" className="input file:mr-4 file:rounded-full file:border-0 file:bg-primary-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-primary-700 hover:file:bg-primary-100" accept="image/*" onChange={(e) => setPaymentProofFile(e.target.files?.[0] || null)} />
+            </Field>
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" className="btn btn-soft" onClick={() => setPayModalOpen(null)}>Cancel</button>
+              <button type="submit" className="btn btn-primary" disabled={payBusy}>{payBusy ? "Saving..." : "Confirm Payment"}</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {editingSalary && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">

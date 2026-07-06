@@ -3,3 +3,8 @@ dist/
 .wrangler/
 .DS_Store
 *.local
+node_modules/
+dist/
+.wrangler/
+.claude/
+*.log

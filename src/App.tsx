@@ -22,6 +22,8 @@ import {
   Coffee,
   X,
   Image as ImageIcon,
+  ClipboardList,
+  Trash2,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
@@ -31,6 +33,7 @@ type View =
   | "employees"
   | "departments"
   | "attendance"
+  | "tasks"
   | "leave"
   | "payroll"
   | "holidays"
@@ -72,6 +75,18 @@ type Designation = { id: number; name: string };
 type LeaveType = { id: number; name: string; is_paid: number; monthly_balance: number; yearly_balance: number };
 type Holiday = { id: number; name: string; holiday_date: string; description?: string };
 type AuditLog = { id: number; action: string; entity_type: string; entity_id?: number; details?: string; actor_email?: string; created_at: string };
+type Task = {
+  id: number;
+  employee_id: number;
+  employee_name?: string;
+  employee_code?: string;
+  task_date: string;
+  title: string;
+  company?: string | null;
+  priority: "High" | "Medium" | "Low";
+  status: "Pending" | "In Progress" | "Completed";
+  notes?: string | null;
+};
 type CompanySettings = {
   company_name: string;
   company_logo_url?: string;
@@ -379,6 +394,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
     { id: "employees" as View, label: "Employees", icon: UsersRound, show: isAdmin },
     { id: "departments" as View, label: "Departments", icon: Building2, show: isAdmin },
     { id: "attendance" as View, label: "Attendance", icon: CalendarCheck, show: true },
+    { id: "tasks" as View, label: "Tasks", icon: ClipboardList, show: true },
     { id: "leave" as View, label: "Leave", icon: FileText, show: true },
     { id: "payroll" as View, label: "Payroll", icon: Banknote, show: true },
     { id: "holidays" as View, label: "Holidays", icon: Sparkles, show: true },
@@ -459,6 +475,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           {view === "employees" && isAdmin ? <Employees /> : null}
           {view === "departments" && isAdmin ? <Departments /> : null}
           {view === "attendance" ? <Attendance isAdmin={isAdmin} /> : null}
+          {view === "tasks" ? <Tasks isAdmin={isAdmin} /> : null}
           {view === "leave" ? <Leave isAdmin={isAdmin} /> : null}
           {view === "payroll" ? <Payroll isAdmin={isAdmin} /> : null}
           {view === "holidays" ? <Holidays isAdmin={isAdmin} /> : null}
@@ -619,6 +636,7 @@ function EmployeeDashboard() {
   }
 
   if (!summary) return <EmptyState title={message || "Loading dashboard..."} />;
+  const isSunday = new Date().getDay() === 0;
   const hasCheckedIn = Boolean(summary.todayAttendance?.check_in);
   const hasCheckedOut = Boolean(summary.todayAttendance?.check_out);
   const onBreak = Boolean(summary.todayAttendance?.break_start && !summary.todayAttendance?.break_end);
@@ -676,7 +694,9 @@ function EmployeeDashboard() {
                 </div>
               )}
               <div className="flex gap-2">
-                {!hasCheckedIn ? (
+                {isSunday ? (
+                   <span className="badge bg-slate-100 text-slate-600 px-4 py-2 text-sm border border-slate-200">Weekend (No check-in)</span>
+                ) : !hasCheckedIn ? (
                    <button className="btn btn-primary px-8" onClick={handleCheckInClick}><Clock3 size={18} /> Check in</button>
                 ) : !hasCheckedOut ? (
                    <>
@@ -1355,6 +1375,162 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
+function taskStatusTone(status: string) {
+  if (status === "Completed") return "bg-emerald-50 text-emerald-700";
+  if (status === "In Progress") return "bg-amber-50 text-amber-700";
+  return "bg-slate-100 text-slate-600";
+}
+
+const priorityMeta: Record<"High" | "Medium" | "Low", { dot: string; ring: string; label: string }> = {
+  High: { dot: "bg-rose-500", ring: "border-l-rose-400", label: "text-rose-700" },
+  Medium: { dot: "bg-amber-500", ring: "border-l-amber-400", label: "text-amber-700" },
+  Low: { dot: "bg-emerald-500", ring: "border-l-emerald-400", label: "text-emerald-700" },
+};
+
+function Tasks({ isAdmin }: { isAdmin: boolean }) {
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [date, setDate] = useState(today);
+  const [employeeId, setEmployeeId] = useState("");
+  const [message, setMessage] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [form, setForm] = useState<{ title: string; company: string; priority: "High" | "Medium" | "Low" }>({ title: "", company: "", priority: "Medium" });
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    const params = new URLSearchParams({ date });
+    if (isAdmin && employeeId) params.set("employeeId", employeeId);
+    const data = await api<{ tasks: Task[]; employees?: Employee[] }>(`/tasks?${params.toString()}`);
+    setTasks(data.tasks);
+    if (data.employees) setEmployees(data.employees);
+  }
+
+  useEffect(() => {
+    load().catch((err) => setMessage(err instanceof Error ? err.message : "Failed to load tasks"));
+  }, []);
+
+  async function addTask(e: FormEvent) {
+    e.preventDefault();
+    if (!form.title.trim()) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await api("/tasks", { method: "POST", body: JSON.stringify({ ...form, task_date: date }) });
+      setAddOpen(false);
+      setForm({ title: "", company: "", priority: "Medium" });
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to add task");
+    }
+    setBusy(false);
+  }
+
+  async function patchTask(id: number, body: Record<string, unknown>) {
+    await api(`/tasks/${id}`, { method: "PUT", body: JSON.stringify(body) });
+    await load();
+  }
+
+  async function removeTask(id: number) {
+    if (!window.confirm("Delete this task permanently?")) return;
+    await api(`/tasks/${id}`, { method: "DELETE" });
+    await load();
+  }
+
+  const completed = tasks.filter((t) => t.status === "Completed").length;
+  const inProgress = tasks.filter((t) => t.status === "In Progress").length;
+  const pending = tasks.length - completed - inProgress;
+  const groups = (["High", "Medium", "Low"] as const).map((p) => [p, tasks.filter((t) => t.priority === p)] as const);
+
+  return (
+    <section className="space-y-5">
+      <PageTitle
+        title="Daily Tasks"
+        description={isAdmin ? "Review what each employee planned and completed for the day, by priority." : "Plan your day per brand, set priority, and mark what's done."}
+        action={!isAdmin ? <button type="button" className="btn btn-primary" onClick={() => setAddOpen(true)}><Plus size={17} />Add task</button> : undefined}
+      />
+      {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+
+      <div className={classNames("card grid gap-3 p-4", isAdmin ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
+        {isAdmin ? (
+          <Field label="Employee">
+            <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+              <option value="">All employees</option>
+              {employees.map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
+            </select>
+          </Field>
+        ) : null}
+        <Field label="Day"><input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+        <button type="button" className="btn btn-primary self-end" onClick={load}><RefreshCcw size={17} />Show</button>
+      </div>
+
+      {/* End-of-day summary */}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <div className="card p-4"><p className="text-sm font-medium text-slate-500">Total tasks</p><p className="mt-1 text-2xl font-bold text-ink">{tasks.length}</p></div>
+        <div className="card p-4"><p className="text-sm font-medium text-slate-500">Completed</p><p className="mt-1 text-2xl font-bold text-emerald-600">{completed}</p></div>
+        <div className="card p-4"><p className="text-sm font-medium text-slate-500">Pending / In progress</p><p className="mt-1 text-2xl font-bold text-amber-600">{pending + inProgress}</p></div>
+      </div>
+
+      {tasks.length === 0 ? (
+        <EmptyState title={isAdmin ? "No tasks for this selection." : "No tasks yet for this day — add your first one."} />
+      ) : (
+        groups.map(([priority, list]) => list.length ? (
+          <div key={priority} className="card overflow-hidden">
+            <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+              <span className={classNames("h-2.5 w-2.5 rounded-full", priorityMeta[priority].dot)} />
+              <h3 className={classNames("font-bold", priorityMeta[priority].label)}>{priority} priority</h3>
+              <span className="text-xs text-slate-400">· {list.length}</span>
+            </div>
+            <div className="divide-y divide-line">
+              {list.map((task) => (
+                <div key={task.id} className={classNames("flex flex-col gap-3 border-l-4 px-4 py-3 sm:flex-row sm:items-center sm:justify-between", priorityMeta[task.priority].ring)}>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className={classNames("font-semibold text-ink", task.status === "Completed" && "line-through text-slate-400")}>{task.title}</p>
+                      {task.company ? <span className="badge bg-sky-50 text-sky-700">{task.company}</span> : null}
+                    </div>
+                    {isAdmin ? <p className="mt-0.5 text-xs text-slate-500">{task.employee_name}</p> : null}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select className="input h-9 w-auto py-1 text-xs" value={task.priority} onChange={(e) => patchTask(task.id, { priority: e.target.value })}>
+                      <option>High</option><option>Medium</option><option>Low</option>
+                    </select>
+                    <select className={classNames("input h-9 w-auto py-1 text-xs font-semibold", taskStatusTone(task.status))} value={task.status} onChange={(e) => patchTask(task.id, { status: e.target.value })}>
+                      <option>Pending</option><option>In Progress</option><option>Completed</option>
+                    </select>
+                    {isAdmin ? (
+                      <button type="button" className="btn btn-soft" title="Delete task (admin only)" onClick={() => removeTask(task.id)}><Trash2 size={16} /></button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null)
+      )}
+
+      {addOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+          <form onSubmit={addTask} className="card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">Add task for {date}</h3>
+            <p className="text-xs text-slate-500">Once added, only an admin can delete it — you can still update its status.</p>
+            <Field label="Task"><input autoFocus required className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Schedule Instagram reels" /></Field>
+            <Field label="Company / Brand"><input className="input" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} placeholder="Which brand is this for?" /></Field>
+            <Field label="Priority">
+              <select className="input" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as "High" | "Medium" | "Low" })}>
+                <option>High</option><option>Medium</option><option>Low</option>
+              </select>
+            </Field>
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" className="btn btn-soft" onClick={() => setAddOpen(false)}>Cancel</button>
+              <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Adding..." : "Add task"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Leave({ isAdmin }: { isAdmin: boolean }) {
   const [rows, setRows] = useState<LeaveRequest[]>([]);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
@@ -1471,7 +1647,7 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
   const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const [month, setMonth] = useState(lastMonth.getMonth() + 1); // Custom-view month
   const [year, setYear] = useState(lastMonth.getFullYear());
-  const [period, setPeriod] = useState("Last 6 Months");
+  const [period, setPeriod] = useState("Last Month");
   // Separate month/year for generating payroll (defaults to last completed month).
   const [genMonth, setGenMonth] = useState(lastMonth.getMonth() + 1);
   const [genYear, setGenYear] = useState(lastMonth.getFullYear());
@@ -1610,9 +1786,10 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
       <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
         <Field label="Show">
           <select className="input" value={period} onChange={(e) => setPeriod(e.target.value)}>
-            <option value="Last 6 Months">Last 6 Months</option>
-            <option value="Last 3 Months">Last 3 Months</option>
             <option value="Last Month">Last Month</option>
+            <option value="Last 3 Months">Last 3 Months</option>
+            <option value="Last 6 Months">Last 6 Months</option>
+            <option value="Last 12 Months">Last 12 Months</option>
             <option value="Custom">Specific Month</option>
           </select>
         </Field>

@@ -27,7 +27,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
 async function route(context: Context) {
   const url = new URL(context.request.url);
-  // params.path is an array of segments for [[path]] catch-all routes.
+  // [[path]] catch-all gives an array of segments — join with "/" (not comma) so /tasks/5, /payroll/5 etc. match.
   const rawPath = context.params.path;
   const path = "/" + (Array.isArray(rawPath) ? rawPath.join("/") : rawPath ? String(rawPath) : "");
   const method = context.request.method;
@@ -46,46 +46,44 @@ async function route(context: Context) {
   if (method === "GET" && path === "/attendance") return attendanceList(db, user, url);
   if (method === "POST" && path === "/attendance/check-in") return checkIn(db, user, await readBody(context.request));
   if (method === "POST" && path === "/attendance/check-out") return checkOut(db, user, await readBody(context.request));
-  if (method === "POST" && path === "/attendance/break-start") return takeBreak(db, user, await readBody(context.request));
+  if (method === "POST" && path === "/attendance/break-start") return takeBreak(db, user);
   if (method === "POST" && path === "/attendance/break-end") return endBreak(db, user);
   if (method === "GET" && path === "/leaves") return leaveList(db, user);
   if (method === "POST" && path === "/leaves") return applyLeave(db, user, await readBody(context.request));
-  if (method === "GET" && path === "/attendance-requests") return attendanceRequestList(db, user);
-  if (method === "POST" && path === "/attendance-requests") return createAttendanceRequest(db, user, await readBody(context.request));
-  if (method === "GET" && path === "/profile-requests") return profileRequestList(db, user);
-  if (method === "POST" && path === "/profile-requests") return createProfileRequest(db, user, await readBody(context.request));
   if (method === "GET" && path === "/payroll") return payrollList(db, user, url);
   if (method === "GET" && path.startsWith("/salary-slips/")) return salarySlip(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/holidays") return holidayList(db);
-  if (method === "GET" && path === "/settings") return json({ settings: await companySettings(db) });
-  if (method === "GET" && path === "/notifications") return notificationsList(db, user);
-  if (method === "POST" && path === "/notifications/read-all") return markNotificationsRead(db, user);
+  if (method === "GET" && path === "/tasks") return taskList(db, user, url);
+  if (method === "POST" && path === "/tasks") return createTask(db, user, await readBody(context.request));
+  if (method === "PUT" && path.match(/^\/tasks\/\d+$/)) return updateTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
 
-  if (user.role !== "Superadmin") return json({ error: "Superadmin access required" }, 403);
+  requireAdmin(user);
 
   if (method === "GET" && path === "/admin/summary") return adminSummary(db);
   if (method === "GET" && path === "/employees") return employeesList(db);
   if (method === "POST" && path === "/employees") return saveEmployee(db, user, await readBody(context.request));
   if (method === "PUT" && path.startsWith("/employees/")) return updateEmployee(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "POST" && path === "/departments") return createNamed(db, user, "departments", await readBody(context.request));
-  if (method === "PUT" && path.startsWith("/departments/")) return updateDepartment(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "POST" && path === "/designations") return createNamed(db, user, "designations", await readBody(context.request));
-  if (method === "PUT" && path.startsWith("/designations/")) return updateDesignation(db, user, Number(path.split("/").pop()), await readBody(context.request));
+  if (method === "PUT" && path.startsWith("/departments/")) return updateDepartment(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/departments/")) return deleteNamed(db, "departments", "department_id", Number(path.split("/").pop()));
   if (method === "DELETE" && path.startsWith("/designations/")) return deleteNamed(db, "designations", "designation_id", Number(path.split("/").pop()));
   if (method === "POST" && path === "/attendance/manual") return manualAttendance(db, user, await readBody(context.request));
+  if (method === "GET" && path === "/attendance.csv") return attendanceCsv(db, user, url);
   if (method === "POST" && path.match(/^\/leaves\/\d+\/decision$/)) return decideLeave(db, user, Number(path.split("/")[2]), await readBody(context.request));
-  if (method === "POST" && path.match(/^\/attendance-requests\/\d+\/decision$/)) return decideAttendanceRequest(db, user, Number(path.split("/")[2]), await readBody(context.request));
-  if (method === "POST" && path.match(/^\/profile-requests\/\d+\/decision$/)) return decideProfileRequest(db, user, Number(path.split("/")[2]), await readBody(context.request));
-  if (method === "POST" && path.match(/^\/employees\/\d+\/active$/)) return toggleEmployeeActive(db, user, Number(path.split("/")[2]), await readBody(context.request));
   if (method === "POST" && path === "/leave-types") return saveLeaveType(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/leave-types/")) return deleteLeaveType(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path === "/payroll/generate") return generatePayroll(db, user, await readBody(context.request));
   if (method === "PUT" && path.startsWith("/payroll/")) return updateSalary(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "POST" && path === "/holidays") return saveHoliday(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/holidays/")) return deleteHoliday(db, user, Number(path.split("/").pop()));
+  if (method === "GET" && path === "/settings") return json({ settings: await companySettings(db) });
   if (method === "PUT" && path === "/settings") return saveSettings(db, user, await readBody(context.request));
+  if (method === "DELETE" && path.match(/^\/tasks\/\d+$/)) return deleteTask(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/audit-logs") return auditLogs(db);
+  if (method === "GET" && path === "/reports/meta") return reportsMeta(db);
+  if (method === "GET" && path === "/reports/leaves.csv") return leaveCsv(db, url);
+  if (method === "GET" && path === "/reports/salaries.csv") return salaryCsv(db, url);
 
   return json({ error: "Route not found" }, 404);
 }
@@ -132,54 +130,10 @@ async function currentUser(context: Context): Promise<AppUser | null> {
 
 async function meta(db: D1Database) {
   const [departments, designations] = await Promise.all([
-    db.prepare("SELECT id, name, shift_min_hours, half_day_min_hours, late_mark_time FROM departments ORDER BY name").all(),
+    db.prepare("SELECT id, name FROM departments ORDER BY name").all(),
     db.prepare("SELECT id, name FROM designations ORDER BY name").all(),
   ]);
   return { departments: departments.results, designations: designations.results };
-}
-
-// Resolve the shift rules that apply to an employee: department overrides, else company defaults.
-async function effectiveShift(db: D1Database, employee: Record<string, unknown>) {
-  const settings = await companySettings(db);
-  let dept: Record<string, unknown> | null = null;
-  if (employee.department_id) {
-    dept = await db.prepare("SELECT shift_min_hours, half_day_min_hours, late_mark_time FROM departments WHERE id = ?").bind(employee.department_id).first();
-  }
-  return {
-    shift_min_hours: Number(dept?.shift_min_hours ?? settings.shift_min_hours),
-    half_day_min_hours: Number(dept?.half_day_min_hours ?? settings.half_day_min_hours),
-    late_mark_time: String(dept?.late_mark_time ?? settings.late_mark_time),
-  };
-}
-
-async function updateDepartment(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
-  const existing = await db.prepare("SELECT id FROM departments WHERE id = ?").bind(id).first();
-  if (!existing) return json({ error: "Department not found" }, 404);
-  const name = text(body.name);
-  if (!name) return json({ error: "Name is required" }, 400);
-  await db.prepare(
-    "UPDATE departments SET name = ?, shift_min_hours = ?, half_day_min_hours = ?, late_mark_time = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-  ).bind(
-    name,
-    body.shift_min_hours === "" || body.shift_min_hours == null ? null : number(body.shift_min_hours),
-    body.half_day_min_hours === "" || body.half_day_min_hours == null ? null : number(body.half_day_min_hours),
-    text(body.late_mark_time) || null,
-    id,
-  ).run();
-  await audit(db, actor, "Department updated", "departments", id, name);
-  return json({ ok: true });
-}
-
-async function updateDesignation(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
-  const existing = await db.prepare("SELECT id FROM designations WHERE id = ?").bind(id).first();
-  if (!existing) return json({ error: "Designation not found" }, 404);
-  const name = text(body.name);
-  if (!name) return json({ error: "Name is required" }, 400);
-  await db.prepare(
-    "UPDATE designations SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-  ).bind(name, id).run();
-  await audit(db, actor, "Designation updated", "designations", id, name);
-  return json({ ok: true });
 }
 
 async function adminSummary(db: D1Database) {
@@ -221,22 +175,22 @@ async function adminSummary(db: D1Database) {
 async function employeeSummary(db: D1Database, user: AppUser) {
   const employee = await employeeForUser(db, user);
   const today = dateOnly();
-  const month = Number(today.slice(5, 7));
-  const year = Number(today.slice(0, 4));
+  const now = new Date();
+  const month = now.getUTCMonth() + 1;
+  const year = now.getUTCFullYear();
   const monthStart = `${year}-${pad(month)}-01`;
   const monthEnd = `${year}-${pad(month)}-31`;
-  const horizon = new Date(Date.now() + 15 * 86400000).toISOString().slice(0, 10);
-  const [todayAttendance, attendanceRows, upcomingLeaves, upcomingHolidays] = await Promise.all([
+  const [todayAttendance, attendanceRows, recentLeaves, currentSalary, latestSalary, paidLeave] = await Promise.all([
     db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date = ?").bind(employee.id, today).first(),
     db.prepare("SELECT status, COUNT(*) AS count FROM attendance WHERE employee_id = ? AND attendance_date BETWEEN ? AND ? GROUP BY status").bind(employee.id, monthStart, monthEnd).all(),
-    // Only approved leave that hasn't finished yet.
     db.prepare(
       `SELECT lr.*, lt.name AS leave_type_name, lt.is_paid
        FROM leave_requests lr JOIN leave_types lt ON lt.id = lr.leave_type_id
-       WHERE lr.employee_id = ? AND lr.status = 'Approved' AND lr.end_date >= ? ORDER BY lr.start_date ASC LIMIT 5`,
-    ).bind(employee.id, today).all(),
-    // Company holidays within the next 15 days.
-    db.prepare("SELECT id, name, holiday_date, description FROM holidays WHERE holiday_date BETWEEN ? AND ? ORDER BY holiday_date").bind(today, horizon).all(),
+       WHERE lr.employee_id = ? ORDER BY lr.created_at DESC LIMIT 5`,
+    ).bind(employee.id).all(),
+    db.prepare("SELECT * FROM salaries WHERE employee_id = ? AND salary_month = ? AND salary_year = ?").bind(employee.id, month, year).first(),
+    db.prepare("SELECT * FROM salaries WHERE employee_id = ? ORDER BY salary_year DESC, salary_month DESC LIMIT 1").bind(employee.id).first(),
+    scalar(db, "SELECT COALESCE(SUM(monthly_balance), 0) FROM leave_types WHERE is_paid = 1"),
   ]);
   const monthAttendance = { present: 0, late: 0, halfDay: 0, absent: 0 };
   for (const row of attendanceRows.results as Array<{ status: string; count: number }>) {
@@ -245,8 +199,7 @@ async function employeeSummary(db: D1Database, user: AppUser) {
     if (row.status === "Half Day") monthAttendance.halfDay = row.count;
     if (row.status === "Absent") monthAttendance.absent = row.count;
   }
-  const shiftConfig = await effectiveShift(db, employee);
-  return json({ summary: { todayAttendance, monthAttendance, upcomingLeaves: upcomingLeaves.results, upcomingHolidays: upcomingHolidays.results, shiftConfig } });
+  return json({ summary: { todayAttendance, monthAttendance, leaveBalance: paidLeave, recentLeaves: recentLeaves.results, currentSalary, latestSalary } });
 }
 
 async function employeesList(db: D1Database) {
@@ -264,10 +217,10 @@ async function saveEmployee(db: D1Database, actor: AppUser, body: Record<string,
   const userId = userResult.meta.last_row_id;
   const result = await db.prepare(
     `INSERT INTO employees (user_id, employee_code, full_name, email, phone, department_id, designation_id, joining_date, monthly_salary,
-      employment_status, address, bank_name, account_number, ifsc_code, aadhaar_doc, pan_doc)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      employment_status, address, bank_name, account_number, ifsc_code)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(userId, text(body.employee_code), text(body.full_name), email, text(body.phone), numOrNull(body.department_id), numOrNull(body.designation_id), text(body.joining_date), number(body.monthly_salary), text(body.employment_status) || "Active", text(body.address), text(body.bank_name), text(body.account_number), text(body.ifsc_code), docOrNull(body.aadhaar_doc), docOrNull(body.pan_doc))
+    .bind(userId, text(body.employee_code), text(body.full_name), email, text(body.phone), numOrNull(body.department_id), numOrNull(body.designation_id), text(body.joining_date), number(body.monthly_salary), text(body.employment_status) || "Active", text(body.address), text(body.bank_name), text(body.account_number), text(body.ifsc_code))
     .run();
   await audit(db, actor, "Employee added", "employees", result.meta.last_row_id, text(body.full_name));
   return json({ ok: true });
@@ -278,16 +231,12 @@ async function updateEmployee(db: D1Database, actor: AppUser, id: number, body: 
   const existing = await db.prepare("SELECT user_id FROM employees WHERE id = ?").bind(id).first<{ user_id: number }>();
   if (!existing) return json({ error: "Employee not found" }, 404);
   const statusVal = text(body.employment_status) || "Active";
-  // Keep existing document if the edit form didn't send a new one.
-  const current = await db.prepare("SELECT aadhaar_doc, pan_doc FROM employees WHERE id = ?").bind(id).first<{ aadhaar_doc: string | null; pan_doc: string | null }>();
-  const aadhaar = body.aadhaar_doc !== undefined ? docOrNull(body.aadhaar_doc) : current?.aadhaar_doc ?? null;
-  const pan = body.pan_doc !== undefined ? docOrNull(body.pan_doc) : current?.pan_doc ?? null;
   await db.prepare(
     `UPDATE employees SET employee_code = ?, full_name = ?, email = ?, phone = ?, department_id = ?, designation_id = ?, joining_date = ?,
-      monthly_salary = ?, employment_status = ?, address = ?, bank_name = ?, account_number = ?, ifsc_code = ?, aadhaar_doc = ?, pan_doc = ?, updated_at = CURRENT_TIMESTAMP
+      monthly_salary = ?, employment_status = ?, address = ?, bank_name = ?, account_number = ?, ifsc_code = ?, updated_at = CURRENT_TIMESTAMP
      WHERE id = ?`,
   )
-    .bind(text(body.employee_code), text(body.full_name), text(body.email).toLowerCase(), text(body.phone), numOrNull(body.department_id), numOrNull(body.designation_id), text(body.joining_date), number(body.monthly_salary), statusVal, text(body.address), text(body.bank_name), text(body.account_number), text(body.ifsc_code), aadhaar, pan, id)
+    .bind(text(body.employee_code), text(body.full_name), text(body.email).toLowerCase(), text(body.phone), numOrNull(body.department_id), numOrNull(body.designation_id), text(body.joining_date), number(body.monthly_salary), statusVal, text(body.address), text(body.bank_name), text(body.account_number), text(body.ifsc_code), id)
     .run();
   const isActive = statusVal === "Active" ? 1 : 0;
   await db.prepare("UPDATE users SET email = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(text(body.email).toLowerCase(), isActive, existing.user_id).run();
@@ -304,6 +253,25 @@ async function createNamed(db: D1Database, actor: AppUser, table: "departments" 
   const result = await db.prepare(`INSERT INTO ${table} (name) VALUES (?)`).bind(name).run();
   await audit(db, actor, `${table.slice(0, -1)} added`, table, result.meta.last_row_id, name);
   return json({ ok: true });
+}
+
+async function updateDepartment(db: D1Database, user: AppUser, id: number, body: Record<string, unknown>) {
+  requireAdmin(user);
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) throw new Error("Department name is required.");
+  const shift_min = numOrNull(body.shift_min_hours);
+  const half_day = numOrNull(body.half_day_min_hours);
+  const late_time = typeof body.late_mark_time === "string" && body.late_mark_time ? body.late_mark_time : null;
+  
+  try {
+    await db.prepare("UPDATE departments SET name = ?, shift_min_hours = ?, half_day_min_hours = ?, late_mark_time = ? WHERE id = ?")
+      .bind(name, shift_min, half_day, late_time, id)
+      .run();
+    return json({ ok: true });
+  } catch (err: any) {
+    if (err.message.includes("UNIQUE")) throw new Error("A department with this name already exists.");
+    throw err;
+  }
 }
 
 async function deleteNamed(db: D1Database, table: "departments" | "designations", field: "department_id" | "designation_id", id: number) {
@@ -338,12 +306,9 @@ async function attendanceRows(db: D1Database, user: AppUser, url: URL) {
     params.push(departmentId);
   }
   const result = await db.prepare(
-    `SELECT a.*, e.full_name AS employee_name, e.employee_code, d.name AS department_name,
-       COALESCE(d.shift_min_hours, cs.shift_min_hours) AS shift_min_hours,
-       COALESCE(d.half_day_min_hours, cs.half_day_min_hours) AS half_day_min_hours
+    `SELECT a.*, e.full_name AS employee_name, e.employee_code, d.name AS department_name
      FROM attendance a JOIN employees e ON e.id = a.employee_id
      LEFT JOIN departments d ON d.id = e.department_id
-     LEFT JOIN company_settings cs ON cs.id = 1
      ${where} ORDER BY a.attendance_date DESC, e.full_name`,
   ).bind(...params).all();
   return result.results;
@@ -351,9 +316,9 @@ async function attendanceRows(db: D1Database, user: AppUser, url: URL) {
 
 async function checkIn(db: D1Database, user: AppUser, body: Record<string, unknown>) {
   const employee = await employeeForUser(db, user);
-  const shift = await effectiveShift(db, employee);
+  const settings = await companySettings(db);
   const time = timeOnly();
-  const status = time.slice(0, 5) > shift.late_mark_time ? "Late" : "Present";
+  const status = time > settings.late_mark_time ? "Late" : "Present";
   const reason = text(body.late_checkin_reason) || null;
   const result = await db.prepare("INSERT OR IGNORE INTO attendance (employee_id, attendance_date, check_in, status, late_checkin_reason) VALUES (?, ?, ?, ?, ?)")
     .bind(employee.id, dateOnly(), time, status, reason).run();
@@ -366,28 +331,26 @@ async function checkOut(db: D1Database, user: AppUser, body: Record<string, unkn
   const current = await db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date = ?").bind(employee.id, dateOnly()).first<Record<string, string>>();
   if (!current?.check_in) return json({ error: "Check in first" }, 400);
   if (current.check_out) return json({ error: "You have already checked out today" }, 400);
-  const shift = await effectiveShift(db, employee);
+  const settings = await companySettings(db);
   const checkOutTime = timeOnly();
   let hours = hoursBetween(current.check_in, checkOutTime);
   if (current.break_start && current.break_end) {
     hours = Math.max(0, hours - hoursBetween(current.break_start, current.break_end));
   }
-  const status = hours < shift.half_day_min_hours ? "Half Day" : current.status;
+  const status = hours < settings.half_day_min_hours ? "Half Day" : current.status;
   const reason = text(body.early_checkout_reason) || null;
   await db.prepare("UPDATE attendance SET check_out = ?, total_hours = ?, status = ?, early_checkout_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(checkOutTime, hours, status, reason, current.id).run();
   return json({ ok: true });
 }
 
-async function takeBreak(db: D1Database, user: AppUser, body: Record<string, unknown>) {
+async function takeBreak(db: D1Database, user: AppUser) {
   const employee = await employeeForUser(db, user);
   const current = await db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date = ?").bind(employee.id, dateOnly()).first<Record<string, string>>();
   if (!current?.check_in) return json({ error: "Check in first" }, 400);
   if (current.check_out) return json({ error: "You have already checked out today" }, 400);
   if (current.break_start) return json({ error: "You are already on a break or took one" }, 400);
-  const reason = text(body.break_reason);
-  if (!reason) return json({ error: "Break reason is required" }, 400);
-  await db.prepare("UPDATE attendance SET break_start = ?, break_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(timeOnly(), reason, current.id).run();
+  await db.prepare("UPDATE attendance SET break_start = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(timeOnly(), current.id).run();
   return json({ ok: true });
 }
 
@@ -422,6 +385,13 @@ async function manualAttendance(db: D1Database, actor: AppUser, body: Record<str
   return json({ ok: true });
 }
 
+async function attendanceCsv(db: D1Database, user: AppUser, url: URL) {
+  const rows = await attendanceRows(db, user, url) as Array<Record<string, unknown>>;
+  const header = ["Employee", "Employee ID", "Department", "Date", "Check in", "Check out", "Hours", "Status"];
+  const lines = rows.map((row) => [row.employee_name, row.employee_code, row.department_name, row.attendance_date, row.check_in, row.check_out, row.total_hours, row.status].map(csvCell).join(","));
+  return new Response([header.join(","), ...lines].join("\n"), { headers: { "Content-Type": "text/csv", "Content-Disposition": "attachment; filename=attendance.csv" } });
+}
+
 async function leaveList(db: D1Database, user: AppUser) {
   const leaveTypes = (await db.prepare("SELECT * FROM leave_types ORDER BY name").all()).results;
   const employeeFilter = user.role === "Employee" ? "WHERE lr.employee_id = ?" : "";
@@ -436,178 +406,22 @@ async function leaveList(db: D1Database, user: AppUser) {
 
 async function applyLeave(db: D1Database, user: AppUser, body: Record<string, unknown>) {
   const employee = await employeeForUser(db, user);
-  const start = text(body.start_date);
-  const end = text(body.end_date);
-  if (!start || !end) return json({ error: "Start and end dates are required" }, 400);
-  const range = datesInRange(start, end);
-  if (!range.length) return json({ error: "End date must be on or after the start date" }, 400);
-  const leaveType = await db.prepare("SELECT id, name FROM leave_types WHERE id = ?").bind(number(body.leave_type_id)).first<{ id: number; name: string }>();
-  if (!leaveType) return json({ error: "Choose a valid leave type" }, 400);
-  // Per-day half/full breakdown; default every day to full.
-  const parts = (body.day_breakdown && typeof body.day_breakdown === "object" ? body.day_breakdown : {}) as Record<string, unknown>;
-  const breakdown: Record<string, string> = {};
-  let days = 0;
-  for (const date of range) {
-    const part = String(parts[date] ?? "full") === "half" ? "half" : "full";
-    breakdown[date] = part;
-    days += part === "half" ? 0.5 : 1;
-  }
-  if (days < 0.5) return json({ error: "Select at least half a day" }, 400);
-  const result = await db.prepare("INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, days, reason, day_breakdown) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(employee.id, leaveType.id, start, end, days, text(body.reason), JSON.stringify(breakdown)).run();
-  await notify(db, user.id, "Leave applied", `Your ${leaveType.name} request for ${start} to ${end} (${days} day${days === 1 ? "" : "s"}) was submitted.`);
-  await notifyAdmins(db, "New leave request", `${employee.full_name} applied for ${leaveType.name} (${start} to ${end}, ${days} day${days === 1 ? "" : "s"}).`);
+  const days = inclusiveDays(text(body.start_date), text(body.end_date));
+  if (days < 1) return json({ error: "End date must be after start date" }, 400);
+  const result = await db.prepare("INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, days, reason) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(employee.id, number(body.leave_type_id), text(body.start_date), text(body.end_date), days, text(body.reason)).run();
+  await notify(db, user.id, "Leave applied", "Your leave request was submitted.");
   return json({ ok: true, id: result.meta.last_row_id });
 }
 
 async function decideLeave(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
   const status = text(body.status);
   if (!["Approved", "Rejected"].includes(status)) return json({ error: "Invalid leave status" }, 400);
-  const target = await db.prepare(
-    "SELECT e.user_id, lr.start_date, lr.end_date FROM leave_requests lr JOIN employees e ON e.id = lr.employee_id WHERE lr.id = ?",
-  ).bind(id).first<{ user_id: number; start_date: string; end_date: string }>();
-  if (!target) return json({ error: "Leave request not found" }, 404);
   await db.prepare("UPDATE leave_requests SET status = ?, admin_note = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(status, text(body.admin_note), actor.id, id).run();
-  await notify(db, target.user_id, `Leave ${status.toLowerCase()}`, `Your leave request for ${target.start_date} to ${target.end_date} was ${status.toLowerCase()}.`);
+  const target = await db.prepare("SELECT e.user_id FROM leave_requests lr JOIN employees e ON e.id = lr.employee_id WHERE lr.id = ?").bind(id).first<{ user_id: number }>();
+  if (target) await notify(db, target.user_id, `Leave ${status.toLowerCase()}`, `Your leave request was ${status.toLowerCase()}.`);
   await audit(db, actor, `Leave ${status.toLowerCase()}`, "leave_requests", id, text(body.admin_note));
-  return json({ ok: true });
-}
-
-// ---- Attendance change / regularisation requests ----
-
-async function attendanceRequestList(db: D1Database, user: AppUser) {
-  const where = user.role === "Employee" ? "WHERE ar.employee_id = ?" : "";
-  const bind = user.role === "Employee" ? [user.employeeId] : [];
-  const rows = await db.prepare(
-    `SELECT ar.*, e.full_name AS employee_name, e.employee_code
-     FROM attendance_requests ar JOIN employees e ON e.id = ar.employee_id
-     ${where} ORDER BY (ar.status = 'Pending') DESC, ar.created_at DESC`,
-  ).bind(...bind).all();
-  return json({ requests: rows.results });
-}
-
-async function createAttendanceRequest(db: D1Database, user: AppUser, body: Record<string, unknown>) {
-  const employee = await employeeForUser(db, user);
-  const date = text(body.attendance_date);
-  if (!date) return json({ error: "Attendance date is required" }, 400);
-  const checkIn = text(body.requested_check_in) || null;
-  const checkOut = text(body.requested_check_out) || null;
-  if (!checkIn && !checkOut) return json({ error: "Provide a requested check-in or check-out time" }, 400);
-  const result = await db.prepare(
-    "INSERT INTO attendance_requests (employee_id, attendance_date, requested_check_in, requested_check_out, reason) VALUES (?, ?, ?, ?, ?)",
-  ).bind(employee.id, date, checkIn, checkOut, text(body.reason)).run();
-  await notify(db, user.id, "Attendance request submitted", `Your attendance change for ${date} is pending approval.`);
-  await notifyAdmins(db, "New attendance request", `${employee.full_name} requested an attendance change for ${date}.`);
-  return json({ ok: true, id: result.meta.last_row_id });
-}
-
-async function decideAttendanceRequest(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
-  const status = text(body.status);
-  if (!["Approved", "Rejected"].includes(status)) return json({ error: "Invalid status" }, 400);
-  const req = await db.prepare(
-    "SELECT ar.*, e.user_id FROM attendance_requests ar JOIN employees e ON e.id = ar.employee_id WHERE ar.id = ?",
-  ).bind(id).first<Record<string, unknown>>();
-  if (!req) return json({ error: "Request not found" }, 404);
-  if (req.status !== "Pending") return json({ error: "This request was already decided" }, 400);
-
-  if (status === "Approved") {
-    // Apply the requested times onto the attendance record for that day.
-    const employeeId = Number(req.employee_id);
-    const date = String(req.attendance_date);
-    const existing = await db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date = ?").bind(employeeId, date).first<Record<string, string>>();
-    const checkIn = (req.requested_check_in as string) || existing?.check_in || "";
-    const checkOut = (req.requested_check_out as string) || existing?.check_out || "";
-    const breakStart = existing?.break_start || null;
-    const breakEnd = existing?.break_end || null;
-    let hours = checkIn && checkOut ? hoursBetween(checkIn, checkOut) : Number(existing?.total_hours ?? 0);
-    if (breakStart && breakEnd) hours = Math.max(0, hours - hoursBetween(breakStart, breakEnd));
-    const employeeRow = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(employeeId).first<Record<string, unknown>>();
-    const shift = employeeRow ? await effectiveShift(db, employeeRow) : { half_day_min_hours: 4 };
-    const attStatus = checkIn && checkOut ? (hours < shift.half_day_min_hours ? "Half Day" : "Present") : (existing?.status || "Present");
-    await db.prepare(
-      `INSERT INTO attendance (employee_id, attendance_date, check_in, check_out, break_start, break_end, total_hours, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(employee_id, attendance_date) DO UPDATE SET check_in = excluded.check_in, check_out = excluded.check_out,
-         total_hours = excluded.total_hours, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
-    ).bind(employeeId, date, checkIn || null, checkOut || null, breakStart, breakEnd, hours, attStatus).run();
-  }
-
-  await db.prepare("UPDATE attendance_requests SET status = ?, admin_note = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?")
-    .bind(status, text(body.admin_note), actor.id, id).run();
-  await notify(db, Number(req.user_id), `Attendance request ${status.toLowerCase()}`, `Your attendance change for ${req.attendance_date} was ${status.toLowerCase()}.`);
-  await audit(db, actor, `Attendance request ${status.toLowerCase()}`, "attendance_requests", id, String(req.attendance_date));
-  return json({ ok: true });
-}
-
-// ---- Profile change requests ----
-
-const editableProfileFields = ["phone", "address", "bank_name", "account_number", "ifsc_code"] as const;
-
-async function profileRequestList(db: D1Database, user: AppUser) {
-  const where = user.role === "Employee" ? "WHERE pr.employee_id = ?" : "";
-  const bind = user.role === "Employee" ? [user.employeeId] : [];
-  const rows = await db.prepare(
-    `SELECT pr.*, e.full_name AS employee_name, e.employee_code
-     FROM profile_requests pr JOIN employees e ON e.id = pr.employee_id
-     ${where} ORDER BY (pr.status = 'Pending') DESC, pr.created_at DESC`,
-  ).bind(...bind).all();
-  return json({ requests: rows.results });
-}
-
-async function createProfileRequest(db: D1Database, user: AppUser, body: Record<string, unknown>) {
-  const employee = await employeeForUser(db, user);
-  const payload: Record<string, string> = {};
-  for (const field of editableProfileFields) {
-    if (body[field] !== undefined) payload[field] = text(body[field]);
-  }
-  if (!Object.keys(payload).length) return json({ error: "Nothing to update" }, 400);
-  const result = await db.prepare("INSERT INTO profile_requests (employee_id, payload) VALUES (?, ?)")
-    .bind(employee.id, JSON.stringify(payload)).run();
-  await notify(db, user.id, "Profile update submitted", "Your profile changes are pending approval.");
-  await notifyAdmins(db, "New profile update request", `${employee.full_name} requested profile changes.`);
-  return json({ ok: true, id: result.meta.last_row_id });
-}
-
-async function decideProfileRequest(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
-  const status = text(body.status);
-  if (!["Approved", "Rejected"].includes(status)) return json({ error: "Invalid status" }, 400);
-  const req = await db.prepare(
-    "SELECT pr.*, e.user_id FROM profile_requests pr JOIN employees e ON e.id = pr.employee_id WHERE pr.id = ?",
-  ).bind(id).first<Record<string, unknown>>();
-  if (!req) return json({ error: "Request not found" }, 404);
-  if (req.status !== "Pending") return json({ error: "This request was already decided" }, 400);
-
-  if (status === "Approved") {
-    const payload = JSON.parse(String(req.payload)) as Record<string, string>;
-    const sets: string[] = [];
-    const values: unknown[] = [];
-    for (const field of editableProfileFields) {
-      if (payload[field] !== undefined) {
-        sets.push(`${field} = ?`);
-        values.push(payload[field]);
-      }
-    }
-    if (sets.length) {
-      values.push(Number(req.employee_id));
-      await db.prepare(`UPDATE employees SET ${sets.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(...values).run();
-    }
-  }
-
-  await db.prepare("UPDATE profile_requests SET status = ?, admin_note = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?")
-    .bind(status, text(body.admin_note), actor.id, id).run();
-  await notify(db, Number(req.user_id), `Profile update ${status.toLowerCase()}`, `Your profile changes were ${status.toLowerCase()}.`);
-  await audit(db, actor, `Profile update ${status.toLowerCase()}`, "profile_requests", id, "");
-  return json({ ok: true });
-}
-
-async function toggleEmployeeActive(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
-  const employee = await db.prepare("SELECT user_id, full_name FROM employees WHERE id = ?").bind(id).first<{ user_id: number; full_name: string }>();
-  if (!employee) return json({ error: "Employee not found" }, 404);
-  const active = number(body.active) ? 1 : 0;
-  await db.prepare("UPDATE employees SET employment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(active ? "Active" : "Inactive", id).run();
-  if (employee.user_id) await db.prepare("UPDATE users SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(active, employee.user_id).run();
-  await audit(db, actor, active ? "Employee activated" : "Employee deactivated", "employees", id, employee.full_name);
   return json({ ok: true });
 }
 
@@ -632,36 +446,40 @@ async function deleteLeaveType(db: D1Database, actor: AppUser, id: number) {
 }
 
 async function payrollList(db: D1Database, user: AppUser, url: URL) {
+  // Same period filter for both roles. Current & future months are never shown
+  // (payroll is only generated for completed months).
+  const period = url.searchParams.get("period") || "Last Month";
   const conditions: string[] = [];
   const params: unknown[] = [];
-  const period = url.searchParams.get("period") || "Last 6 Months";
-  const month = Number(url.searchParams.get("month"));
-  const year = Number(url.searchParams.get("year"));
-
   if (user.role === "Employee") {
     conditions.push("s.employee_id = ?");
     params.push(user.employeeId);
   }
 
-  // A specific month, or a rolling window of the most recent N months.
-  const monthsForPeriod = period === "Last Month" ? 1 : period === "Last 3 Months" ? 3 : 6;
-  let orderLimit = " ORDER BY s.salary_year DESC, s.salary_month DESC, e.full_name ASC";
-  if (period === "Custom" && month && year) {
+  const todayStr = dateOnly();
+  const curIndex = Number(todayStr.slice(0, 4)) * 12 + Number(todayStr.slice(5, 7));
+  if (period === "Custom") {
+    const month = Number(url.searchParams.get("month"));
+    const year = Number(url.searchParams.get("year"));
+    if (!month || !year || year * 12 + month >= curIndex) return json({ salaries: [] });
     conditions.push("s.salary_month = ? AND s.salary_year = ?");
     params.push(month, year);
   } else {
-    // Keep only salaries whose (year*12+month) is within the last N months.
-    const todayStr = dateOnly();
-    const cutoffIndex = Number(todayStr.slice(0, 4)) * 12 + Number(todayStr.slice(5, 7)) - monthsForPeriod;
-    conditions.push("(s.salary_year * 12 + s.salary_month) > ?");
-    params.push(cutoffIndex);
+    const monthsFor: Record<string, number> = { "Last Month": 1, "Last 3 Months": 3, "Last 6 Months": 6, "Last 12 Months": 12 };
+    const n = monthsFor[period] ?? 1;
+    // The N calendar months strictly before the current month.
+    const hi = curIndex - 1;
+    const lo = curIndex - n;
+    conditions.push("(s.salary_year * 12 + s.salary_month) BETWEEN ? AND ?");
+    params.push(lo, hi);
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const rows = await db.prepare(
     `SELECT s.*, e.full_name AS employee_name, e.employee_code
      FROM salaries s JOIN employees e ON e.id = s.employee_id
-     ${where}${orderLimit}`,
+     ${where}
+     ORDER BY s.salary_year DESC, s.salary_month DESC, e.full_name ASC`,
   ).bind(...params).all();
   return json({ salaries: rows.results });
 }
@@ -669,13 +487,6 @@ async function payrollList(db: D1Database, user: AppUser, url: URL) {
 async function generatePayroll(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
   const month = number(body.month);
   const year = number(body.year);
-  // Payroll can only be run for completed (past) months — not the current or any future month.
-  const todayStr = dateOnly();
-  const curYear = Number(todayStr.slice(0, 4));
-  const curMonth = Number(todayStr.slice(5, 7));
-  if (year > curYear || (year === curYear && month >= curMonth)) {
-    return json({ error: "Payroll can only be generated for completed (past) months." }, 400);
-  }
   const settings = await companySettings(db);
   const workingDays = workingDayCount(year, month, settings.working_days);
   const employees = await db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all<Record<string, number | string>>();
@@ -683,7 +494,7 @@ async function generatePayroll(db: D1Database, actor: AppUser, body: Record<stri
     const employeeId = Number(employee.id);
     const paidLeaveDays = await leaveDays(db, employeeId, month, year, true);
     const unpaidLeaveDays = await leaveDays(db, employeeId, month, year, false);
-    const absentDays = settings.deduct_absent_days ? await scalar(db, "SELECT COUNT(*) FROM attendance WHERE employee_id = ? AND status = 'Absent' AND strftime('%w', attendance_date) != '0' AND strftime('%m', attendance_date) = ? AND strftime('%Y', attendance_date) = ?", employeeId, pad(month), String(year)) : 0;
+    const absentDays = settings.deduct_absent_days ? await scalar(db, "SELECT COUNT(*) FROM attendance WHERE employee_id = ? AND status = 'Absent' AND strftime('%m', attendance_date) = ? AND strftime('%Y', attendance_date) = ?", employeeId, pad(month), String(year)) : 0;
     const gross = Number(employee.monthly_salary);
     const deductionDays = unpaidLeaveDays + absentDays;
     const deductions = Math.round((gross / Math.max(workingDays, 1)) * deductionDays);
@@ -704,9 +515,7 @@ async function generatePayroll(db: D1Database, actor: AppUser, body: Record<stri
 }
 
 async function updateSalary(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
-  // UI uses Paid/Unpaid/Generated; the column stores Done/Pending.
-  const raw = text(body.status);
-  const status = raw === "Paid" ? "Done" : (raw === "Unpaid" || raw === "Generated") ? "Pending" : raw;
+  const status = text(body.status);
   if (status && !["Pending", "Done"].includes(status)) return json({ error: "Invalid salary status" }, 400);
 
   // Get current record to find employee
@@ -719,15 +528,10 @@ async function updateSalary(db: D1Database, actor: AppUser, id: number, body: Re
   const grossSalary = body.gross_salary !== undefined ? Number(body.gross_salary) : Number(existing.gross_salary);
   const deductions = body.deductions !== undefined ? Number(body.deductions) : Number(existing.deductions);
   const netSalary = body.net_salary !== undefined ? Number(body.net_salary) : Number(existing.net_salary);
-  // payment_proof: undefined = keep as-is; "" or null = clear it; a data URL = set it.
-  const proofProvided = body.payment_proof !== undefined;
-  const proofValue = proofProvided ? (String(body.payment_proof || "") || null) : null;
 
   await db.prepare(
-    `UPDATE salaries SET status = ?, working_days = ?, paid_days = ?, gross_salary = ?, deductions = ?, net_salary = ?, ${proofProvided ? "payment_proof = ?," : ""} updated_at = CURRENT_TIMESTAMP WHERE id = ?`
-  ).bind(...(proofProvided
-    ? [newStatus, workingDays, paidDays, grossSalary, deductions, netSalary, proofValue, id]
-    : [newStatus, workingDays, paidDays, grossSalary, deductions, netSalary, id])).run();
+    `UPDATE salaries SET status = ?, working_days = ?, paid_days = ?, gross_salary = ?, deductions = ?, net_salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  ).bind(newStatus, workingDays, paidDays, grossSalary, deductions, netSalary, id).run();
 
   const updatedSalary = await db.prepare("SELECT * FROM salaries WHERE id = ?").bind(id).first<Record<string, unknown>>();
   const employee = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(existing.employee_id).first<Record<string, unknown>>();
@@ -738,8 +542,7 @@ async function updateSalary(db: D1Database, actor: AppUser, id: number, body: Re
   }
 
   if (status && status !== existing.status) {
-    const label = status === "Done" ? "Paid" : "Unpaid";
-    await notify(db, Number(existing.user_id), `Salary marked ${label.toLowerCase()}`, label === "Paid" ? "Your salary is marked paid — your payslip is now available." : `Your salary status is now ${label}.`);
+    await notify(db, Number(existing.user_id), `Salary marked ${status.toLowerCase()}`, `Your salary status is now ${status}.`);
   }
   await audit(db, actor, "Salary updated", "salaries", id, "");
   return json({ ok: true });
@@ -798,6 +601,138 @@ async function auditLogs(db: D1Database) {
   return json({ logs: rows.results });
 }
 
+// ---- Daily task management ----
+
+const taskPriorities = ["High", "Medium", "Low"];
+const taskStatuses = ["Pending", "In Progress", "Completed"];
+
+async function taskList(db: D1Database, user: AppUser, url: URL) {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (user.role === "Employee") {
+    conditions.push("t.employee_id = ?");
+    params.push(user.employeeId);
+  } else {
+    const employeeId = url.searchParams.get("employeeId");
+    if (employeeId) {
+      conditions.push("t.employee_id = ?");
+      params.push(employeeId);
+    }
+  }
+  const date = url.searchParams.get("date");
+  if (date) {
+    conditions.push("t.task_date = ?");
+    params.push(date);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = await db.prepare(
+    `SELECT t.*, e.full_name AS employee_name, e.employee_code
+     FROM tasks t JOIN employees e ON e.id = t.employee_id
+     ${where}
+     ORDER BY CASE t.priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END, t.created_at ASC`,
+  ).bind(...params).all();
+  // Admins get the employee list for the filter dropdown.
+  const employees = user.role === "Superadmin"
+    ? (await db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all()).results
+    : undefined;
+  return json({ tasks: rows.results, employees });
+}
+
+async function createTask(db: D1Database, user: AppUser, body: Record<string, unknown>) {
+  if (user.role !== "Employee") return json({ error: "Only employees can add their own tasks" }, 403);
+  const employee = await employeeForUser(db, user);
+  const title = text(body.title);
+  if (!title) return json({ error: "Task title is required" }, 400);
+  const date = text(body.task_date) || dateOnly();
+  const priority = taskPriorities.includes(text(body.priority)) ? text(body.priority) : "Medium";
+  await db.prepare(
+    "INSERT INTO tasks (employee_id, task_date, title, company, priority, status, notes) VALUES (?, ?, ?, ?, ?, 'Pending', ?)",
+  ).bind(employee.id, date, title, text(body.company) || null, priority, text(body.notes) || null).run();
+  return json({ ok: true });
+}
+
+async function updateTask(db: D1Database, user: AppUser, id: number, body: Record<string, unknown>) {
+  const task = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  if (!task) return json({ error: "Task not found" }, 404);
+  // Employees can only touch their own tasks; admins can edit any.
+  if (user.role === "Employee" && Number(task.employee_id) !== user.employeeId) return json({ error: "Not allowed" }, 403);
+  const title = body.title !== undefined ? (text(body.title) || String(task.title)) : String(task.title);
+  const company = body.company !== undefined ? (text(body.company) || null) : (task.company ?? null);
+  const priority = body.priority !== undefined && taskPriorities.includes(text(body.priority)) ? text(body.priority) : String(task.priority);
+  const status = body.status !== undefined && taskStatuses.includes(text(body.status)) ? text(body.status) : String(task.status);
+  const notes = body.notes !== undefined ? (text(body.notes) || null) : (task.notes ?? null);
+  await db.prepare(
+    "UPDATE tasks SET title = ?, company = ?, priority = ?, status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+  ).bind(title, company, priority, status, notes, id).run();
+  return json({ ok: true });
+}
+
+// Delete is admin-only (route sits after the requireAdmin gate).
+async function deleteTask(db: D1Database, actor: AppUser, id: number) {
+  await db.prepare("DELETE FROM tasks WHERE id = ?").bind(id).run();
+  await audit(db, actor, "Task deleted", "tasks", id, "");
+  return json({ ok: true });
+}
+
+async function reportsMeta(db: D1Database) {
+  const [employees, departments] = await Promise.all([
+    db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all(),
+    db.prepare("SELECT id, name FROM departments ORDER BY name").all(),
+  ]);
+  return json({ employees: employees.results, departments: departments.results });
+}
+
+async function leaveCsv(db: D1Database, url: URL) {
+  const start = url.searchParams.get("start") || "1900-01-01";
+  const end = url.searchParams.get("end") || "2999-12-31";
+  const { where, params } = reportFilters("lr.start_date BETWEEN ? AND ?", [start, end], url);
+  const rows = await db.prepare(
+    `SELECT e.full_name, e.employee_code, d.name AS department_name, lt.name AS leave_type, lr.start_date, lr.end_date, lr.days, lr.status, lr.reason, lr.admin_note
+     FROM leave_requests lr JOIN employees e ON e.id = lr.employee_id
+     LEFT JOIN departments d ON d.id = e.department_id JOIN leave_types lt ON lt.id = lr.leave_type_id
+     WHERE ${where} ORDER BY lr.start_date DESC, e.full_name`,
+  ).bind(...params).all<Record<string, unknown>>();
+  const header = ["Employee", "Employee ID", "Department", "Leave type", "Start", "End", "Days", "Status", "Reason", "Admin note"];
+  const lines = rows.results.map((row) => [row.full_name, row.employee_code, row.department_name, row.leave_type, row.start_date, row.end_date, row.days, row.status, row.reason, row.admin_note].map(csvCell).join(","));
+  return csv("leave-report.csv", header, lines);
+}
+
+async function salaryCsv(db: D1Database, url: URL) {
+  const month = Number(url.searchParams.get("month"));
+  const year = Number(url.searchParams.get("year"));
+  const { where, params } = reportFilters("s.salary_month = ? AND s.salary_year = ?", [month, year], url);
+  const rows = await db.prepare(
+    `SELECT e.full_name, e.employee_code, d.name AS department_name, s.working_days, s.paid_days, s.paid_leave_days, s.unpaid_leave_days,
+      s.absent_days, s.gross_salary, s.deductions, s.net_salary, s.status
+     FROM salaries s JOIN employees e ON e.id = s.employee_id
+     LEFT JOIN departments d ON d.id = e.department_id
+     WHERE ${where} ORDER BY e.full_name`,
+  ).bind(...params).all<Record<string, unknown>>();
+  const header = ["Employee", "Employee ID", "Department", "Working days", "Paid days", "Paid leave", "Unpaid leave", "Absent", "Gross", "Deductions", "Net", "Status"];
+  const lines = rows.results.map((row) => [row.full_name, row.employee_code, row.department_name, row.working_days, row.paid_days, row.paid_leave_days, row.unpaid_leave_days, row.absent_days, row.gross_salary, row.deductions, row.net_salary, row.status].map(csvCell).join(","));
+  return csv("salary-report.csv", header, lines);
+}
+
+function reportFilters(base: string, baseParams: unknown[], url: URL) {
+  const params = [...baseParams];
+  let where = base;
+  const employeeId = url.searchParams.get("employeeId");
+  const departmentId = url.searchParams.get("departmentId");
+  if (employeeId) {
+    where += " AND e.id = ?";
+    params.push(employeeId);
+  }
+  if (departmentId) {
+    where += " AND e.department_id = ?";
+    params.push(departmentId);
+  }
+  return { where, params };
+}
+
+function csv(filename: string, header: string[], lines: string[]) {
+  return new Response([header.join(","), ...lines].join("\n"), { headers: { "Content-Type": "text/csv", "Content-Disposition": `attachment; filename=${filename}` } });
+}
+
 async function salarySlip(db: D1Database, user: AppUser, salaryId: number) {
   const salary = await db.prepare(
     `SELECT s.*, e.full_name, e.employee_code, e.monthly_salary, d.name AS department_name, des.name AS designation_name
@@ -807,11 +742,12 @@ async function salarySlip(db: D1Database, user: AppUser, salaryId: number) {
   ).bind(salaryId).first<Record<string, unknown>>();
   if (!salary) return json({ error: "Salary not found" }, 404);
   if (user.role === "Employee" && Number(salary.employee_id) !== user.employeeId) return json({ error: "Not allowed" }, 403);
-  // Payslips are only issued once the salary is marked Paid.
-  if (String(salary.status) !== "Done") return json({ error: "Payslip is available only after the salary is marked paid." }, 400);
-  // Always render fresh from current data so salary edits and template updates are reflected.
+  const slip = await db.prepare("SELECT slip_html FROM salary_slips WHERE salary_id = ?").bind(salaryId).first<{ slip_html: string }>();
+  if (slip) return html(slip.slip_html);
   const settings = await companySettings(db);
-  return html(slipTemplate(salary, salary, settings));
+  const slipHtml = slipTemplate(salary, salary, settings);
+  await db.prepare("INSERT OR REPLACE INTO salary_slips (salary_id, slip_html, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)").bind(salaryId, slipHtml).run();
+  return html(slipHtml);
 }
 
 async function employeeForUser(db: D1Database, user: AppUser) {
@@ -846,61 +782,32 @@ async function upsertSlip(db: D1Database, salary: Record<string, unknown>, emplo
 function slipTemplate(salary: Record<string, unknown>, employee: Record<string, unknown>, settings: Record<string, unknown>) {
   const month = monthName(Number(salary.salary_month));
   const year = salary.salary_year;
-  const gross = Number(salary.gross_salary);
-  const deductions = Number(salary.deductions);
-  const net = Number(salary.net_salary);
-  const initials = String(employee.full_name || "?").split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase();
-  const meta = [
+  const rows = [
     ["Employee name", employee.full_name],
     ["Employee ID", employee.employee_code],
     ["Department", employee.department_name || "-"],
     ["Designation", employee.designation_name || "-"],
-    ["Pay period", `${month} ${year}`],
-    ["Status", salary.status === "Done" ? "Paid" : "Unpaid"],
-  ];
-  const attendance = [
+    ["Month", `${month} ${year}`],
+    ["Monthly salary", money(Number(salary.gross_salary))],
     ["Total working days", salary.working_days],
     ["Paid days", salary.paid_days],
-    ["Paid leave", salary.paid_leave_days],
-    ["Unpaid leave", salary.unpaid_leave_days],
+    ["Paid leave days", salary.paid_leave_days],
+    ["Unpaid leave days", salary.unpaid_leave_days],
     ["Absent days", salary.absent_days],
+    ["Gross salary", money(Number(salary.gross_salary))],
+    ["Deductions", money(Number(salary.deductions))],
+    ["Net payable salary", money(Number(salary.net_salary))],
+    ["Salary status", salary.status],
+    ["Generated date", dateOnly()],
   ];
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Payslip ${escapeHtml(String(employee.employee_code || ""))} ${month} ${year}</title><style>
-    *{box-sizing:border-box}body{font-family:Inter,-apple-system,Segoe UI,Arial,sans-serif;color:#0f172a;margin:0;background:#eef2f7;padding:24px}
-    .sheet{max-width:800px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 10px 40px rgba(15,23,42,.08)}
-    .bar{background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;padding:28px 32px;display:flex;justify-content:space-between;align-items:center;gap:16px}
-    .bar h1{margin:0;font-size:22px}.bar p{margin:4px 0 0;opacity:.85;font-size:13px}.tag{background:rgba(255,255,255,.18);padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700}
-    .body{padding:28px 32px}.who{display:flex;align-items:center;gap:16px;margin-bottom:24px}
-    .avatar{width:56px;height:56px;border-radius:14px;background:#ffedd5;color:#c2410c;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 32px;margin-bottom:24px}
-    .row{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #eef2f7;font-size:14px}.row span:first-child{color:#64748b}.row span:last-child{font-weight:600}
-    h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#94a3b8;margin:24px 0 8px}
-    .totals{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:16px 20px;margin-top:8px}
-    .totals .row{border:0;padding:6px 0}.net{display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:14px;border-top:2px dashed #cbd5e1}
-    .net span:first-child{font-weight:700}.net span:last-child{font-size:24px;font-weight:800;color:#ea580c}
-    .foot{padding:18px 32px;border-top:1px solid #eef2f7;color:#94a3b8;font-size:12px;display:flex;justify-content:space-between}
-    .noprint{position:fixed;top:16px;right:16px}.btn{background:#ea580c;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-weight:700;font-size:13px;cursor:pointer;box-shadow:0 4px 14px rgba(234,88,12,.35)}
-    @media print{body{background:#fff;padding:0}.sheet{box-shadow:none;border-radius:0;max-width:none}.noprint{display:none}}
-  </style></head><body>
-    <button class="btn noprint" onclick="window.print()">⬇ Download PDF</button>
-    <main class="sheet">
-      <div class="bar"><div><h1>${escapeHtml(String(settings.company_name))}</h1><p>${escapeHtml(String(settings.company_address || ""))}</p></div><div style="text-align:right"><div class="tag">PAYSLIP</div><p>${month} ${year}</p></div></div>
-      <div class="body">
-        <div class="who"><div class="avatar">${escapeHtml(initials)}</div><div><div style="font-size:18px;font-weight:800">${escapeHtml(String(employee.full_name))}</div><div style="color:#64748b;font-size:13px">${escapeHtml(String(employee.designation_name || "Employee"))} · ${escapeHtml(String(employee.employee_code || ""))}</div></div></div>
-        <div class="grid">${meta.map(([label, value]) => `<div class="row"><span>${escapeHtml(String(label))}</span><span>${escapeHtml(String(value ?? "-"))}</span></div>`).join("")}</div>
-        <h3>Attendance summary</h3>
-        <div class="grid">${attendance.map(([label, value]) => `<div class="row"><span>${escapeHtml(String(label))}</span><span>${escapeHtml(String(value ?? "-"))}</span></div>`).join("")}</div>
-        <h3>Earnings &amp; deductions</h3>
-        <div class="totals">
-          <div class="row"><span>Gross salary</span><span>${escapeHtml(money(gross))}</span></div>
-          <div class="row"><span>Deductions</span><span>- ${escapeHtml(money(deductions))}</span></div>
-          <div class="net"><span>Net payable salary</span><span>${escapeHtml(money(net))}</span></div>
-        </div>
-      </div>
-      <div class="foot"><span>Generated ${dateOnly()} · Fast HRMS</span><span>This is a system-generated payslip.</span></div>
-    </main>
-    <script>if(!window.location.hash.includes("noprint")){setTimeout(function(){window.print()},400)}</script>
-  </body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Salary Slip</title><style>
+    body{font-family:Inter,Arial,sans-serif;color:#172033;margin:0;background:#f7fafc}.sheet{max-width:820px;margin:24px auto;background:white;border:1px solid #dbe4ef;padding:32px}
+    h1{margin:0;font-size:28px}.muted{color:#64748b}.top{display:flex;justify-content:space-between;gap:24px;border-bottom:1px solid #dbe4ef;padding-bottom:20px;margin-bottom:20px}
+    table{width:100%;border-collapse:collapse}td{border-bottom:1px solid #e8eef5;padding:12px}.label{font-weight:700;color:#475569}.net{font-size:22px;font-weight:800;color:#1677c8}
+    @media print{body{background:white}.sheet{border:0;margin:0;max-width:none}}</style></head><body><main class="sheet">
+    <div class="top"><div><h1>${escapeHtml(String(settings.company_name))}</h1><p class="muted">${escapeHtml(String(settings.company_address || ""))}</p></div><div><strong>Salary Slip</strong><p class="muted">${month} ${year}</p></div></div>
+    <table>${rows.map(([label, value]) => `<tr><td class="label">${escapeHtml(String(label))}</td><td${label === "Net payable salary" ? ' class="net"' : ""}>${escapeHtml(String(value ?? "-"))}</td></tr>`).join("")}</table>
+    <p class="muted">This slip is generated dynamically from Fast HRMS payroll data.</p></main><script>window.print()</script></body></html>`;
 }
 
 async function leaveDays(db: D1Database, employeeId: number, month: number, year: number, paid: boolean) {
@@ -929,24 +836,8 @@ async function notify(db: D1Database, userId: number, title: string, message: st
   await db.prepare("INSERT INTO notifications (user_id, title, message) VALUES (?, ?, ?)").bind(userId, title, message).run();
 }
 
-async function notifyAdmins(db: D1Database, title: string, message: string) {
-  const admins = await db.prepare("SELECT id FROM users WHERE role = 'Superadmin' AND is_active = 1").all<{ id: number }>();
-  for (const admin of admins.results) {
-    await notify(db, admin.id, title, message);
-  }
-}
-
-async function notificationsList(db: D1Database, user: AppUser) {
-  const [rows, unread] = await Promise.all([
-    db.prepare("SELECT id, title, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 30").bind(user.id).all(),
-    scalar(db, "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0", user.id),
-  ]);
-  return json({ notifications: rows.results, unread });
-}
-
-async function markNotificationsRead(db: D1Database, user: AppUser) {
-  await db.prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0").bind(user.id).run();
-  return json({ ok: true });
+function requireAdmin(user: AppUser) {
+  if (user.role !== "Superadmin") throw new Error("Superadmin access required");
 }
 
 function validateEmployee(body: Record<string, unknown>) {
@@ -1049,7 +940,6 @@ function docOrNull(value: unknown) {
   if (str.length > 2_800_000) throw new Error("Document is too large (max ~2MB). Please upload a smaller file.");
   return str;
 }
-
 // Attendance rules (late mark, shift hours) are configured in local Indian time,
 // but Workers run in UTC — format all dates/times in IST so they match.
 const timeZone = "Asia/Kolkata";
@@ -1069,18 +959,6 @@ function pad(value: number) {
 
 function inclusiveDays(start: string, end: string) {
   return Math.floor((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
-}
-
-// List of YYYY-MM-DD dates from start to end inclusive (empty if end < start or invalid).
-function datesInRange(start: string, end: string) {
-  const startMs = Date.parse(start);
-  const endMs = Date.parse(end);
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return [] as string[];
-  const dates: string[] = [];
-  for (let ms = startMs; ms <= endMs; ms += 86400000) {
-    dates.push(new Date(ms).toISOString().slice(0, 10));
-  }
-  return dates;
 }
 
 function toSeconds(value: string) {
@@ -1121,6 +999,9 @@ function fromHex(value: string) {
   return bytes;
 }
 
+function csvCell(value: unknown) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char] ?? char);

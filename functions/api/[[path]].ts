@@ -53,6 +53,7 @@ async function route(context: Context) {
   if (method === "GET" && path === "/payroll") return payrollList(db, user, url);
   if (method === "GET" && path.startsWith("/salary-slips/")) return salarySlip(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/holidays") return holidayList(db);
+  if (method === "GET" && path === "/settings") return json({ settings: await companySettings(db) });
   if (method === "GET" && path === "/tasks") return taskList(db, user, url);
   if (method === "POST" && path === "/tasks") return createTask(db, user, await readBody(context.request));
   if (method === "PUT" && path.match(/^\/tasks\/\d+$/)) return updateTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
@@ -77,7 +78,6 @@ async function route(context: Context) {
   if (method === "PUT" && path.startsWith("/payroll/")) return updateSalary(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "POST" && path === "/holidays") return saveHoliday(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/holidays/")) return deleteHoliday(db, user, Number(path.split("/").pop()));
-  if (method === "GET" && path === "/settings") return json({ settings: await companySettings(db) });
   if (method === "PUT" && path === "/settings") return saveSettings(db, user, await readBody(context.request));
   if (method === "DELETE" && path.match(/^\/tasks\/\d+$/)) return deleteTask(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/audit-logs") return auditLogs(db);
@@ -180,7 +180,7 @@ async function employeeSummary(db: D1Database, user: AppUser) {
   const year = now.getUTCFullYear();
   const monthStart = `${year}-${pad(month)}-01`;
   const monthEnd = `${year}-${pad(month)}-31`;
-  const [todayAttendance, attendanceRows, recentLeaves, currentSalary, latestSalary, paidLeave] = await Promise.all([
+  const [todayAttendance, attendanceRows, recentLeaves, currentSalary, latestSalary, paidLeave, upcomingLeaves, upcomingHolidays] = await Promise.all([
     db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date = ?").bind(employee.id, today).first(),
     db.prepare("SELECT status, COUNT(*) AS count FROM attendance WHERE employee_id = ? AND attendance_date BETWEEN ? AND ? GROUP BY status").bind(employee.id, monthStart, monthEnd).all(),
     db.prepare(
@@ -191,6 +191,14 @@ async function employeeSummary(db: D1Database, user: AppUser) {
     db.prepare("SELECT * FROM salaries WHERE employee_id = ? AND salary_month = ? AND salary_year = ?").bind(employee.id, month, year).first(),
     db.prepare("SELECT * FROM salaries WHERE employee_id = ? ORDER BY salary_year DESC, salary_month DESC LIMIT 1").bind(employee.id).first(),
     scalar(db, "SELECT COALESCE(SUM(monthly_balance), 0) FROM leave_types WHERE is_paid = 1"),
+    // Approved leave that hasn't finished yet.
+    db.prepare(
+      `SELECT lr.*, lt.name AS leave_type_name, lt.is_paid
+       FROM leave_requests lr JOIN leave_types lt ON lt.id = lr.leave_type_id
+       WHERE lr.employee_id = ? AND lr.status = 'Approved' AND lr.end_date >= ? ORDER BY lr.start_date ASC LIMIT 5`,
+    ).bind(employee.id, today).all(),
+    // Company holidays from today onward.
+    db.prepare("SELECT id, name, holiday_date, description FROM holidays WHERE holiday_date >= ? ORDER BY holiday_date ASC LIMIT 5").bind(today).all(),
   ]);
   const monthAttendance = { present: 0, late: 0, halfDay: 0, absent: 0 };
   for (const row of attendanceRows.results as Array<{ status: string; count: number }>) {
@@ -199,7 +207,7 @@ async function employeeSummary(db: D1Database, user: AppUser) {
     if (row.status === "Half Day") monthAttendance.halfDay = row.count;
     if (row.status === "Absent") monthAttendance.absent = row.count;
   }
-  return json({ summary: { todayAttendance, monthAttendance, leaveBalance: paidLeave, recentLeaves: recentLeaves.results, currentSalary, latestSalary } });
+  return json({ summary: { todayAttendance, monthAttendance, leaveBalance: paidLeave, recentLeaves: recentLeaves.results, currentSalary, latestSalary, upcomingLeaves: upcomingLeaves.results, upcomingHolidays: upcomingHolidays.results } });
 }
 
 async function employeesList(db: D1Database) {

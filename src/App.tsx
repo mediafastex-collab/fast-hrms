@@ -171,6 +171,8 @@ type EmployeeSummary = {
   recentLeaves: LeaveRequest[];
   currentSalary?: Salary;
   latestSalary?: Salary;
+  upcomingLeaves?: LeaveRequest[];
+  upcomingHolidays?: Holiday[];
 };
 
 const currency = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
@@ -734,16 +736,42 @@ function EmployeeDashboard() {
           )}
         </div>
       </div>
-      <DataTable
-        title="Recent Leave Status"
-        rows={summary.recentLeaves}
-        columns={[
-          ["Type", (row) => row.leave_type_name ?? "-"],
-          ["Dates", (row) => `${row.start_date} to ${row.end_date}`],
-          ["Days", (row) => row.days],
-          ["Status", (row) => <Badge value={row.status} />],
-        ]}
-      />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="card p-5">
+          <div className="flex items-center gap-2">
+            <span className="rounded-lg bg-orange-50 p-2 text-brand"><FileText size={18} /></span>
+            <h3 className="font-bold text-ink">Upcoming leaves</h3>
+          </div>
+          <div className="mt-4 space-y-2">
+            {summary.upcomingLeaves && summary.upcomingLeaves.length ? summary.upcomingLeaves.map((leave) => (
+              <div key={leave.id} className="flex items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
+                <div>
+                  <p className="font-semibold text-ink">{leave.leave_type_name}</p>
+                  <p className="text-xs text-slate-500">{leave.start_date} → {leave.end_date} · {leave.days} day{leave.days === 1 ? "" : "s"}</p>
+                </div>
+                <Badge value="Approved" />
+              </div>
+            )) : <p className="text-sm text-slate-500">No approved upcoming leave.</p>}
+          </div>
+        </div>
+        <div className="card p-5">
+          <div className="flex items-center gap-2">
+            <span className="rounded-lg bg-amber-50 p-2 text-amber-600"><Sparkles size={18} /></span>
+            <h3 className="font-bold text-ink">Upcoming holidays</h3>
+          </div>
+          <div className="mt-4 space-y-2">
+            {summary.upcomingHolidays && summary.upcomingHolidays.length ? summary.upcomingHolidays.map((holiday) => (
+              <div key={holiday.id} className="flex items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
+                <div>
+                  <p className="font-semibold text-ink">{holiday.name}</p>
+                  {holiday.description ? <p className="text-xs text-slate-500">{holiday.description}</p> : null}
+                </div>
+                <span className="text-sm font-semibold text-amber-600">{holiday.holiday_date}</span>
+              </div>
+            )) : <p className="text-sm text-slate-500">No upcoming holidays.</p>}
+          </div>
+        </div>
+      </div>
       <DataTable
         title="My Daily Work & Duration Log"
         rows={attendance}

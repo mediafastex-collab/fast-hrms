@@ -55,8 +55,10 @@ async function route(context: Context) {
   if (method === "GET" && path === "/holidays") return holidayList(db);
   if (method === "GET" && path === "/settings") return json({ settings: await companySettings(db) });
   if (method === "GET" && path === "/tasks") return taskList(db, user, url);
+  if (method === "GET" && path === "/tasks.csv") return tasksCsv(db, user, url);
   if (method === "POST" && path === "/tasks") return createTask(db, user, await readBody(context.request));
   if (method === "PUT" && path.match(/^\/tasks\/\d+$/)) return updateTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
+  if (method === "DELETE" && path.match(/^\/tasks\/\d+$/)) return deleteTask(db, user, Number(path.split("/").pop()));
 
   requireAdmin(user);
 
@@ -79,7 +81,6 @@ async function route(context: Context) {
   if (method === "POST" && path === "/holidays") return saveHoliday(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/holidays/")) return deleteHoliday(db, user, Number(path.split("/").pop()));
   if (method === "PUT" && path === "/settings") return saveSettings(db, user, await readBody(context.request));
-  if (method === "DELETE" && path.match(/^\/tasks\/\d+$/)) return deleteTask(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/audit-logs") return auditLogs(db);
   if (method === "GET" && path === "/reports/meta") return reportsMeta(db);
   if (method === "GET" && path === "/reports/leaves.csv") return leaveCsv(db, url);
@@ -523,10 +524,11 @@ async function generatePayroll(db: D1Database, actor: AppUser, body: Record<stri
 }
 
 async function updateSalary(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
-  const status = text(body.status);
+  // UI uses Paid/Unpaid; the column stores Done/Pending.
+  const raw = text(body.status);
+  const status = raw === "Paid" ? "Done" : (raw === "Unpaid" || raw === "Generated") ? "Pending" : raw;
   if (status && !["Pending", "Done"].includes(status)) return json({ error: "Invalid salary status" }, 400);
 
-  // Get current record to find employee
   const existing = await db.prepare("SELECT s.*, e.user_id, e.id AS employee_id FROM salaries s JOIN employees e ON e.id = s.employee_id WHERE s.id = ?").bind(id).first<Record<string, unknown>>();
   if (!existing) return json({ error: "Salary record not found" }, 404);
 
@@ -536,21 +538,28 @@ async function updateSalary(db: D1Database, actor: AppUser, id: number, body: Re
   const grossSalary = body.gross_salary !== undefined ? Number(body.gross_salary) : Number(existing.gross_salary);
   const deductions = body.deductions !== undefined ? Number(body.deductions) : Number(existing.deductions);
   const netSalary = body.net_salary !== undefined ? Number(body.net_salary) : Number(existing.net_salary);
+  // payment_proof: undefined = keep as-is; "" or null = clear it; a data URL = set it.
+  const proofProvided = body.payment_proof !== undefined;
+  const proofValue = proofProvided ? (String(body.payment_proof || "") || null) : null;
 
   await db.prepare(
-    `UPDATE salaries SET status = ?, working_days = ?, paid_days = ?, gross_salary = ?, deductions = ?, net_salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
-  ).bind(newStatus, workingDays, paidDays, grossSalary, deductions, netSalary, id).run();
+    `UPDATE salaries SET status = ?, working_days = ?, paid_days = ?, gross_salary = ?, deductions = ?, net_salary = ?, ${proofProvided ? "payment_proof = ?," : ""} updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+  ).bind(...(proofProvided
+    ? [newStatus, workingDays, paidDays, grossSalary, deductions, netSalary, proofValue, id]
+    : [newStatus, workingDays, paidDays, grossSalary, deductions, netSalary, id])).run();
 
   const updatedSalary = await db.prepare("SELECT * FROM salaries WHERE id = ?").bind(id).first<Record<string, unknown>>();
   const employee = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(existing.employee_id).first<Record<string, unknown>>();
   const settings = await companySettings(db);
 
+  // Regenerate the cached payslip so it reflects the updated amounts.
   if (updatedSalary && employee) {
     await upsertSlip(db, updatedSalary, employee, settings);
   }
 
   if (status && status !== existing.status) {
-    await notify(db, Number(existing.user_id), `Salary marked ${status.toLowerCase()}`, `Your salary status is now ${status}.`);
+    const label = status === "Done" ? "paid" : "unpaid";
+    await notify(db, Number(existing.user_id), `Salary marked ${label}`, label === "paid" ? "Your salary is marked paid — your payslip is available." : "Your salary status is now unpaid.");
   }
   await audit(db, actor, "Salary updated", "salaries", id, "");
   return json({ ok: true });
@@ -666,8 +675,8 @@ async function createTask(db: D1Database, user: AppUser, body: Record<string, un
   }
 
   await db.prepare(
-    "INSERT INTO tasks (employee_id, task_date, title, company, priority, status, notes, assigned_by_admin) VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?)",
-  ).bind(employeeId, date, title, text(body.company) || null, priority, text(body.notes) || null, assignedByAdmin).run();
+    "INSERT INTO tasks (employee_id, task_date, title, company, priority, status, notes, assigned_by_admin, deadline) VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)",
+  ).bind(employeeId, date, title, text(body.company) || null, priority, text(body.notes) || null, assignedByAdmin, text(body.deadline) || null).run();
 
   if (assignedByAdmin) {
     const emp = await db.prepare("SELECT user_id FROM employees WHERE id = ?").bind(employeeId).first<{ user_id: number }>();
@@ -686,17 +695,53 @@ async function updateTask(db: D1Database, user: AppUser, id: number, body: Recor
   const priority = body.priority !== undefined && taskPriorities.includes(text(body.priority)) ? text(body.priority) : String(task.priority);
   const status = body.status !== undefined && taskStatuses.includes(text(body.status)) ? text(body.status) : String(task.status);
   const notes = body.notes !== undefined ? (text(body.notes) || null) : (task.notes ?? null);
+  const deadline = body.deadline !== undefined ? (text(body.deadline) || null) : (task.deadline ?? null);
   await db.prepare(
-    "UPDATE tasks SET title = ?, company = ?, priority = ?, status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-  ).bind(title, company, priority, status, notes, id).run();
+    "UPDATE tasks SET title = ?, company = ?, priority = ?, status = ?, notes = ?, deadline = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+  ).bind(title, company, priority, status, notes, deadline, id).run();
   return json({ ok: true });
 }
 
-// Delete is admin-only (route sits after the requireAdmin gate).
-async function deleteTask(db: D1Database, actor: AppUser, id: number) {
+async function deleteTask(db: D1Database, user: AppUser, id: number) {
+  const task = await db.prepare("SELECT employee_id, assigned_by_admin FROM tasks WHERE id = ?").bind(id).first<{ employee_id: number; assigned_by_admin: number }>();
+  if (!task) return json({ error: "Task not found" }, 404);
+  // Admins delete any task. Employees may delete only their own self-created tasks (not admin-assigned).
+  if (user.role !== "Superadmin") {
+    if (Number(task.employee_id) !== user.employeeId) return json({ error: "Not allowed" }, 403);
+    if (task.assigned_by_admin) return json({ error: "Admin-assigned tasks can only be removed by an admin" }, 403);
+  }
   await db.prepare("DELETE FROM tasks WHERE id = ?").bind(id).run();
-  await audit(db, actor, "Task deleted", "tasks", id, "");
+  if (user.role === "Superadmin") await audit(db, user, "Task deleted", "tasks", id, "");
   return json({ ok: true });
+}
+
+// CSV report of tasks over a date range (admin: all employees; employee: own).
+async function tasksCsv(db: D1Database, user: AppUser, url: URL) {
+  const start = url.searchParams.get("start") || "1900-01-01";
+  const end = url.searchParams.get("end") || "2999-12-31";
+  const conditions = ["t.task_date BETWEEN ? AND ?"];
+  const params: unknown[] = [start, end];
+  if (user.role === "Employee") {
+    conditions.push("t.employee_id = ?");
+    params.push(user.employeeId);
+  } else {
+    const employeeId = url.searchParams.get("employeeId");
+    if (employeeId) {
+      conditions.push("t.employee_id = ?");
+      params.push(employeeId);
+    }
+  }
+  const rows = await db.prepare(
+    `SELECT t.task_date, e.full_name AS employee_name, e.employee_code, t.title, t.company, t.priority, t.status, t.deadline
+     FROM tasks t JOIN employees e ON e.id = t.employee_id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY t.task_date DESC, CASE t.priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END`,
+  ).bind(...params).all<Record<string, unknown>>();
+  const header = ["Date", "Employee", "Employee ID", "Task", "Company/Brand", "Priority", "Status", "Deadline"];
+  const lines = rows.results.map((r) => [r.task_date, r.employee_name, r.employee_code, r.title, r.company, r.priority, r.status, r.deadline].map(csvCell).join(","));
+  return new Response([header.join(","), ...lines].join("\n"), {
+    headers: { "Content-Type": "text/csv", "Content-Disposition": `attachment; filename=tasks_${start}_to_${end}.csv` },
+  });
 }
 
 async function reportsMeta(db: D1Database) {
@@ -767,8 +812,7 @@ async function salarySlip(db: D1Database, user: AppUser, salaryId: number) {
   ).bind(salaryId).first<Record<string, unknown>>();
   if (!salary) return json({ error: "Salary not found" }, 404);
   if (user.role === "Employee" && Number(salary.employee_id) !== user.employeeId) return json({ error: "Not allowed" }, 403);
-  const slip = await db.prepare("SELECT slip_html FROM salary_slips WHERE salary_id = ?").bind(salaryId).first<{ slip_html: string }>();
-  if (slip) return html(slip.slip_html);
+  // Always render fresh from current salary data so edits are reflected in the payslip.
   const settings = await companySettings(db);
   const slipHtml = slipTemplate(salary, salary, settings);
   await db.prepare("INSERT OR REPLACE INTO salary_slips (salary_id, slip_html, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)").bind(salaryId, slipHtml).run();

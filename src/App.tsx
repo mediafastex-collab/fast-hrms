@@ -87,6 +87,7 @@ type Task = {
   status: "Pending" | "In Progress" | "Completed";
   notes?: string | null;
   assigned_by_admin?: number;
+  deadline?: string | null;
 };
 type CompanySettings = {
   company_name: string;
@@ -326,8 +327,8 @@ export function App() {
 }
 
 function LoginScreen({ error, onLogin }: { error: string; onLogin: (email: string, password: string) => Promise<void> }) {
-  const [email, setEmail] = useState("admin@fast.local");
-  const [password, setPassword] = useState("password123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit(event: FormEvent) {
@@ -338,52 +339,32 @@ function LoginScreen({ error, onLogin }: { error: string; onLogin: (email: strin
   }
 
   return (
-    <main className="min-h-screen bg-cloud">
-      <div className="mx-auto grid min-h-screen max-w-6xl items-center gap-8 px-4 py-8 lg:grid-cols-[1fr_420px]">
-        <section>
-          <div className="inline-flex items-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-semibold text-brand">
-            <ShieldCheck size={18} />
-            Cloudflare-ready HRMS
+    <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-orange-50 via-white to-amber-50 px-4 py-10">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 flex flex-col items-center text-center">
+          <div className="rounded-2xl bg-gradient-to-br from-orange-500 to-orange-600 p-4 text-white shadow-lg shadow-orange-500/30">
+            <BriefcaseBusiness size={34} />
           </div>
-          <h1 className="mt-5 max-w-3xl text-4xl font-bold leading-tight text-ink md:text-5xl">Fast HRMS for small teams</h1>
-          <p className="mt-4 max-w-2xl text-base leading-7 text-slate-600">
-            Manage employees, attendance, leave, payroll, and salary slips from one focused dashboard built for a company of around 20 people.
-          </p>
-          <div className="mt-8 grid max-w-3xl gap-3 sm:grid-cols-3">
-            {["Secure login", "D1 database", "Pages deploy"].map((item) => (
-              <div key={item} className="rounded-lg border border-line bg-white p-4 text-sm font-semibold text-ink shadow-soft">
-                {item}
-              </div>
-            ))}
-          </div>
-        </section>
+          <h1 className="mt-5 text-4xl font-extrabold tracking-tight text-ink">
+            Fastex <span className="text-brand">HRMS</span>
+          </h1>
+          <p className="mt-2 text-sm text-slate-500">Sign in to your workspace</p>
+        </div>
 
-        <form onSubmit={submit} className="card p-5 sm:p-6">
-          <div className="mb-5">
-            <h2 className="text-xl font-bold text-ink">Sign in</h2>
-            <p className="mt-1 text-sm text-slate-500">Seed users use password123.</p>
-          </div>
-          {error ? <div className="mb-4 rounded-md bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
-          <div className="space-y-4">
-            <Field label="Email">
-              <input className="input" value={email} onChange={(event) => setEmail(event.target.value)} />
-            </Field>
-            <Field label="Password">
-              <input className="input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-            </Field>
-            <button className="btn btn-primary w-full" disabled={busy}>
-              {busy ? "Signing in..." : "Login"}
-            </button>
-          </div>
-          <div className="mt-5 grid gap-2 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
-            <button type="button" className="text-left font-semibold text-brand" onClick={() => setEmail("admin@fast.local")}>
-              Superadmin: admin@fast.local
-            </button>
-            <button type="button" className="text-left font-semibold text-brand" onClick={() => setEmail("riya@fast.local")}>
-              Employee: riya@fast.local
-            </button>
-          </div>
+        <form onSubmit={submit} className="card p-6 sm:p-7 space-y-4">
+          {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
+          <Field label="Email">
+            <input required autoFocus className="input" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@fastexmedia.com" />
+          </Field>
+          <Field label="Password">
+            <input required className="input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" />
+          </Field>
+          <button className="btn btn-primary w-full" disabled={busy}>
+            {busy ? "Signing in..." : "Login"}
+          </button>
         </form>
+
+        <p className="mt-6 text-center text-xs text-slate-400">© {new Date().getFullYear()} Fastex Media</p>
       </div>
     </main>
   );
@@ -1423,16 +1404,34 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [employeeId, setEmployeeId] = useState("");
   const [message, setMessage] = useState("");
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState<{ title: string; company: string; priority: "High" | "Medium" | "Low" }>({ title: "", company: "", priority: "Medium" });
+  const [form, setForm] = useState<{ title: string; company: string; priority: "High" | "Medium" | "Low"; deadline: string }>({ title: "", company: "", priority: "Medium", deadline: "" });
   const [assignEmployeeId, setAssignEmployeeId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [reportPeriod, setReportPeriod] = useState("Today");
 
   function openAdd() {
     if (isAdmin) setAssignEmployeeId(employeeId || String(employees[0]?.id ?? ""));
-    setForm({ title: "", company: "", priority: "Medium" });
+    setForm({ title: "", company: "", priority: "Medium", deadline: "" });
     setMessage("");
     setAddOpen(true);
   }
+
+  // Report/export date range for the selected preset.
+  function reportRange(): { start: string; end: string } {
+    const d = new Date();
+    const iso = (x: Date) => x.toISOString().slice(0, 10);
+    if (reportPeriod === "Today") return { start: iso(d), end: iso(d) };
+    if (reportPeriod === "Yesterday") { const y = new Date(d); y.setDate(d.getDate() - 1); return { start: iso(y), end: iso(y) }; }
+    if (reportPeriod === "Last 7 days") { const s = new Date(d); s.setDate(d.getDate() - 6); return { start: iso(s), end: iso(d) }; }
+    const s = new Date(d); s.setMonth(d.getMonth() - 3); return { start: iso(s), end: iso(d) };
+  }
+
+  const exportHref = (() => {
+    const { start, end } = reportRange();
+    const p = new URLSearchParams({ start, end });
+    if (isAdmin && employeeId) p.set("employeeId", employeeId);
+    return `/api/tasks.csv?${p.toString()}`;
+  })();
 
   async function load() {
     const params = new URLSearchParams({ date });
@@ -1457,7 +1456,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
       if (isAdmin) payload.employee_id = Number(assignEmployeeId);
       await api("/tasks", { method: "POST", body: JSON.stringify(payload) });
       setAddOpen(false);
-      setForm({ title: "", company: "", priority: "Medium" });
+      setForm({ title: "", company: "", priority: "Medium", deadline: "" });
       await load();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Failed to add task");
@@ -1510,6 +1509,20 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         <div className="card p-4"><p className="text-sm font-medium text-slate-500">Pending / In progress</p><p className="mt-1 text-2xl font-bold text-amber-600">{pending + inProgress}</p></div>
       </div>
 
+      {/* Task report — export to CSV */}
+      <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
+        <Field label="Report period">
+          <select className="input" value={reportPeriod} onChange={(e) => setReportPeriod(e.target.value)}>
+            <option>Today</option>
+            <option>Yesterday</option>
+            <option>Last 7 days</option>
+            <option>Last 3 months</option>
+          </select>
+        </Field>
+        <a className="btn btn-primary self-end" href={exportHref}><Download size={17} />Export CSV</a>
+        <p className="self-center text-xs text-slate-400">{isAdmin && employeeId ? "Selected employee" : isAdmin ? "All employees" : "Your tasks"} · {reportRange().start} → {reportRange().end}</p>
+      </div>
+
       {tasks.length === 0 ? (
         <EmptyState title={isAdmin ? "No tasks for this selection." : "No tasks yet for this day — add your first one."} />
       ) : (
@@ -1528,6 +1541,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                       <p className={classNames("font-semibold text-ink", task.status === "Completed" && "line-through text-slate-400")}>{task.title}</p>
                       {task.company ? <span className="badge bg-sky-50 text-sky-700">{task.company}</span> : null}
                       {task.assigned_by_admin ? <span className="badge bg-orange-50 text-orange-700">From admin</span> : null}
+                      {task.deadline ? <span className="badge bg-rose-50 text-rose-700">Due {task.deadline}</span> : null}
                     </div>
                     {isAdmin ? <p className="mt-0.5 text-xs text-slate-500">{task.employee_name}</p> : null}
                   </div>
@@ -1538,8 +1552,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     <select className={classNames("input h-9 w-auto py-1 text-xs font-semibold", taskStatusTone(task.status))} value={task.status} onChange={(e) => patchTask(task.id, { status: e.target.value })}>
                       <option>Pending</option><option>In Progress</option><option>Completed</option>
                     </select>
-                    {isAdmin ? (
-                      <button type="button" className="btn btn-soft" title="Delete task (admin only)" onClick={() => removeTask(task.id)}><Trash2 size={16} /></button>
+                    {(isAdmin || !task.assigned_by_admin) ? (
+                      <button type="button" className="btn btn-soft" title={isAdmin ? "Delete task" : "Delete your task"} onClick={() => removeTask(task.id)}><Trash2 size={16} /></button>
                     ) : null}
                   </div>
                 </div>
@@ -1564,11 +1578,16 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
             ) : null}
             <Field label="Task"><input autoFocus required className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Schedule Instagram reels" /></Field>
             <Field label="Company / Brand"><input className="input" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} placeholder="Which brand is this for?" /></Field>
-            <Field label="Priority">
-              <select className="input" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as "High" | "Medium" | "Low" })}>
-                <option>High</option><option>Medium</option><option>Low</option>
-              </select>
-            </Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Priority">
+                <select className="input" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as "High" | "Medium" | "Low" })}>
+                  <option>High</option><option>Medium</option><option>Low</option>
+                </select>
+              </Field>
+              <Field label="Deadline (optional)">
+                <input className="input" type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} />
+              </Field>
+            </div>
             <div className="flex justify-end gap-3 pt-2">
               <button type="button" className="btn btn-soft" onClick={() => setAddOpen(false)}>Cancel</button>
               <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving..." : isAdmin ? "Assign task" : "Add task"}</button>
@@ -1893,9 +1912,14 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
                   <>
                     {row.payment_proof && <button type="button" className="btn btn-soft" onClick={() => deleteProof(row.id)} title="Delete payment screenshot"><X size={16} /></button>}
                     <button type="button" className="btn btn-soft" onClick={() => handleEditClick(row)}>Edit</button>
-                    {row.status !== "Done"
-                      ? <button type="button" className="btn btn-primary" onClick={() => setPayModalOpen({ id: row.id, employee: row.employee_name || "Employee" })}>Mark paid</button>
-                      : <button type="button" className="btn btn-soft" onClick={() => setPaid(row.id, false)}>Mark unpaid</button>}
+                    {row.status !== "Done" ? (
+                      <>
+                        <button type="button" className="btn btn-primary" onClick={() => setPaid(row.id, true)}>Mark paid</button>
+                        <button type="button" className="btn btn-soft" title="Mark paid with a payment screenshot" onClick={() => setPayModalOpen({ id: row.id, employee: row.employee_name || "Employee" })}><ImageIcon size={16} /></button>
+                      </>
+                    ) : (
+                      <button type="button" className="btn btn-soft" onClick={() => setPaid(row.id, false)}>Mark unpaid</button>
+                    )}
                   </>
                 )}
               </div>

@@ -86,6 +86,7 @@ type Task = {
   priority: "High" | "Medium" | "Low";
   status: "Pending" | "In Progress" | "Completed";
   notes?: string | null;
+  assigned_by_admin?: number;
 };
 type CompanySettings = {
   company_name: string;
@@ -1423,7 +1424,15 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [message, setMessage] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState<{ title: string; company: string; priority: "High" | "Medium" | "Low" }>({ title: "", company: "", priority: "Medium" });
+  const [assignEmployeeId, setAssignEmployeeId] = useState("");
   const [busy, setBusy] = useState(false);
+
+  function openAdd() {
+    if (isAdmin) setAssignEmployeeId(employeeId || String(employees[0]?.id ?? ""));
+    setForm({ title: "", company: "", priority: "Medium" });
+    setMessage("");
+    setAddOpen(true);
+  }
 
   async function load() {
     const params = new URLSearchParams({ date });
@@ -1440,10 +1449,13 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   async function addTask(e: FormEvent) {
     e.preventDefault();
     if (!form.title.trim()) return;
+    if (isAdmin && !assignEmployeeId) { setMessage("Choose an employee to assign the task to."); return; }
     setBusy(true);
     setMessage("");
     try {
-      await api("/tasks", { method: "POST", body: JSON.stringify({ ...form, task_date: date }) });
+      const payload: Record<string, unknown> = { ...form, task_date: date };
+      if (isAdmin) payload.employee_id = Number(assignEmployeeId);
+      await api("/tasks", { method: "POST", body: JSON.stringify(payload) });
       setAddOpen(false);
       setForm({ title: "", company: "", priority: "Medium" });
       await load();
@@ -1473,8 +1485,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     <section className="space-y-5">
       <PageTitle
         title="Daily Tasks"
-        description={isAdmin ? "Review what each employee planned and completed for the day, by priority." : "Plan your day per brand, set priority, and mark what's done."}
-        action={!isAdmin ? <button type="button" className="btn btn-primary" onClick={() => setAddOpen(true)}><Plus size={17} />Add task</button> : undefined}
+        description={isAdmin ? "Review and assign employee tasks for the day, by priority." : "Plan your day per brand, set priority, and mark what's done."}
+        action={<button type="button" className="btn btn-primary" onClick={openAdd}><Plus size={17} />{isAdmin ? "Assign task" : "Add task"}</button>}
       />
       {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
 
@@ -1515,6 +1527,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     <div className="flex flex-wrap items-center gap-2">
                       <p className={classNames("font-semibold text-ink", task.status === "Completed" && "line-through text-slate-400")}>{task.title}</p>
                       {task.company ? <span className="badge bg-sky-50 text-sky-700">{task.company}</span> : null}
+                      {task.assigned_by_admin ? <span className="badge bg-orange-50 text-orange-700">From admin</span> : null}
                     </div>
                     {isAdmin ? <p className="mt-0.5 text-xs text-slate-500">{task.employee_name}</p> : null}
                   </div>
@@ -1539,8 +1552,16 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
       {addOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
           <form onSubmit={addTask} className="card w-full max-w-md p-6 space-y-4">
-            <h3 className="text-lg font-bold text-ink">Add task for {date}</h3>
-            <p className="text-xs text-slate-500">Once added, only an admin can delete it — you can still update its status.</p>
+            <h3 className="text-lg font-bold text-ink">{isAdmin ? "Assign task" : "Add task"} for {date}</h3>
+            <p className="text-xs text-slate-500">{isAdmin ? "The employee will see this on their board flagged “From admin” and can update its status." : "Once added, only an admin can delete it — you can still update its status."}</p>
+            {isAdmin ? (
+              <Field label="Assign to">
+                <select required className="input" value={assignEmployeeId} onChange={(e) => setAssignEmployeeId(e.target.value)}>
+                  <option value="">Select employee</option>
+                  {employees.map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
+                </select>
+              </Field>
+            ) : null}
             <Field label="Task"><input autoFocus required className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Schedule Instagram reels" /></Field>
             <Field label="Company / Brand"><input className="input" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} placeholder="Which brand is this for?" /></Field>
             <Field label="Priority">
@@ -1550,7 +1571,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
             </Field>
             <div className="flex justify-end gap-3 pt-2">
               <button type="button" className="btn btn-soft" onClick={() => setAddOpen(false)}>Cancel</button>
-              <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Adding..." : "Add task"}</button>
+              <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving..." : isAdmin ? "Assign task" : "Add task"}</button>
             </div>
           </form>
         </div>

@@ -647,15 +647,32 @@ async function taskList(db: D1Database, user: AppUser, url: URL) {
 }
 
 async function createTask(db: D1Database, user: AppUser, body: Record<string, unknown>) {
-  if (user.role !== "Employee") return json({ error: "Only employees can add their own tasks" }, 403);
-  const employee = await employeeForUser(db, user);
   const title = text(body.title);
   if (!title) return json({ error: "Task title is required" }, 400);
   const date = text(body.task_date) || dateOnly();
   const priority = taskPriorities.includes(text(body.priority)) ? text(body.priority) : "Medium";
+
+  let employeeId: number;
+  let assignedByAdmin = 0;
+  if (user.role === "Superadmin") {
+    // Admin assigns a task to a chosen employee.
+    employeeId = number(body.employee_id);
+    const target = await db.prepare("SELECT id, user_id, full_name FROM employees WHERE id = ?").bind(employeeId).first<{ id: number; user_id: number; full_name: string }>();
+    if (!target) return json({ error: "Choose a valid employee to assign the task to" }, 400);
+    assignedByAdmin = 1;
+  } else {
+    const employee = await employeeForUser(db, user);
+    employeeId = Number(employee.id);
+  }
+
   await db.prepare(
-    "INSERT INTO tasks (employee_id, task_date, title, company, priority, status, notes) VALUES (?, ?, ?, ?, ?, 'Pending', ?)",
-  ).bind(employee.id, date, title, text(body.company) || null, priority, text(body.notes) || null).run();
+    "INSERT INTO tasks (employee_id, task_date, title, company, priority, status, notes, assigned_by_admin) VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?)",
+  ).bind(employeeId, date, title, text(body.company) || null, priority, text(body.notes) || null, assignedByAdmin).run();
+
+  if (assignedByAdmin) {
+    const emp = await db.prepare("SELECT user_id FROM employees WHERE id = ?").bind(employeeId).first<{ user_id: number }>();
+    if (emp?.user_id) await notify(db, emp.user_id, "New task assigned", `Admin assigned you a task for ${date}: ${title}`);
+  }
   return json({ ok: true });
 }
 

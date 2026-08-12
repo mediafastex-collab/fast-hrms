@@ -208,6 +208,7 @@ async function employeeSummary(db: D1Database, user: AppUser) {
     if (row.status === "Half Day") monthAttendance.halfDay = row.count;
     if (row.status === "Absent") monthAttendance.absent = row.count;
   }
+  if (todayAttendance) await attachBreaks(db, [todayAttendance as Record<string, unknown>]);
   return json({ summary: { todayAttendance, monthAttendance, leaveBalance: paidLeave, recentLeaves: recentLeaves.results, currentSalary, latestSalary, upcomingLeaves: upcomingLeaves.results, upcomingHolidays: upcomingHolidays.results } });
 }
 
@@ -320,7 +321,7 @@ async function attendanceRows(db: D1Database, user: AppUser, url: URL) {
      LEFT JOIN departments d ON d.id = e.department_id
      ${where} ORDER BY a.attendance_date DESC, e.full_name`,
   ).bind(...params).all();
-  return result.results;
+  return attachBreaks(db, result.results as Array<Record<string, unknown>>);
 }
 
 async function checkIn(db: D1Database, user: AppUser, body: Record<string, unknown>) {
@@ -342,10 +343,11 @@ async function checkOut(db: D1Database, user: AppUser, body: Record<string, unkn
   if (current.check_out) return json({ error: "You have already checked out today" }, 400);
   const settings = await companySettings(db);
   const checkOutTime = timeOnly();
-  let hours = hoursBetween(current.check_in, checkOutTime);
-  if (current.break_start && current.break_end) {
-    hours = Math.max(0, hours - hoursBetween(current.break_start, current.break_end));
-  }
+  // If a break is still open, close it at checkout time.
+  await db.prepare("UPDATE attendance_breaks SET break_end = ? WHERE attendance_id = ? AND break_end IS NULL").bind(checkOutTime, current.id).run();
+  // Worked hours = span minus every break taken today.
+  const breakHours = await breakHoursFor(db, current);
+  const hours = Math.max(0, hoursBetween(current.check_in, checkOutTime) - breakHours);
   const status = hours < settings.half_day_min_hours ? "Half Day" : current.status;
   const reason = text(body.early_checkout_reason) || null;
   await db.prepare("UPDATE attendance SET check_out = ?, total_hours = ?, status = ?, early_checkout_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -358,18 +360,54 @@ async function takeBreak(db: D1Database, user: AppUser) {
   const current = await db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date = ?").bind(employee.id, dateOnly()).first<Record<string, string>>();
   if (!current?.check_in) return json({ error: "Check in first" }, 400);
   if (current.check_out) return json({ error: "You have already checked out today" }, 400);
-  if (current.break_start) return json({ error: "You are already on a break or took one" }, 400);
-  await db.prepare("UPDATE attendance SET break_start = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(timeOnly(), current.id).run();
+  const open = await db.prepare("SELECT id FROM attendance_breaks WHERE attendance_id = ? AND break_end IS NULL").bind(current.id).first();
+  if (open) return json({ error: "You are already on a break" }, 400);
+  const time = timeOnly();
+  await db.prepare("INSERT INTO attendance_breaks (attendance_id, break_start) VALUES (?, ?)").bind(current.id, time).run();
+  // Mirror the latest break onto the legacy columns for backward compatibility.
+  await db.prepare("UPDATE attendance SET break_start = ?, break_end = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(time, current.id).run();
   return json({ ok: true });
 }
 
 async function endBreak(db: D1Database, user: AppUser) {
   const employee = await employeeForUser(db, user);
   const current = await db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date = ?").bind(employee.id, dateOnly()).first<Record<string, string>>();
-  if (!current?.break_start) return json({ error: "You are not on a break" }, 400);
-  if (current.break_end) return json({ error: "Break already ended" }, 400);
-  await db.prepare("UPDATE attendance SET break_end = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(timeOnly(), current.id).run();
+  if (!current) return json({ error: "Check in first" }, 400);
+  const open = await db.prepare("SELECT id FROM attendance_breaks WHERE attendance_id = ? AND break_end IS NULL").bind(current.id).first<{ id: number }>();
+  if (!open) return json({ error: "You are not on a break" }, 400);
+  const time = timeOnly();
+  await db.prepare("UPDATE attendance_breaks SET break_end = ? WHERE id = ?").bind(time, open.id).run();
+  await db.prepare("UPDATE attendance SET break_end = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(time, current.id).run();
   return json({ ok: true });
+}
+
+// Total closed-break hours for one attendance row (multi-break aware, legacy fallback).
+async function breakHoursFor(db: D1Database, attendance: Record<string, string>) {
+  const rows = await db.prepare("SELECT break_start, break_end FROM attendance_breaks WHERE attendance_id = ?").bind(attendance.id).all<{ break_start: string; break_end: string | null }>();
+  if (rows.results.length) {
+    return rows.results.reduce((sum, b) => sum + (b.break_end ? hoursBetween(b.break_start, b.break_end) : 0), 0);
+  }
+  return attendance.break_start && attendance.break_end ? hoursBetween(attendance.break_start, attendance.break_end) : 0;
+}
+
+// Attach a `breaks` array to attendance rows in one batched query.
+async function attachBreaks(db: D1Database, rows: Array<Record<string, unknown>>) {
+  const ids = rows.map((r) => Number(r.id)).filter(Boolean);
+  if (!ids.length) return rows;
+  const byAttendance = new Map<number, Array<Record<string, unknown>>>();
+  for (let i = 0; i < ids.length; i += 50) {
+    const chunk = ids.slice(i, i + 50);
+    const result = await db.prepare(
+      `SELECT id, attendance_id, break_start, break_end, reason FROM attendance_breaks WHERE attendance_id IN (${chunk.map(() => "?").join(",")}) ORDER BY break_start`,
+    ).bind(...chunk).all<Record<string, unknown>>();
+    for (const b of result.results) {
+      const key = Number(b.attendance_id);
+      if (!byAttendance.has(key)) byAttendance.set(key, []);
+      byAttendance.get(key)!.push(b);
+    }
+  }
+  for (const row of rows) row.breaks = byAttendance.get(Number(row.id)) ?? [];
+  return rows;
 }
 
 async function manualAttendance(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
@@ -396,8 +434,12 @@ async function manualAttendance(db: D1Database, actor: AppUser, body: Record<str
 
 async function attendanceCsv(db: D1Database, user: AppUser, url: URL) {
   const rows = await attendanceRows(db, user, url) as Array<Record<string, unknown>>;
-  const header = ["Employee", "Employee ID", "Department", "Date", "Check in", "Check out", "Hours", "Status"];
-  const lines = rows.map((row) => [row.employee_name, row.employee_code, row.department_name, row.attendance_date, row.check_in, row.check_out, row.total_hours, row.status].map(csvCell).join(","));
+  const header = ["Employee", "Employee ID", "Department", "Date", "Check in", "Check out", "Breaks", "Hours", "Status"];
+  const lines = rows.map((row) => {
+    const breaks = (row.breaks as Array<Record<string, unknown>> | undefined ?? [])
+      .map((b) => `${b.break_start}-${b.break_end ?? "…"}`).join("; ");
+    return [row.employee_name, row.employee_code, row.department_name, row.attendance_date, row.check_in, row.check_out, breaks, row.total_hours, row.status].map(csvCell).join(",");
+  });
   return new Response([header.join(","), ...lines].join("\n"), { headers: { "Content-Type": "text/csv", "Content-Disposition": "attachment; filename=attendance.csv" } });
 }
 

@@ -113,11 +113,19 @@ type AttendanceRecord = {
   check_out?: string;
   break_start?: string;
   break_end?: string;
+  breaks?: AttendanceBreak[];
   total_hours: number;
   status: "Present" | "Absent" | "Half Day" | "Late" | "On Leave";
   notes?: string;
   early_checkout_reason?: string;
   late_checkin_reason?: string;
+};
+
+type AttendanceBreak = {
+  id: number;
+  break_start: string;
+  break_end?: string | null;
+  reason?: string | null;
 };
 
 type LeaveRequest = {
@@ -188,21 +196,59 @@ function timeToSeconds(value?: string): number | null {
   return h * 3600 + m * 60 + s;
 }
 
-// Actual worked duration as "Hh Mm Ss" = (check-out − check-in) − break. Falls back to stored hours.
+// Total seconds of finished breaks for a day (multi-break aware, legacy fallback).
+function closedBreakSeconds(row: AttendanceRecord): number {
+  if (row.breaks && row.breaks.length) {
+    return row.breaks.reduce((sum, b) => {
+      const s = timeToSeconds(b.break_start);
+      const e = timeToSeconds(b.break_end ?? undefined);
+      return s != null && e != null ? sum + Math.max(0, e - s) : sum;
+    }, 0);
+  }
+  const bs = timeToSeconds(row.break_start);
+  const be = timeToSeconds(row.break_end);
+  return bs != null && be != null ? Math.max(0, be - bs) : 0;
+}
+
+// The break that hasn't ended yet, if any.
+function openBreakOf(row?: AttendanceRecord): AttendanceBreak | undefined {
+  if (!row) return undefined;
+  if (row.breaks && row.breaks.length) return row.breaks.find((b) => !b.break_end);
+  return row.break_start && !row.break_end ? { id: 0, break_start: row.break_start } : undefined;
+}
+
+// Actual worked duration as "Hh Mm Ss" = (check-out − check-in) − all breaks. Falls back to stored hours.
 function workedHMS(row: AttendanceRecord): string {
   const ci = timeToSeconds(row.check_in);
   const co = timeToSeconds(row.check_out);
   if (ci == null || co == null) {
     return row.total_hours !== undefined ? `${Number(row.total_hours).toFixed(1)} hrs` : "-";
   }
-  let sec = Math.max(0, co - ci);
-  const bs = timeToSeconds(row.break_start);
-  const be = timeToSeconds(row.break_end);
-  if (bs != null && be != null) sec = Math.max(0, sec - Math.max(0, be - bs));
+  const sec = Math.max(0, co - ci - closedBreakSeconds(row));
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
   return `${h}h ${m}m ${s}s`;
+}
+
+// Break cell for logs: every break of the day, plus total time.
+function BreaksCell({ row }: { row: AttendanceRecord }) {
+  const breaks = row.breaks && row.breaks.length
+    ? row.breaks
+    : row.break_start ? [{ id: 0, break_start: row.break_start, break_end: row.break_end ?? null }] : [];
+  if (!breaks.length) return <span>-</span>;
+  const totalSec = closedBreakSeconds(row);
+  const totalMin = Math.round(totalSec / 60);
+  return (
+    <div className="space-y-0.5">
+      {breaks.map((b, i) => (
+        <div key={b.id || i} className="whitespace-nowrap">
+          {b.break_start} - {b.break_end ?? <span className="font-semibold text-amber-600">on break</span>}
+        </div>
+      ))}
+      {totalSec > 0 && <div className="text-[10px] text-slate-500">{breaks.length} break{breaks.length > 1 ? "s" : ""} · {Math.floor(totalMin / 60) ? `${Math.floor(totalMin / 60)}h ` : ""}{totalMin % 60}m</div>}
+    </div>
+  );
 }
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -547,30 +593,20 @@ function EmployeeDashboard() {
   
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
-    if (summary?.todayAttendance?.check_in && !summary.todayAttendance.check_out) {
-      interval = setInterval(() => {
+    const att = summary?.todayAttendance;
+    if (att?.check_in && !att.check_out) {
+      const tick = () => {
         const now = new Date();
-        const checkInParts = summary.todayAttendance!.check_in!.split(":");
-        let baseTime = new Date();
-        baseTime.setHours(Number(checkInParts[0]), Number(checkInParts[1]), 0, 0);
-        let seconds = Math.floor((now.getTime() - baseTime.getTime()) / 1000);
-        
-        if (summary.todayAttendance?.break_start) {
-          const bsParts = summary.todayAttendance.break_start.split(":");
-          let bsTime = new Date();
-          bsTime.setHours(Number(bsParts[0]), Number(bsParts[1]), 0, 0);
-          
-          if (summary.todayAttendance.break_end) {
-            const beParts = summary.todayAttendance.break_end.split(":");
-            let beTime = new Date();
-            beTime.setHours(Number(beParts[0]), Number(beParts[1]), 0, 0);
-            seconds -= Math.floor((beTime.getTime() - bsTime.getTime()) / 1000);
-          } else {
-             seconds -= Math.floor((now.getTime() - bsTime.getTime()) / 1000);
-          }
-        }
+        const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+        let seconds = nowSec - (timeToSeconds(att.check_in) ?? 0);
+        // Subtract every finished break, plus the ongoing one if on a break now.
+        seconds -= closedBreakSeconds(att);
+        const open = openBreakOf(att);
+        if (open) seconds -= Math.max(0, nowSec - (timeToSeconds(open.break_start) ?? nowSec));
         setElapsed(Math.max(0, seconds));
-      }, 1000);
+      };
+      tick();
+      interval = setInterval(tick, 1000);
     }
     return () => clearInterval(interval);
   }, [summary]);
@@ -623,7 +659,7 @@ function EmployeeDashboard() {
   const isSunday = new Date().getDay() === 0;
   const hasCheckedIn = Boolean(summary.todayAttendance?.check_in);
   const hasCheckedOut = Boolean(summary.todayAttendance?.check_out);
-  const onBreak = Boolean(summary.todayAttendance?.break_start && !summary.todayAttendance?.break_end);
+  const onBreak = Boolean(openBreakOf(summary.todayAttendance));
 
   return (
     <section className="space-y-5 animate-fade-in">
@@ -771,11 +807,7 @@ function EmployeeDashboard() {
                {row.early_checkout_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.early_checkout_reason}</div>}
              </div>
           )],
-          ["Break", (row) => (
-            row.break_start && row.break_end 
-              ? `${row.break_start} - ${row.break_end}` 
-              : row.break_start ? "On break" : "-"
-          )],
+          ["Breaks", (row) => <BreaksCell row={row} />],
           ["Worked", (row) => workedHMS(row)],
           ["Status", (row) => <Badge value={row.status} />],
         ]}
@@ -1286,11 +1318,7 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
          {row.early_checkout_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.early_checkout_reason}</div>}
        </div>
     )],
-    ["Break", (row) => (
-      row.break_start && row.break_end
-        ? `${row.break_start} - ${row.break_end}`
-        : row.break_start ? "On break" : "-"
-    )],
+    ["Breaks", (row) => <BreaksCell row={row} />],
     ["Worked", (row) => <span className="font-semibold text-ink">{workedHMS(row)}</span>],
     ["Status", (row) => <Badge value={row.status} />],
   ];

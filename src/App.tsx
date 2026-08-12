@@ -1552,8 +1552,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     <select className={classNames("input h-9 w-auto py-1 text-xs font-semibold", taskStatusTone(task.status))} value={task.status} onChange={(e) => patchTask(task.id, { status: e.target.value })}>
                       <option>Pending</option><option>In Progress</option><option>Completed</option>
                     </select>
-                    {(isAdmin || !task.assigned_by_admin) ? (
-                      <button type="button" className="btn btn-soft" title={isAdmin ? "Delete task" : "Delete your task"} onClick={() => removeTask(task.id)}><Trash2 size={16} /></button>
+                    {isAdmin ? (
+                      <button type="button" className="btn btn-soft" title="Delete task (admin only)" onClick={() => removeTask(task.id)}><Trash2 size={16} /></button>
                     ) : null}
                   </div>
                 </div>

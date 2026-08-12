@@ -58,7 +58,6 @@ async function route(context: Context) {
   if (method === "GET" && path === "/tasks.csv") return tasksCsv(db, user, url);
   if (method === "POST" && path === "/tasks") return createTask(db, user, await readBody(context.request));
   if (method === "PUT" && path.match(/^\/tasks\/\d+$/)) return updateTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
-  if (method === "DELETE" && path.match(/^\/tasks\/\d+$/)) return deleteTask(db, user, Number(path.split("/").pop()));
 
   requireAdmin(user);
 
@@ -81,6 +80,7 @@ async function route(context: Context) {
   if (method === "POST" && path === "/holidays") return saveHoliday(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/holidays/")) return deleteHoliday(db, user, Number(path.split("/").pop()));
   if (method === "PUT" && path === "/settings") return saveSettings(db, user, await readBody(context.request));
+  if (method === "DELETE" && path.match(/^\/tasks\/\d+$/)) return deleteTask(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/audit-logs") return auditLogs(db);
   if (method === "GET" && path === "/reports/meta") return reportsMeta(db);
   if (method === "GET" && path === "/reports/leaves.csv") return leaveCsv(db, url);
@@ -702,16 +702,11 @@ async function updateTask(db: D1Database, user: AppUser, id: number, body: Recor
   return json({ ok: true });
 }
 
-async function deleteTask(db: D1Database, user: AppUser, id: number) {
-  const task = await db.prepare("SELECT employee_id, assigned_by_admin FROM tasks WHERE id = ?").bind(id).first<{ employee_id: number; assigned_by_admin: number }>();
-  if (!task) return json({ error: "Task not found" }, 404);
-  // Admins delete any task. Employees may delete only their own self-created tasks (not admin-assigned).
-  if (user.role !== "Superadmin") {
-    if (Number(task.employee_id) !== user.employeeId) return json({ error: "Not allowed" }, 403);
-    if (task.assigned_by_admin) return json({ error: "Admin-assigned tasks can only be removed by an admin" }, 403);
-  }
+// Delete is admin-only (route sits after the requireAdmin gate).
+async function deleteTask(db: D1Database, actor: AppUser, id: number) {
+  const task = await db.prepare("SELECT title FROM tasks WHERE id = ?").bind(id).first<{ title: string }>();
   await db.prepare("DELETE FROM tasks WHERE id = ?").bind(id).run();
-  if (user.role === "Superadmin") await audit(db, user, "Task deleted", "tasks", id, "");
+  await audit(db, actor, "Task deleted", "tasks", id, task?.title ?? "");
   return json({ ok: true });
 }
 

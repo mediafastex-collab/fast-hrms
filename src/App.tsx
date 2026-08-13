@@ -663,8 +663,14 @@ function EmployeeDashboard() {
 
   return (
     <section className="space-y-5 animate-fade-in">
-      <div className="card border-l-4 border-l-brand p-6 bg-white">
-        <p className="text-lg font-medium text-ink italic">"{quote}"</p>
+      <div className="card overflow-hidden border-l-4 border-l-brand bg-gradient-to-r from-orange-50 via-amber-50 to-white p-6">
+        <div className="flex items-start gap-4">
+          <span className="select-none text-4xl font-serif leading-none text-brand/40">&ldquo;</span>
+          <div>
+            <p className="text-lg font-semibold italic leading-relaxed text-ink">{quote}</p>
+            <p className="mt-2 text-[11px] font-bold uppercase tracking-wider text-brand/70">Today&rsquo;s inspiration</p>
+          </div>
+        </div>
       </div>
       {promptCheckIn && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
@@ -739,9 +745,8 @@ function EmployeeDashboard() {
           <StatCard icon={Clock3} label="Late" value={summary.monthAttendance.late} sub="This month" />
         </div>
       </div>
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <StatCard icon={FileText} label="Leave balance" value={summary.leaveBalance} sub="Paid leave estimate" />
-        <StatCard icon={Banknote} label="Salary status" value={summary.currentSalary?.status ?? "Pending"} sub="Current month" />
         <div className="card p-4">
           <p className="text-sm font-medium text-slate-500">Latest salary slip</p>
           {summary.latestSalary ? (
@@ -772,21 +777,32 @@ function EmployeeDashboard() {
             )) : <p className="text-sm text-slate-500">No approved upcoming leave.</p>}
           </div>
         </div>
-        <div className="card p-5">
+        <div className="card border-2 border-amber-300 bg-gradient-to-br from-amber-50 to-white p-5 shadow-md shadow-amber-500/10">
           <div className="flex items-center gap-2">
-            <span className="rounded-lg bg-amber-50 p-2 text-amber-600"><Sparkles size={18} /></span>
+            <span className="rounded-lg bg-amber-400 p-2 text-white shadow-sm"><Sparkles size={18} /></span>
             <h3 className="font-bold text-ink">Upcoming holidays</h3>
+            {summary.upcomingHolidays && summary.upcomingHolidays.length ? (
+              <span className="badge bg-amber-400 text-white">{summary.upcomingHolidays.length}</span>
+            ) : null}
           </div>
           <div className="mt-4 space-y-2">
-            {summary.upcomingHolidays && summary.upcomingHolidays.length ? summary.upcomingHolidays.map((holiday) => (
-              <div key={holiday.id} className="flex items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
-                <div>
-                  <p className="font-semibold text-ink">{holiday.name}</p>
-                  {holiday.description ? <p className="text-xs text-slate-500">{holiday.description}</p> : null}
+            {summary.upcomingHolidays && summary.upcomingHolidays.length ? summary.upcomingHolidays.map((holiday) => {
+              const days = Math.round((Date.parse(holiday.holiday_date) - Date.parse(today)) / 86400000);
+              return (
+                <div key={holiday.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-white px-4 py-3 shadow-sm">
+                  <div>
+                    <p className="font-bold text-ink">{holiday.name}</p>
+                    {holiday.description ? <p className="text-xs text-slate-500">{holiday.description}</p> : null}
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="text-sm font-bold text-amber-700">{holiday.holiday_date}</p>
+                    <p className="text-[11px] font-semibold text-amber-600">
+                      {days <= 0 ? "Today 🎉" : days === 1 ? "Tomorrow" : `in ${days} days`}
+                    </p>
+                  </div>
                 </div>
-                <span className="text-sm font-semibold text-amber-600">{holiday.holiday_date}</span>
-              </div>
-            )) : <p className="text-sm text-slate-500">No upcoming holidays.</p>}
+              );
+            }) : <p className="text-sm text-slate-500">No upcoming holidays.</p>}
           </div>
         </div>
       </div>

@@ -1255,12 +1255,13 @@ function ManagerList({
   );
 }
 
-type GridDay = { day: string; status: string; factor: number; hours: number; check_in?: string | null; check_out?: string | null; note?: string; amount: number };
+type GridDay = { day: string; status: string; factor: number; hours: number; check_in?: string | null; check_out?: string | null; note?: string; amount?: number };
 type GridResponse = {
   month: number; year: number;
-  employee: { id: number; full_name: string; joining_date: string; monthly_salary: number };
+  employee: { id: number; full_name: string; joining_date: string; monthly_salary?: number };
   days: GridDay[];
-  summary: { totalDays: number; perDay: number; deductionDays: number; paidDays: number; gross: number; deductions: number; net: number };
+  // Salary figures are only present for admins.
+  summary: { totalDays: number; deductionDays: number; paidDays: number; perDay?: number; gross?: number; deductions?: number; net?: number };
   employees?: Employee[];
 };
 
@@ -1271,11 +1272,12 @@ function dayTone(status: string) {
   return "bg-slate-50 text-slate-600 border-slate-200";
 }
 
-// Month-by-month salary day breakdown. Admin can override any single day.
-function MonthGrid({ isAdmin }: { isAdmin: boolean }) {
+// Month day grid. On Attendance it shows attendance only; on Payroll (admin)
+// it also shows the salary breakdown. Admin can override any single day.
+function MonthGrid({ isAdmin, showSalary = false, defaultMonth, defaultYear }: { isAdmin: boolean; showSalary?: boolean; defaultMonth?: number; defaultYear?: number }) {
   const now = new Date();
-  const [month, setMonth] = useState(now.getMonth() + 1);
-  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(defaultMonth ?? now.getMonth() + 1);
+  const [year, setYear] = useState(defaultYear ?? now.getFullYear());
   const [employeeId, setEmployeeId] = useState("");
   const [data, setData] = useState<GridResponse | null>(null);
   const [message, setMessage] = useState("");
@@ -1328,8 +1330,12 @@ function MonthGrid({ isAdmin }: { isAdmin: boolean }) {
     <div className="card p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h3 className="font-bold text-ink">Salary day breakdown</h3>
-          <p className="text-xs text-slate-500">Every day of the month and how it affects salary. Per-day rate = monthly salary ÷ days in month.</p>
+          <h3 className="font-bold text-ink">{showSalary ? "Salary day breakdown" : "Monthly attendance"}</h3>
+          <p className="text-xs text-slate-500">
+            {showSalary
+              ? "Every day of the month and how it affects salary. Per-day rate = monthly salary ÷ days in month."
+              : "Every day of the month with its attendance status. Sundays are paid weekly offs."}
+          </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
           {isAdmin ? (
@@ -1353,14 +1359,23 @@ function MonthGrid({ isAdmin }: { isAdmin: boolean }) {
 
       {data ? (
         <>
-          <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
-            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Per day</p><p className="text-lg font-bold text-ink">{currency.format(data.summary.perDay)}</p></div>
-            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Paid days</p><p className="text-lg font-bold text-emerald-600">{data.summary.paidDays}</p></div>
-            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deduction days</p><p className="text-lg font-bold text-rose-600">{data.summary.deductionDays}</p></div>
-            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deductions</p><p className="text-lg font-bold text-rose-600">-{currency.format(data.summary.deductions)}</p></div>
-            <div className="rounded-xl border-2 border-brand/30 bg-orange-50 p-3"><p className="text-[11px] font-semibold uppercase text-brand">Net payable</p><p className="text-lg font-extrabold text-brand">{currency.format(data.summary.net)}</p></div>
-          </div>
+          {showSalary ? (
+            <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Per day</p><p className="text-lg font-bold text-ink">{currency.format(data.summary.perDay ?? 0)}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Paid days</p><p className="text-lg font-bold text-emerald-600">{data.summary.paidDays}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deduction days</p><p className="text-lg font-bold text-rose-600">{data.summary.deductionDays}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deductions</p><p className="text-lg font-bold text-rose-600">-{currency.format(data.summary.deductions ?? 0)}</p></div>
+              <div className="rounded-xl border-2 border-brand/30 bg-orange-50 p-3"><p className="text-[11px] font-semibold uppercase text-brand">Net payable</p><p className="text-lg font-extrabold text-brand">{currency.format(data.summary.net ?? 0)}</p></div>
+            </div>
+          ) : (
+            <div className="mt-4 grid gap-3 sm:grid-cols-4">
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Present</p><p className="text-lg font-bold text-emerald-600">{data.days.filter((d) => d.status === "Present").length}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Half days</p><p className="text-lg font-bold text-amber-600">{data.days.filter((d) => d.status === "Half day" || d.status === "Half Day" || d.status === "No check-in").length}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Absent</p><p className="text-lg font-bold text-rose-600">{data.days.filter((d) => d.status === "Absent").length}</p></div>
+            </div>
+          )}
 
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
             {data.days.map((d) => (
@@ -1378,7 +1393,9 @@ function MonthGrid({ isAdmin }: { isAdmin: boolean }) {
                 </div>
                 <p className="mt-1 truncate text-[11px] font-semibold">{d.status}</p>
                 {d.check_in ? <p className="text-[10px] opacity-80">{d.check_in.slice(0, 5)}{d.check_out ? `–${d.check_out.slice(0, 5)}` : ""}</p> : null}
-                {d.factor > 0 ? <p className="text-[10px] font-bold">-{currency.format(data.summary.perDay * d.factor)}</p> : <p className="text-[10px] opacity-70">Paid</p>}
+                {showSalary
+                  ? (d.factor > 0 ? <p className="text-[10px] font-bold">-{currency.format((data.summary.perDay ?? 0) * d.factor)}</p> : <p className="text-[10px] opacity-70">Paid</p>)
+                  : (d.hours > 0 ? <p className="text-[10px] opacity-70">{d.hours.toFixed(1)}h</p> : null)}
               </button>
             ))}
           </div>
@@ -1407,6 +1424,140 @@ function MonthGrid({ isAdmin }: { isAdmin: boolean }) {
             <div className="flex justify-end gap-3 pt-2">
               <button type="button" className="btn btn-soft" onClick={() => setEditing(null)}>Cancel</button>
               <button type="submit" className="btn btn-primary">Save</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type DayRequest = {
+  id: number;
+  employee_id: number;
+  employee_name?: string;
+  attendance_date: string;
+  request_type: string;
+  requested_check_in?: string | null;
+  requested_check_out?: string | null;
+  reason?: string;
+  status: "Pending" | "Approved" | "Rejected";
+  admin_note?: string | null;
+};
+
+// Employee raises a per-day correction; admin approves and it applies everywhere.
+function DayRequests({ isAdmin }: { isAdmin: boolean }) {
+  const [requests, setRequests] = useState<DayRequest[]>([]);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [form, setForm] = useState({ attendance_date: today, request_type: "Timing", requested_check_in: "", requested_check_out: "", reason: "" });
+
+  async function load() {
+    try {
+      const d = await api<{ requests: DayRequest[] }>("/attendance-requests");
+      setRequests(d.requests);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to load requests");
+    }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMessage("");
+    try {
+      await api("/attendance-requests", { method: "POST", body: JSON.stringify(form) });
+      setOpen(false);
+      setForm({ attendance_date: today, request_type: "Timing", requested_check_in: "", requested_check_out: "", reason: "" });
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to submit request");
+    }
+    setBusy(false);
+  }
+
+  async function decide(id: number, status: "Approved" | "Rejected") {
+    const admin_note = status === "Rejected" ? (window.prompt("Reason for rejection (optional)") ?? "") : "";
+    await api(`/attendance-requests/${id}/decision`, { method: "POST", body: JSON.stringify({ status, admin_note }) });
+    await load();
+  }
+
+  const pending = requests.filter((r) => r.status === "Pending").length;
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <h3 className="font-bold text-ink">
+          {isAdmin ? "Attendance correction requests" : "My correction requests"}
+          {pending ? <span className="badge ml-2 bg-amber-50 text-amber-700">{pending} pending</span> : null}
+        </h3>
+        {!isAdmin ? <button type="button" className="btn btn-primary" onClick={() => setOpen(true)}><Plus size={16} />Request correction</button> : null}
+      </div>
+      {message ? <div className="px-4 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-left text-sm">
+          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              {isAdmin ? <th className="px-4 py-3 font-bold">Employee</th> : null}
+              <th className="px-4 py-3 font-bold">Date</th>
+              <th className="px-4 py-3 font-bold">Type</th>
+              <th className="px-4 py-3 font-bold">Requested</th>
+              <th className="px-4 py-3 font-bold">Reason</th>
+              <th className="px-4 py-3 font-bold">Status</th>
+              <th className="px-4 py-3 font-bold">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {requests.length ? requests.map((r) => (
+              <tr key={r.id} className="bg-white">
+                {isAdmin ? <td className="px-4 py-3 font-semibold text-ink">{r.employee_name}</td> : null}
+                <td className="px-4 py-3">{r.attendance_date}</td>
+                <td className="px-4 py-3">{r.request_type}</td>
+                <td className="px-4 py-3">{r.request_type === "Timing" ? `${r.requested_check_in || "—"} → ${r.requested_check_out || "—"}` : "—"}</td>
+                <td className="px-4 py-3 text-slate-600">{r.reason || "—"}</td>
+                <td className="px-4 py-3"><Badge value={r.status} /></td>
+                <td className="px-4 py-3">
+                  {isAdmin && r.status === "Pending" ? (
+                    <div className="flex gap-2">
+                      <button type="button" className="btn btn-soft" onClick={() => decide(r.id, "Approved")}>Approve</button>
+                      <button type="button" className="btn btn-soft" onClick={() => decide(r.id, "Rejected")}>Reject</button>
+                    </div>
+                  ) : (r.admin_note || "—")}
+                </td>
+              </tr>
+            )) : (
+              <tr><td className="px-4 py-8 text-center text-slate-500" colSpan={isAdmin ? 7 : 6}>No correction requests.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+          <form onSubmit={submit} className="card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">Request attendance correction</h3>
+            <p className="text-xs text-slate-500">Your admin will review this. Once approved it updates your attendance and salary automatically.</p>
+            <Field label="Date"><input required className="input" type="date" value={form.attendance_date} onChange={(e) => setForm({ ...form, attendance_date: e.target.value })} /></Field>
+            <Field label="What do you need?">
+              <select className="input" value={form.request_type} onChange={(e) => setForm({ ...form, request_type: e.target.value })}>
+                <option value="Timing">Fix check-in / check-out timing</option>
+                <option value="Half Day">Mark as half day</option>
+                <option value="Full Day">Mark as full day (present)</option>
+              </select>
+            </Field>
+            {form.request_type === "Timing" ? (
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Check in"><input className="input" type="time" value={form.requested_check_in} onChange={(e) => setForm({ ...form, requested_check_in: e.target.value })} /></Field>
+                <Field label="Check out"><input className="input" type="time" value={form.requested_check_out} onChange={(e) => setForm({ ...form, requested_check_out: e.target.value })} /></Field>
+              </div>
+            ) : null}
+            <Field label="Reason"><textarea required className="input min-h-20" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="Why does this day need correcting?" /></Field>
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" className="btn btn-soft" onClick={() => setOpen(false)}>Cancel</button>
+              <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Submitting..." : "Submit request"}</button>
             </div>
           </form>
         </div>
@@ -1539,6 +1690,8 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
         </form>
       ) : null}
       <MonthGrid isAdmin={isAdmin} />
+
+      <DayRequests isAdmin={isAdmin} />
 
       <DataTable
         title="Attendance History"
@@ -2095,6 +2248,10 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
           {!genIsPast ? <p className="self-center text-xs font-semibold text-amber-600">Current & future months are locked.</p> : null}
         </div>
       )}
+
+      {/* Salary day breakdown lives here (admin only) — Attendance stays attendance-only. */}
+      {isAdmin ? <MonthGrid isAdmin showSalary defaultMonth={genMonth} defaultYear={genYear} /> : null}
+
       <DataTable
         title="Salary Records"
         rows={rows}

@@ -55,6 +55,8 @@ async function route(context: Context) {
   if (method === "GET" && path === "/holidays") return holidayList(db);
   if (method === "GET" && path === "/settings") return json({ settings: await companySettings(db) });
   if (method === "GET" && path === "/attendance/month-grid") return monthGrid(db, user, url);
+  if (method === "GET" && path === "/attendance-requests") return attendanceRequestList(db, user);
+  if (method === "POST" && path === "/attendance-requests") return createAttendanceRequest(db, user, await readBody(context.request));
   if (method === "GET" && path === "/tasks") return taskList(db, user, url);
   if (method === "GET" && path === "/tasks.csv") return tasksCsv(db, user, url);
   if (method === "POST" && path === "/tasks") return createTask(db, user, await readBody(context.request));
@@ -73,6 +75,7 @@ async function route(context: Context) {
   if (method === "DELETE" && path.startsWith("/designations/")) return deleteNamed(db, "designations", "designation_id", Number(path.split("/").pop()));
   if (method === "POST" && path === "/attendance/manual") return manualAttendance(db, user, await readBody(context.request));
   if (method === "POST" && path === "/attendance/day-override") return saveDayOverride(db, user, await readBody(context.request));
+  if (method === "POST" && path.match(/^\/attendance-requests\/\d+\/decision$/)) return decideAttendanceRequest(db, user, Number(path.split("/")[2]), await readBody(context.request));
   if (method === "GET" && path === "/attendance.csv") return attendanceCsv(db, user, url);
   if (method === "POST" && path.match(/^\/leaves\/\d+\/decision$/)) return decideLeave(db, user, Number(path.split("/")[2]), await readBody(context.request));
   if (method === "POST" && path === "/leave-types") return saveLeaveType(db, user, await readBody(context.request));
@@ -1003,7 +1006,12 @@ async function monthDayBreakdown(db: D1Database, employee: Record<string, unknow
       out.push({ ...base, status: "Not joined", factor: 1, note: "Before joining date" });
       continue;
     }
-    // 3. Company holiday — paid.
+    // 3. Sunday — always a paid weekly off (admin can still override it above).
+    if (new Date(day + "T00:00:00Z").getUTCDay() === 0) {
+      out.push({ ...base, status: "Sunday", factor: 0, note: "Weekly off (paid)" });
+      continue;
+    }
+    // 4. Company holiday — paid.
     const holiday = holidayByDay.get(day);
     if (holiday) {
       out.push({ ...base, status: "Holiday", factor: 0, note: holiday });
@@ -1046,19 +1054,31 @@ async function monthGrid(db: D1Database, user: AppUser, url: URL) {
     ? (await db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all()).results
     : undefined;
 
+  // Employees see attendance only — salary figures stay server-side for them
+  // (their salary detail lives in the payslip).
+  const isEmployee = user.role === "Employee";
   return json({
     month, year,
-    employee: { id: employee.id, full_name: employee.full_name, joining_date: employee.joining_date, monthly_salary: gross },
-    days: days.map((d) => ({ ...d, amount: Math.round(perDay * (1 - d.factor) * 100) / 100 })),
-    summary: {
-      totalDays,
-      perDay: Math.round(perDay * 100) / 100,
-      deductionDays,
-      paidDays: Math.round((totalDays - deductionDays) * 100) / 100,
-      gross,
-      deductions: Math.round(perDay * deductionDays),
-      net: Math.round(gross - perDay * deductionDays),
+    employee: {
+      id: employee.id,
+      full_name: employee.full_name,
+      joining_date: employee.joining_date,
+      ...(isEmployee ? {} : { monthly_salary: gross }),
     },
+    days: isEmployee
+      ? days.map(({ day, status, factor, hours, check_in, check_out, note }) => ({ day, status, factor, hours, check_in, check_out, note }))
+      : days.map((d) => ({ ...d, amount: Math.round(perDay * (1 - d.factor) * 100) / 100 })),
+    summary: isEmployee
+      ? { totalDays, deductionDays, paidDays: Math.round((totalDays - deductionDays) * 100) / 100 }
+      : {
+          totalDays,
+          perDay: Math.round(perDay * 100) / 100,
+          deductionDays,
+          paidDays: Math.round((totalDays - deductionDays) * 100) / 100,
+          gross,
+          deductions: Math.round(perDay * deductionDays),
+          net: Math.round(gross - perDay * deductionDays),
+        },
     employees,
   });
 }
@@ -1080,6 +1100,87 @@ async function saveDayOverride(db: D1Database, actor: AppUser, body: Record<stri
   ).bind(employeeId, day, dayType, text(body.reason) || null, actor.id).run();
   await audit(db, actor, `Day marked ${dayType}`, "attendance_day_overrides", employeeId, day);
   return json({ ok: true });
+}
+
+// ---- Employee day-correction requests (half day / full day / timing) ----
+
+async function attendanceRequestList(db: D1Database, user: AppUser) {
+  const where = user.role === "Employee" ? "WHERE ar.employee_id = ?" : "";
+  const bind = user.role === "Employee" ? [user.employeeId] : [];
+  const rows = await db.prepare(
+    `SELECT ar.*, e.full_name AS employee_name, e.employee_code
+     FROM attendance_requests ar JOIN employees e ON e.id = ar.employee_id
+     ${where} ORDER BY (ar.status = 'Pending') DESC, ar.attendance_date DESC`,
+  ).bind(...bind).all();
+  return json({ requests: rows.results });
+}
+
+async function createAttendanceRequest(db: D1Database, user: AppUser, body: Record<string, unknown>) {
+  const employee = await employeeForUser(db, user);
+  const day = text(body.attendance_date);
+  const requestType = text(body.request_type) || "Timing";
+  if (!day) return json({ error: "Choose the date you want corrected" }, 400);
+  if (!["Half Day", "Full Day", "Timing"].includes(requestType)) return json({ error: "Invalid request type" }, 400);
+  const checkIn = text(body.requested_check_in) || null;
+  const checkOut = text(body.requested_check_out) || null;
+  if (requestType === "Timing" && !checkIn && !checkOut) return json({ error: "Provide a requested check-in or check-out time" }, 400);
+  if (!text(body.reason)) return json({ error: "Please add a reason" }, 400);
+
+  await db.prepare(
+    "INSERT INTO attendance_requests (employee_id, attendance_date, requested_check_in, requested_check_out, reason, request_type) VALUES (?, ?, ?, ?, ?, ?)",
+  ).bind(employee.id, day, checkIn, checkOut, text(body.reason), requestType).run();
+  await notifyAdmins(db, "Attendance correction request", `${employee.full_name} requested a ${requestType.toLowerCase()} correction for ${day}.`);
+  return json({ ok: true });
+}
+
+async function decideAttendanceRequest(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
+  const status = text(body.status);
+  if (!["Approved", "Rejected"].includes(status)) return json({ error: "Invalid status" }, 400);
+  const req = await db.prepare(
+    "SELECT ar.*, e.user_id FROM attendance_requests ar JOIN employees e ON e.id = ar.employee_id WHERE ar.id = ?",
+  ).bind(id).first<Record<string, unknown>>();
+  if (!req) return json({ error: "Request not found" }, 404);
+  if (req.status !== "Pending") return json({ error: "This request was already decided" }, 400);
+
+  if (status === "Approved") {
+    const employeeId = Number(req.employee_id);
+    const day = String(req.attendance_date);
+    const type = String(req.request_type || "Timing");
+    if (type === "Half Day" || type === "Full Day") {
+      // Applied as a day override so payroll picks it up immediately.
+      await db.prepare(
+        `INSERT INTO attendance_day_overrides (employee_id, day, day_type, reason, created_by) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(employee_id, day) DO UPDATE SET day_type = excluded.day_type, reason = excluded.reason, created_by = excluded.created_by`,
+      ).bind(employeeId, day, type === "Half Day" ? "Half Day" : "Paid", `Employee request: ${text(req.reason)}`, actor.id).run();
+    } else {
+      // Timing correction — update (or create) the attendance row for that day.
+      const existing = await db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date = ?").bind(employeeId, day).first<Record<string, string>>();
+      const checkIn = (req.requested_check_in as string) || existing?.check_in || null;
+      const checkOut = (req.requested_check_out as string) || existing?.check_out || null;
+      let hours = checkIn && checkOut ? hoursBetween(checkIn, checkOut) : Number(existing?.total_hours ?? 0);
+      if (existing) hours = Math.max(0, hours - await breakHoursFor(db, existing));
+      const employeeRow = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(employeeId).first<Record<string, unknown>>();
+      const shift = employeeRow ? await effectiveShift(db, employeeRow) : { half_day_min_hours: 4 };
+      const attStatus = checkIn && checkOut ? (hours < Number(shift.half_day_min_hours) ? "Half Day" : "Present") : (existing?.status || "Present");
+      await db.prepare(
+        `INSERT INTO attendance (employee_id, attendance_date, check_in, check_out, total_hours, status)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(employee_id, attendance_date) DO UPDATE SET check_in = excluded.check_in, check_out = excluded.check_out,
+           total_hours = excluded.total_hours, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
+      ).bind(employeeId, day, checkIn, checkOut, hours, attStatus).run();
+    }
+  }
+
+  await db.prepare("UPDATE attendance_requests SET status = ?, admin_note = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .bind(status, text(body.admin_note), actor.id, id).run();
+  await notify(db, Number(req.user_id), `Attendance request ${status.toLowerCase()}`, `Your correction for ${req.attendance_date} was ${status.toLowerCase()}.`);
+  await audit(db, actor, `Attendance request ${status.toLowerCase()}`, "attendance_requests", id, String(req.attendance_date));
+  return json({ ok: true });
+}
+
+async function notifyAdmins(db: D1Database, title: string, message: string) {
+  const admins = await db.prepare("SELECT id FROM users WHERE role = 'Superadmin' AND is_active = 1").all<{ id: number }>();
+  for (const admin of admins.results) await notify(db, admin.id, title, message);
 }
 
 async function leaveDays(db: D1Database, employeeId: number, month: number, year: number, paid: boolean) {

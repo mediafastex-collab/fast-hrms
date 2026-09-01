@@ -1274,46 +1274,30 @@ function dayTone(status: string) {
 
 // Month day grid. On Attendance it shows attendance only; on Payroll (admin)
 // it also shows the salary breakdown. Admin can override any single day.
-function MonthGrid({ isAdmin, showSalary = false, defaultMonth, defaultYear }: { isAdmin: boolean; showSalary?: boolean; defaultMonth?: number; defaultYear?: number }) {
-  const now = new Date();
-  const [month, setMonth] = useState(defaultMonth ?? now.getMonth() + 1);
-  const [year, setYear] = useState(defaultYear ?? now.getFullYear());
-  const [employeeId, setEmployeeId] = useState("");
+// Controlled: the parent page owns month / year / employee so one selector drives everything.
+function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloadKey = 0 }: {
+  isAdmin: boolean; showSalary?: boolean; month: number; year: number; employeeId?: string; reloadKey?: number;
+}) {
   const [data, setData] = useState<GridResponse | null>(null);
   const [message, setMessage] = useState("");
   const [editing, setEditing] = useState<GridDay | null>(null);
   const [override, setOverride] = useState({ day_type: "Auto", reason: "" });
 
-  async function load(empId = employeeId) {
+  async function load() {
     setMessage("");
     try {
       const p = new URLSearchParams({ month: String(month), year: String(year) });
       if (isAdmin) {
-        if (!empId) { setData(null); return; }
-        p.set("employeeId", empId);
+        if (!employeeId) { setData(null); return; }
+        p.set("employeeId", employeeId);
       }
-      const res = await api<GridResponse>(`/attendance/month-grid?${p.toString()}`);
-      setData(res);
-      if (isAdmin && res.employees && !empId) setEmployeeId(String(res.employees[0]?.id ?? ""));
+      setData(await api<GridResponse>(`/attendance/month-grid?${p.toString()}`));
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to load month grid");
+      setMessage(err instanceof Error ? err.message : "Failed to load");
     }
   }
 
-  useEffect(() => {
-    if (isAdmin) {
-      // Load the employee list first, then the grid for the first employee.
-      api<{ employees?: Employee[] }>(`/attendance/month-grid?month=${month}&year=${year}&employeeId=0`)
-        .catch(() => undefined)
-        .finally(() => api<{ employees: Employee[] }>("/employees").then((d) => {
-          const first = String(d.employees[0]?.id ?? "");
-          setEmployeeId(first);
-          if (first) load(first);
-        }).catch(() => undefined));
-    } else {
-      load();
-    }
-  }, []);
+  useEffect(() => { load(); }, [month, year, employeeId, reloadKey]);
 
   async function saveOverride(e: FormEvent) {
     e.preventDefault();
@@ -1328,31 +1312,13 @@ function MonthGrid({ isAdmin, showSalary = false, defaultMonth, defaultYear }: {
 
   return (
     <div className="card p-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h3 className="font-bold text-ink">{showSalary ? "Salary day breakdown" : "Monthly attendance"}</h3>
-          <p className="text-xs text-slate-500">
-            {showSalary
-              ? "Every day of the month and how it affects salary. Per-day rate = monthly salary ÷ days in month."
-              : "Every day of the month with its attendance status. Sundays are paid weekly offs."}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-end gap-2">
-          {isAdmin ? (
-            <Field label="Employee">
-              <select className="input h-10 py-1" value={employeeId} onChange={(e) => { setEmployeeId(e.target.value); load(e.target.value); }}>
-                {(data?.employees ?? []).map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
-              </select>
-            </Field>
-          ) : null}
-          <Field label="Month">
-            <select className="input h-10 py-1" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
-              {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-            </select>
-          </Field>
-          <Field label="Year"><input className="input h-10 w-24 py-1" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
-          <button type="button" className="btn btn-primary h-10" onClick={() => load()}><RefreshCcw size={16} />Show</button>
-        </div>
+      <div>
+        <h3 className="font-bold text-ink">{showSalary ? "Salary day breakdown" : "Day-by-day attendance"}</h3>
+        <p className="text-xs text-slate-500">
+          {showSalary
+            ? "How each day affects this salary. Per-day rate = monthly salary ÷ days in month."
+            : "Every day of the month with its status. Sundays are paid weekly offs."}
+        </p>
       </div>
 
       {message ? <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
@@ -1567,9 +1533,14 @@ function DayRequests({ isAdmin }: { isAdmin: boolean }) {
 }
 
 function Attendance({ isAdmin }: { isAdmin: boolean }) {
+  const now = new Date();
   const [rows, setRows] = useState<AttendanceRecord[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [filters, setFilters] = useState({ employeeId: "", start: today.slice(0, 8) + "01", end: today });
+  // One month selector drives the calendar, the history table and (for admin) the employee.
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [year, setYear] = useState(now.getFullYear());
+  const [employeeId, setEmployeeId] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
   const [editingAttendance, setEditingAttendance] = useState<AttendanceRecord | null>(null);
   const [attendanceForm, setAttendanceForm] = useState({
     employee_id: 0,
@@ -1581,16 +1552,23 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
     status: "Present"
   });
 
+  const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
+  const monthEnd = `${year}-${String(month).padStart(2, "0")}-${new Date(year, month, 0).getDate()}`;
+
   async function load() {
-    const search = new URLSearchParams(filters).toString();
-    const data = await api<{ attendance: AttendanceRecord[]; employees?: Employee[] }>(`/attendance?${search}`);
+    const search = new URLSearchParams({ start: monthStart, end: monthEnd });
+    if (isAdmin && employeeId) search.set("employeeId", employeeId);
+    const data = await api<{ attendance: AttendanceRecord[]; employees?: Employee[] }>(`/attendance?${search.toString()}`);
     setRows(data.attendance);
-    setEmployees(data.employees ?? []);
+    if (data.employees) {
+      setEmployees(data.employees);
+      if (isAdmin && !employeeId && data.employees[0]) setEmployeeId(String(data.employees[0].id));
+    }
   }
 
   useEffect(() => {
     load().catch(console.error);
-  }, []);
+  }, [month, year, employeeId, reloadKey]);
 
   async function mark(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1663,22 +1641,28 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
     <section className="space-y-5">
       <PageTitle
         title="Attendance"
-        description={isAdmin ? "Filter, manually mark, edit, and export company attendance." : "View your own attendance history."}
-        action={isAdmin ? <a className="btn btn-soft" href={`/api/attendance.csv?${new URLSearchParams(filters).toString()}`}><Download size={17} />CSV</a> : null}
+        description={isAdmin ? "Pick a month to review attendance, correct days, and mark records." : "Your attendance for the selected month."}
+        action={isAdmin ? <a className="btn btn-soft" href={`/api/attendance.csv?${new URLSearchParams({ start: monthStart, end: monthEnd, ...(employeeId ? { employeeId } : {}) }).toString()}`}><Download size={17} />CSV</a> : null}
       />
-      {isAdmin ? (
-        <div className="card grid gap-3 p-4 md:grid-cols-4">
+
+      {/* One control bar drives the calendar and the history table below. */}
+      <div className={classNames("card grid gap-3 p-4", isAdmin ? "md:grid-cols-4" : "md:grid-cols-3")}>
+        {isAdmin ? (
           <Field label="Employee">
-            <select className="input" value={filters.employeeId} onChange={(e) => setFilters({ ...filters, employeeId: e.target.value })}>
-              <option value="">All employees</option>
+            <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
               {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
             </select>
           </Field>
-          <Field label="Start"><input className="input" type="date" value={filters.start} onChange={(e) => setFilters({ ...filters, start: e.target.value })} /></Field>
-          <Field label="End"><input className="input" type="date" value={filters.end} onChange={(e) => setFilters({ ...filters, end: e.target.value })} /></Field>
-          <button className="btn btn-primary self-end" onClick={load}><RefreshCcw size={17} />Apply</button>
-        </div>
-      ) : null}
+        ) : null}
+        <Field label="Month">
+          <select className="input" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+            {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="Year"><input className="input" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
+        <button type="button" className="btn btn-primary self-end" onClick={() => setReloadKey((k) => k + 1)}><RefreshCcw size={17} />Refresh</button>
+      </div>
+
       {isAdmin ? (
         <form onSubmit={mark} className="card grid gap-3 p-4 md:grid-cols-6">
           <Field label="Employee"><select name="employee_id" className="input">{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}</select></Field>
@@ -1689,7 +1673,7 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
           <button className="btn btn-primary self-end">Mark</button>
         </form>
       ) : null}
-      <MonthGrid isAdmin={isAdmin} />
+      <MonthGrid isAdmin={isAdmin} month={month} year={year} employeeId={employeeId} reloadKey={reloadKey} />
 
       <DayRequests isAdmin={isAdmin} />
 
@@ -2084,10 +2068,19 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
   const [paymentProofFile, setPaymentProofFile] = useState<File | null>(null);
   const [payBusy, setPayBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [breakdownEmployees, setBreakdownEmployees] = useState<Employee[]>([]);
+  const [breakdownEmployeeId, setBreakdownEmployeeId] = useState("");
 
   // A month is generatable only if it's strictly before the current month.
   const curIndex = now.getFullYear() * 12 + (now.getMonth() + 1);
   const genIsPast = genYear * 12 + genMonth < curIndex;
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    api<{ employees: Employee[] }>("/employees")
+      .then((d) => { setBreakdownEmployees(d.employees); setBreakdownEmployeeId(String(d.employees[0]?.id ?? "")); })
+      .catch(() => undefined);
+  }, [isAdmin]);
   const [editForm, setEditForm] = useState({
     working_days: 0,
     paid_days: 0,
@@ -2250,17 +2243,38 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
       )}
 
       {/* Salary day breakdown lives here (admin only) — Attendance stays attendance-only. */}
-      {isAdmin ? <MonthGrid isAdmin showSalary defaultMonth={genMonth} defaultYear={genYear} /> : null}
+      {isAdmin ? (
+        <>
+          <div className="card grid gap-3 p-4 md:grid-cols-3">
+            <Field label="Breakdown for employee">
+              <select className="input" value={breakdownEmployeeId} onChange={(e) => setBreakdownEmployeeId(e.target.value)}>
+                {breakdownEmployees.map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
+              </select>
+            </Field>
+            <Field label="Month">
+              <select className="input" value={genMonth} onChange={(e) => setGenMonth(Number(e.target.value))}>
+                {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+              </select>
+            </Field>
+            <Field label="Year"><input className="input" type="number" value={genYear} onChange={(e) => setGenYear(Number(e.target.value))} /></Field>
+          </div>
+          <MonthGrid isAdmin showSalary month={genMonth} year={genYear} employeeId={breakdownEmployeeId} />
+        </>
+      ) : null}
 
       <DataTable
         title="Salary Records"
         rows={rows}
         columns={[
           ["Employee", (row) => row.employee_name ?? row.employee_code],
-          ["Period", (row) => `${row.salary_month}/${row.salary_year}`],
-          ["Gross", (row) => `₹${row.gross_salary}`],
-          ["Net", (row) => `₹${row.net_salary}`],
-          ["Status", (row) => <Badge value={row.status} />],
+          ["Period", (row) => `${monthNames[row.salary_month - 1]} ${row.salary_year}`],
+          ["Days", (row) => <span className="text-xs text-slate-600">{row.paid_days} / {row.working_days} paid</span>],
+          ["Gross", (row) => currency.format(row.gross_salary)],
+          ["Deductions", (row) => row.deductions > 0
+            ? <span className="font-semibold text-rose-600">-{currency.format(row.deductions)}</span>
+            : <span className="text-slate-400">—</span>],
+          ["Net", (row) => <span className="font-bold text-ink">{currency.format(row.net_salary)}</span>],
+          ["Status", (row) => <Badge value={row.status === "Done" ? "Paid" : "Unpaid"} />],
           [
             "Action",
             (row) => (

@@ -536,8 +536,34 @@ async function payrollList(db: D1Database, user: AppUser, url: URL) {
      FROM salaries s JOIN employees e ON e.id = s.employee_id
      ${where}
      ORDER BY s.salary_year DESC, s.salary_month DESC, e.full_name ASC`,
-  ).bind(...params).all();
-  return json({ salaries: rows.results });
+  ).bind(...params).all<Record<string, unknown>>();
+
+  // Salaries that are not yet paid are recalculated live from attendance, so what
+  // shows here always matches the attendance record. Paid salaries stay frozen.
+  const salaries = [];
+  for (const row of rows.results) {
+    if (String(row.status) === "Done") { salaries.push(row); continue; }
+    const employee = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(row.employee_id).first<Record<string, unknown>>();
+    if (!employee) { salaries.push(row); continue; }
+    const days = await monthDayBreakdown(db, employee, Number(row.salary_month), Number(row.salary_year));
+    const totalDays = days.length;
+    const gross = Number(employee.monthly_salary) || 0;
+    const perDay = totalDays ? gross / totalDays : 0;
+    const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
+    salaries.push({
+      ...row,
+      gross_salary: gross,
+      working_days: totalDays,
+      paid_days: Math.round((totalDays - deductionDays) * 100) / 100,
+      deductions: Math.round(perDay * deductionDays),
+      net_salary: Math.round(gross - perDay * deductionDays),
+      present_days: days.filter((d) => d.status === "Present").length,
+      half_days: days.filter((d) => d.status === "Half day" || d.status === "No check-in").length,
+      absent_days: days.filter((d) => d.status === "Absent").length,
+      live: true,
+    });
+  }
+  return json({ salaries });
 }
 
 async function generatePayroll(db: D1Database, actor: AppUser, body: Record<string, unknown>) {

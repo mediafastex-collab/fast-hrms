@@ -1255,6 +1255,166 @@ function ManagerList({
   );
 }
 
+type GridDay = { day: string; status: string; factor: number; hours: number; check_in?: string | null; check_out?: string | null; note?: string; amount: number };
+type GridResponse = {
+  month: number; year: number;
+  employee: { id: number; full_name: string; joining_date: string; monthly_salary: number };
+  days: GridDay[];
+  summary: { totalDays: number; perDay: number; deductionDays: number; paidDays: number; gross: number; deductions: number; net: number };
+  employees?: Employee[];
+};
+
+function dayTone(status: string) {
+  if (["Present", "Holiday", "Paid leave", "Paid"].includes(status)) return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (["Half day", "No check-in", "Half Day"].includes(status)) return "bg-amber-50 text-amber-700 border-amber-200";
+  if (["Absent", "Unpaid leave", "Unpaid", "Not joined"].includes(status)) return "bg-rose-50 text-rose-700 border-rose-200";
+  return "bg-slate-50 text-slate-600 border-slate-200";
+}
+
+// Month-by-month salary day breakdown. Admin can override any single day.
+function MonthGrid({ isAdmin }: { isAdmin: boolean }) {
+  const now = new Date();
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [year, setYear] = useState(now.getFullYear());
+  const [employeeId, setEmployeeId] = useState("");
+  const [data, setData] = useState<GridResponse | null>(null);
+  const [message, setMessage] = useState("");
+  const [editing, setEditing] = useState<GridDay | null>(null);
+  const [override, setOverride] = useState({ day_type: "Auto", reason: "" });
+
+  async function load(empId = employeeId) {
+    setMessage("");
+    try {
+      const p = new URLSearchParams({ month: String(month), year: String(year) });
+      if (isAdmin) {
+        if (!empId) { setData(null); return; }
+        p.set("employeeId", empId);
+      }
+      const res = await api<GridResponse>(`/attendance/month-grid?${p.toString()}`);
+      setData(res);
+      if (isAdmin && res.employees && !empId) setEmployeeId(String(res.employees[0]?.id ?? ""));
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to load month grid");
+    }
+  }
+
+  useEffect(() => {
+    if (isAdmin) {
+      // Load the employee list first, then the grid for the first employee.
+      api<{ employees?: Employee[] }>(`/attendance/month-grid?month=${month}&year=${year}&employeeId=0`)
+        .catch(() => undefined)
+        .finally(() => api<{ employees: Employee[] }>("/employees").then((d) => {
+          const first = String(d.employees[0]?.id ?? "");
+          setEmployeeId(first);
+          if (first) load(first);
+        }).catch(() => undefined));
+    } else {
+      load();
+    }
+  }, []);
+
+  async function saveOverride(e: FormEvent) {
+    e.preventDefault();
+    if (!editing || !data) return;
+    await api("/attendance/day-override", {
+      method: "POST",
+      body: JSON.stringify({ employee_id: data.employee.id, day: editing.day, day_type: override.day_type, reason: override.reason }),
+    });
+    setEditing(null);
+    await load();
+  }
+
+  return (
+    <div className="card p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h3 className="font-bold text-ink">Salary day breakdown</h3>
+          <p className="text-xs text-slate-500">Every day of the month and how it affects salary. Per-day rate = monthly salary ÷ days in month.</p>
+        </div>
+        <div className="flex flex-wrap items-end gap-2">
+          {isAdmin ? (
+            <Field label="Employee">
+              <select className="input h-10 py-1" value={employeeId} onChange={(e) => { setEmployeeId(e.target.value); load(e.target.value); }}>
+                {(data?.employees ?? []).map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
+              </select>
+            </Field>
+          ) : null}
+          <Field label="Month">
+            <select className="input h-10 py-1" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+              {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="Year"><input className="input h-10 w-24 py-1" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
+          <button type="button" className="btn btn-primary h-10" onClick={() => load()}><RefreshCcw size={16} />Show</button>
+        </div>
+      </div>
+
+      {message ? <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
+
+      {data ? (
+        <>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
+            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Per day</p><p className="text-lg font-bold text-ink">{currency.format(data.summary.perDay)}</p></div>
+            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Paid days</p><p className="text-lg font-bold text-emerald-600">{data.summary.paidDays}</p></div>
+            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deduction days</p><p className="text-lg font-bold text-rose-600">{data.summary.deductionDays}</p></div>
+            <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deductions</p><p className="text-lg font-bold text-rose-600">-{currency.format(data.summary.deductions)}</p></div>
+            <div className="rounded-xl border-2 border-brand/30 bg-orange-50 p-3"><p className="text-[11px] font-semibold uppercase text-brand">Net payable</p><p className="text-lg font-extrabold text-brand">{currency.format(data.summary.net)}</p></div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+            {data.days.map((d) => (
+              <button
+                key={d.day}
+                type="button"
+                disabled={!isAdmin}
+                onClick={() => { setEditing(d); setOverride({ day_type: "Auto", reason: "" }); }}
+                className={classNames("rounded-xl border p-2 text-left transition", dayTone(d.status), isAdmin && "hover:shadow-md hover:-translate-y-0.5 cursor-pointer")}
+                title={d.note || d.status}
+              >
+                <div className="flex items-baseline justify-between">
+                  <span className="text-sm font-bold">{Number(d.day.slice(8, 10))}</span>
+                  <span className="text-[10px] font-semibold">{new Date(d.day + "T00:00:00").toLocaleDateString("en", { weekday: "short" })}</span>
+                </div>
+                <p className="mt-1 truncate text-[11px] font-semibold">{d.status}</p>
+                {d.check_in ? <p className="text-[10px] opacity-80">{d.check_in.slice(0, 5)}{d.check_out ? `–${d.check_out.slice(0, 5)}` : ""}</p> : null}
+                {d.factor > 0 ? <p className="text-[10px] font-bold">-{currency.format(data.summary.perDay * d.factor)}</p> : <p className="text-[10px] opacity-70">Paid</p>}
+              </button>
+            ))}
+          </div>
+          {isAdmin ? <p className="mt-3 text-[11px] text-slate-400">Click any day to override it as Paid / Half day / Unpaid.</p> : null}
+        </>
+      ) : <p className="mt-4 text-sm text-slate-500">Select an employee to see the breakdown.</p>}
+
+      {editing && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+          <form onSubmit={saveOverride} className="card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">Override {editing.day}</h3>
+            <p className="text-xs text-slate-500">
+              Currently <span className="font-semibold">{editing.status}</span>
+              {editing.note ? ` · ${editing.note}` : ""}
+              {editing.hours ? ` · ${editing.hours.toFixed(2)}h worked` : ""}
+            </p>
+            <Field label="Mark this day as">
+              <select className="input" value={override.day_type} onChange={(e) => setOverride({ ...override, day_type: e.target.value })}>
+                <option value="Auto">Auto (use attendance)</option>
+                <option value="Paid">Paid — full day</option>
+                <option value="Half Day">Half day</option>
+                <option value="Unpaid">Unpaid — full deduction</option>
+              </select>
+            </Field>
+            <Field label="Reason (optional)"><input className="input" value={override.reason} onChange={(e) => setOverride({ ...override, reason: e.target.value })} placeholder="e.g. Approved comp-off" /></Field>
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" className="btn btn-soft" onClick={() => setEditing(null)}>Cancel</button>
+              <button type="submit" className="btn btn-primary">Save</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Attendance({ isAdmin }: { isAdmin: boolean }) {
   const [rows, setRows] = useState<AttendanceRecord[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -1378,6 +1538,8 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
           <button className="btn btn-primary self-end">Mark</button>
         </form>
       ) : null}
+      <MonthGrid isAdmin={isAdmin} />
+
       <DataTable
         title="Attendance History"
         rows={rows}

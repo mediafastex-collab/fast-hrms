@@ -54,6 +54,7 @@ async function route(context: Context) {
   if (method === "GET" && path.startsWith("/salary-slips/")) return salarySlip(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/holidays") return holidayList(db);
   if (method === "GET" && path === "/settings") return json({ settings: await companySettings(db) });
+  if (method === "GET" && path === "/attendance/month-grid") return monthGrid(db, user, url);
   if (method === "GET" && path === "/tasks") return taskList(db, user, url);
   if (method === "GET" && path === "/tasks.csv") return tasksCsv(db, user, url);
   if (method === "POST" && path === "/tasks") return createTask(db, user, await readBody(context.request));
@@ -71,6 +72,7 @@ async function route(context: Context) {
   if (method === "DELETE" && path.startsWith("/departments/")) return deleteNamed(db, "departments", "department_id", Number(path.split("/").pop()));
   if (method === "DELETE" && path.startsWith("/designations/")) return deleteNamed(db, "designations", "designation_id", Number(path.split("/").pop()));
   if (method === "POST" && path === "/attendance/manual") return manualAttendance(db, user, await readBody(context.request));
+  if (method === "POST" && path === "/attendance/day-override") return saveDayOverride(db, user, await readBody(context.request));
   if (method === "GET" && path === "/attendance.csv") return attendanceCsv(db, user, url);
   if (method === "POST" && path.match(/^\/leaves\/\d+\/decision$/)) return decideLeave(db, user, Number(path.split("/")[2]), await readBody(context.request));
   if (method === "POST" && path === "/leave-types") return saveLeaveType(db, user, await readBody(context.request));
@@ -539,17 +541,21 @@ async function generatePayroll(db: D1Database, actor: AppUser, body: Record<stri
   const month = number(body.month);
   const year = number(body.year);
   const settings = await companySettings(db);
-  const workingDays = workingDayCount(year, month, settings.working_days);
   const employees = await db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all<Record<string, number | string>>();
   for (const employee of employees.results) {
     const employeeId = Number(employee.id);
-    const paidLeaveDays = await leaveDays(db, employeeId, month, year, true);
-    const unpaidLeaveDays = await leaveDays(db, employeeId, month, year, false);
-    const absentDays = settings.deduct_absent_days ? await scalar(db, "SELECT COUNT(*) FROM attendance WHERE employee_id = ? AND status = 'Absent' AND strftime('%m', attendance_date) = ? AND strftime('%Y', attendance_date) = ?", employeeId, pad(month), String(year)) : 0;
+    // Classify every calendar day, then deduct against a per-calendar-day rate.
+    const days = await monthDayBreakdown(db, employee, month, year);
+    const workingDays = days.length; // total days in month (Sundays included)
     const gross = Number(employee.monthly_salary);
-    const deductionDays = unpaidLeaveDays + absentDays;
-    const deductions = Math.round((gross / Math.max(workingDays, 1)) * deductionDays);
-    const paidDays = Math.max(0, workingDays - deductionDays);
+    const perDay = workingDays ? gross / workingDays : 0;
+    const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
+    const paidLeaveDays = days.filter((d) => d.status === "Paid leave").length;
+    const unpaidLeaveDays = days.filter((d) => d.status === "Unpaid leave").length;
+    const absentDays = days.filter((d) => d.status === "Absent" || d.status === "Not joined").length
+      + days.filter((d) => d.status === "Half day" || d.status === "No check-in").length * 0.5;
+    const deductions = Math.round(perDay * deductionDays);
+    const paidDays = Math.round((workingDays - deductionDays) * 100) / 100;
     const result = await db.prepare(
       `INSERT INTO salaries (employee_id, salary_month, salary_year, working_days, paid_days, paid_leave_days, unpaid_leave_days, absent_days, gross_salary, deductions, net_salary, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
@@ -914,6 +920,166 @@ function slipTemplate(salary: Record<string, unknown>, employee: Record<string, 
     <div class="top"><div><h1>${escapeHtml(String(settings.company_name))}</h1><p class="muted">${escapeHtml(String(settings.company_address || ""))}</p></div><div><strong>Salary Slip</strong><p class="muted">${month} ${year}</p></div></div>
     <table>${rows.map(([label, value]) => `<tr><td class="label">${escapeHtml(String(label))}</td><td${label === "Net payable salary" ? ' class="net"' : ""}>${escapeHtml(String(value ?? "-"))}</td></tr>`).join("")}</table>
     <p class="muted">This slip is generated dynamically from Fast HRMS payroll data.</p></main><script>window.print()</script></body></html>`;
+}
+
+// ---- Salary day engine ----
+// Every calendar day of the month is classified and given a deduction factor:
+//   0   = fully paid day
+//   0.5 = half day  (worked >= half-day hours but < full shift, or no check-in)
+//   1   = full-day deduction (worked < half-day hours, unpaid leave, before joining)
+// Per-day rate = monthly salary / total days in the month (Sundays included and paid).
+type DayFactor = { day: string; status: string; factor: number; hours: number; check_in?: string | null; check_out?: string | null; note?: string };
+
+function daysInMonthCount(year: number, month: number) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+// Shift rules for an employee: department overrides win, else company defaults.
+async function effectiveShift(db: D1Database, employee: Record<string, unknown>) {
+  const settings = await companySettings(db);
+  let dept: Record<string, unknown> | null = null;
+  if (employee.department_id) {
+    dept = await db.prepare("SELECT shift_min_hours, half_day_min_hours, late_mark_time FROM departments WHERE id = ?").bind(employee.department_id).first();
+  }
+  return {
+    shift_min_hours: Number(dept?.shift_min_hours ?? settings.shift_min_hours) || 8,
+    half_day_min_hours: Number(dept?.half_day_min_hours ?? settings.half_day_min_hours) || 4,
+    late_mark_time: String(dept?.late_mark_time ?? settings.late_mark_time),
+  };
+}
+
+async function monthDayBreakdown(db: D1Database, employee: Record<string, unknown>, month: number, year: number): Promise<DayFactor[]> {
+  const employeeId = Number(employee.id);
+  const total = daysInMonthCount(year, month);
+  const first = `${year}-${pad(month)}-01`;
+  const last = `${year}-${pad(month)}-${pad(total)}`;
+  const shift = await effectiveShift(db, employee);
+  const fullHours = Number(shift.shift_min_hours) || 8;
+  const halfHours = Number(shift.half_day_min_hours) || 4;
+
+  const [attRows, holidayRows, leaveRows, overrideRows] = await Promise.all([
+    db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date BETWEEN ? AND ?").bind(employeeId, first, last).all<Record<string, unknown>>(),
+    db.prepare("SELECT holiday_date, name FROM holidays WHERE holiday_date BETWEEN ? AND ?").bind(first, last).all<{ holiday_date: string; name: string }>(),
+    db.prepare(
+      `SELECT lr.start_date, lr.end_date, lt.is_paid, lt.name
+       FROM leave_requests lr JOIN leave_types lt ON lt.id = lr.leave_type_id
+       WHERE lr.employee_id = ? AND lr.status = 'Approved' AND lr.end_date >= ? AND lr.start_date <= ?`,
+    ).bind(employeeId, first, last).all<{ start_date: string; end_date: string; is_paid: number; name: string }>(),
+    db.prepare("SELECT day, day_type, reason FROM attendance_day_overrides WHERE employee_id = ? AND day BETWEEN ? AND ?").bind(employeeId, first, last).all<{ day: string; day_type: string; reason: string }>(),
+  ]);
+
+  const attByDay = new Map<string, Record<string, unknown>>();
+  for (const a of attRows.results) attByDay.set(String(a.attendance_date), a);
+  const holidayByDay = new Map(holidayRows.results.map((h) => [h.holiday_date, h.name]));
+  const overrideByDay = new Map(overrideRows.results.map((o) => [o.day, o]));
+  const joining = text(employee.joining_date);
+
+  // Worked hours for a day = (out - in) - all breaks, falling back to stored total_hours.
+  async function workedHoursFor(att: Record<string, unknown> | undefined) {
+    if (!att) return 0;
+    const ci = text(att.check_in);
+    const co = text(att.check_out);
+    if (!ci || !co) return Number(att.total_hours) || 0;
+    const breakH = await breakHoursFor(db, att as Record<string, string>);
+    return Math.max(0, hoursBetween(ci, co) - breakH);
+  }
+
+  const out: DayFactor[] = [];
+  for (let d = 1; d <= total; d += 1) {
+    const day = `${year}-${pad(month)}-${pad(d)}`;
+    const att = attByDay.get(day);
+    const hours = await workedHoursFor(att);
+    const base = { day, hours, check_in: (att?.check_in as string) ?? null, check_out: (att?.check_out as string) ?? null };
+
+    // 1. Admin override always wins.
+    const ov = overrideByDay.get(day);
+    if (ov) {
+      const factor = ov.day_type === "Paid" ? 0 : ov.day_type === "Half Day" ? 0.5 : 1;
+      out.push({ ...base, status: ov.day_type, factor, note: ov.reason || "Admin override" });
+      continue;
+    }
+    // 2. Before joining date — not payable (salary is pro-rated).
+    if (joining && day < joining) {
+      out.push({ ...base, status: "Not joined", factor: 1, note: "Before joining date" });
+      continue;
+    }
+    // 3. Company holiday — paid.
+    const holiday = holidayByDay.get(day);
+    if (holiday) {
+      out.push({ ...base, status: "Holiday", factor: 0, note: holiday });
+      continue;
+    }
+    // 4. Approved leave — paid types free, unpaid types cost a full day.
+    const leave = leaveRows.results.find((l) => day >= l.start_date && day <= l.end_date);
+    if (leave) {
+      out.push({ ...base, status: leave.is_paid ? "Paid leave" : "Unpaid leave", factor: leave.is_paid ? 0 : 1, note: leave.name });
+      continue;
+    }
+    // 5. Attendance-based.
+    if (!att?.check_in) {
+      out.push({ ...base, status: "No check-in", factor: 0.5, note: "Treated as half day" });
+    } else if (hours >= fullHours) {
+      out.push({ ...base, status: "Present", factor: 0 });
+    } else if (hours >= halfHours) {
+      out.push({ ...base, status: "Half day", factor: 0.5, note: `Worked ${hours.toFixed(2)}h of ${fullHours}h` });
+    } else {
+      out.push({ ...base, status: "Absent", factor: 1, note: `Worked only ${hours.toFixed(2)}h` });
+    }
+  }
+  return out;
+}
+
+async function monthGrid(db: D1Database, user: AppUser, url: URL) {
+  const month = Number(url.searchParams.get("month")) || Number(dateOnly().slice(5, 7));
+  const year = Number(url.searchParams.get("year")) || Number(dateOnly().slice(0, 4));
+  const employeeId = user.role === "Employee" ? user.employeeId : Number(url.searchParams.get("employeeId"));
+  if (!employeeId) return json({ error: "Choose an employee" }, 400);
+  const employee = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(employeeId).first<Record<string, unknown>>();
+  if (!employee) return json({ error: "Employee not found" }, 404);
+
+  const days = await monthDayBreakdown(db, employee, month, year);
+  const totalDays = days.length;
+  const gross = Number(employee.monthly_salary) || 0;
+  const perDay = totalDays ? gross / totalDays : 0;
+  const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
+  const employees = user.role === "Superadmin"
+    ? (await db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all()).results
+    : undefined;
+
+  return json({
+    month, year,
+    employee: { id: employee.id, full_name: employee.full_name, joining_date: employee.joining_date, monthly_salary: gross },
+    days: days.map((d) => ({ ...d, amount: Math.round(perDay * (1 - d.factor) * 100) / 100 })),
+    summary: {
+      totalDays,
+      perDay: Math.round(perDay * 100) / 100,
+      deductionDays,
+      paidDays: Math.round((totalDays - deductionDays) * 100) / 100,
+      gross,
+      deductions: Math.round(perDay * deductionDays),
+      net: Math.round(gross - perDay * deductionDays),
+    },
+    employees,
+  });
+}
+
+async function saveDayOverride(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
+  const employeeId = number(body.employee_id);
+  const day = text(body.day);
+  const dayType = text(body.day_type);
+  if (!employeeId || !day) return json({ error: "Employee and day are required" }, 400);
+  if (dayType === "Auto" || !dayType) {
+    await db.prepare("DELETE FROM attendance_day_overrides WHERE employee_id = ? AND day = ?").bind(employeeId, day).run();
+    await audit(db, actor, "Day override cleared", "attendance_day_overrides", employeeId, day);
+    return json({ ok: true });
+  }
+  if (!["Paid", "Half Day", "Unpaid"].includes(dayType)) return json({ error: "Invalid day type" }, 400);
+  await db.prepare(
+    `INSERT INTO attendance_day_overrides (employee_id, day, day_type, reason, created_by) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(employee_id, day) DO UPDATE SET day_type = excluded.day_type, reason = excluded.reason, created_by = excluded.created_by`,
+  ).bind(employeeId, day, dayType, text(body.reason) || null, actor.id).run();
+  await audit(db, actor, `Day marked ${dayType}`, "attendance_day_overrides", employeeId, day);
+  return json({ ok: true });
 }
 
 async function leaveDays(db: D1Database, employeeId: number, month: number, year: number, paid: boolean) {

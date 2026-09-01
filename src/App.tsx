@@ -172,6 +172,8 @@ type DashboardSummary = {
   pendingSalaries: number;
   salaryDoneCount: number;
   estimatedMonthlyPayroll: number;
+  lastMonthPayable?: number;
+  lastMonthLabel?: string;
 };
 
 type EmployeeSummary = {
@@ -534,30 +536,54 @@ function AdminDashboard() {
 
   return (
     <section className="space-y-5">
-      <PageTitle title="Superadmin Dashboard" description="Company-wide attendance, leave, and payroll snapshot." />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={UsersRound} label="Total employees" value={summary.totalEmployees} />
-        <StatCard icon={CalendarCheck} label="Present today" value={summary.presentToday} />
-        <StatCard icon={Clock3} label="Absent today" value={summary.absentToday} />
-        <StatCard icon={FileText} label="Pending leave requests" value={summary.pendingLeaveRequests} />
-        <StatCard icon={CheckCircle2} label="Approved leaves this month" value={summary.approvedLeavesThisMonth} />
-        <StatCard icon={Banknote} label="Pending salaries" value={summary.pendingSalaries} />
-        <StatCard icon={CheckCircle2} label="Salary done count" value={summary.salaryDoneCount} />
-        <StatCard icon={Banknote} label="Estimated monthly payroll" value={currency.format(summary.estimatedMonthlyPayroll)} />
+      <PageTitle title="Dashboard" description="Today's attendance and last month's payroll at a glance." />
+
+      {/* Headline: what actually needs paying */}
+      <div className="card border-l-4 border-l-brand bg-gradient-to-r from-orange-50 to-white p-6">
+        <p className="text-xs font-semibold uppercase tracking-wider text-brand">Payable · {summary.lastMonthLabel ?? "last month"}</p>
+        <p className="mt-1 text-4xl font-extrabold text-ink">{currency.format(summary.lastMonthPayable ?? 0)}</p>
+        <p className="mt-1 text-sm text-slate-500">Actual amount after attendance deductions, across {summary.totalEmployees} active employee{summary.totalEmployees === 1 ? "" : "s"}.</p>
+      </div>
+
+      {/* Today */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Today</p>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <StatCard icon={UsersRound} label="Employees" value={summary.totalEmployees} />
+          <StatCard icon={CalendarCheck} label="Present" value={summary.presentToday} />
+          <StatCard icon={Clock3} label="Not marked" value={summary.absentToday} />
+        </div>
+      </div>
+
+      {/* Needs attention */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Needs attention</p>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <StatCard icon={FileText} label="Leave requests pending" value={summary.pendingLeaveRequests} />
+          <StatCard icon={Banknote} label="Salaries unpaid" value={summary.pendingSalaries} />
+          <StatCard icon={CheckCircle2} label="Salaries paid" value={summary.salaryDoneCount} />
+        </div>
       </div>
     </section>
   );
 }
 
+// Everyday work motivation for the team — about doing good work, not building a business.
 const QUOTES = [
-  "The only way to do great work is to love what you do. — Steve Jobs",
-  "Success is not final, failure is not fatal: it is the courage to continue that counts. — Winston Churchill",
-  "Believe you can and you're halfway there. — Theodore Roosevelt",
-  "It always seems impossible until it's done. — Nelson Mandela",
-  "Your time is limited, don't waste it living someone else's life. — Steve Jobs",
-  "I find that the harder I work, the more luck I seem to have. — Thomas Jefferson",
-  "Don't watch the clock; do what it does. Keep going. — Sam Levenson",
-  "The future depends on what you do today. — Mahatma Gandhi",
+  "Do the small things well and the big things follow.",
+  "Progress today beats perfection tomorrow.",
+  "Your effort today is someone's reason to trust you tomorrow.",
+  "Focus on one task at a time — that's where good work hides.",
+  "Consistency turns ordinary days into a strong career.",
+  "Ask the question. Clarity is faster than guessing.",
+  "Finish what you start — momentum is built, not found.",
+  "A calm hour of focus beats a busy day of noise.",
+  "Take the break. Rested minds do better work.",
+  "Being reliable is a skill. Practise it daily.",
+  "Learn one new thing today — it compounds.",
+  "Good teammates make good teams. Be one.",
+  "Done and shared beats perfect and hidden.",
+  "Celebrate the small wins; they add up by month-end.",
 ];
 
 function EmployeeDashboard() {
@@ -581,10 +607,8 @@ function EmployeeDashboard() {
   async function load() {
     const data = await api<{ summary: EmployeeSummary }>("/employee/summary");
     const settingsData = await api<{ settings: CompanySettings }>("/settings");
-    const attData = await api<{ attendance: AttendanceRecord[] }>("/attendance");
     setSummary(data.summary);
     setSettings(settingsData.settings);
-    setAttendance(attData.attendance);
   }
 
   useEffect(() => {
@@ -698,7 +722,7 @@ function EmployeeDashboard() {
            </div>
          </div>
       )}
-      <PageTitle title="Employee Dashboard" description="Your attendance, leave, and salary at a glance." />
+      <PageTitle title="My Day" description="Mark your attendance and see what's coming up." />
       {message ? <div className="rounded-md bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
       <div className="grid gap-5 md:grid-cols-[1.2fr_0.8fr]">
         <div className="card p-6 border-t-4 border-t-brand">
@@ -743,20 +767,6 @@ function EmployeeDashboard() {
         <div className="grid grid-cols-2 gap-4">
           <StatCard icon={CalendarCheck} label="Present" value={summary.monthAttendance.present} sub="This month" />
           <StatCard icon={Clock3} label="Late" value={summary.monthAttendance.late} sub="This month" />
-        </div>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <StatCard icon={FileText} label="Leave balance" value={summary.leaveBalance} sub="Paid leave estimate" />
-        <div className="card p-4">
-          <p className="text-sm font-medium text-slate-500">Latest salary slip</p>
-          {summary.latestSalary ? (
-            <a className="btn btn-soft mt-4 w-full" href={`/api/salary-slips/${summary.latestSalary.id}`} target="_blank" rel="noreferrer">
-              <Download size={17} />
-              Download
-            </a>
-          ) : (
-            <p className="mt-4 text-sm text-slate-500">No salary slip yet.</p>
-          )}
         </div>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
@@ -806,28 +816,6 @@ function EmployeeDashboard() {
           </div>
         </div>
       </div>
-      <DataTable
-        title="My Daily Work & Duration Log"
-        rows={attendance}
-        columns={[
-          ["Date", (row) => row.attendance_date],
-          ["Check in", (row) => (
-             <div>
-               <div>{row.check_in ?? "-"}</div>
-               {row.late_checkin_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.late_checkin_reason}</div>}
-             </div>
-          )],
-          ["Check out", (row) => (
-             <div>
-               <div>{row.check_out ?? "-"}</div>
-               {row.early_checkout_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.early_checkout_reason}</div>}
-             </div>
-          )],
-          ["Breaks", (row) => <BreaksCell row={row} />],
-          ["Worked", (row) => workedHMS(row)],
-          ["Status", (row) => <Badge value={row.status} />],
-        ]}
-      />
     </section>
   );
 }
@@ -1673,8 +1661,6 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
           <button className="btn btn-primary self-end">Mark</button>
         </form>
       ) : null}
-      <MonthGrid isAdmin={isAdmin} month={month} year={year} employeeId={employeeId} reloadKey={reloadKey} />
-
       <DayRequests isAdmin={isAdmin} />
 
       <DataTable
@@ -2243,24 +2229,23 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
       )}
 
       {/* Salary day breakdown lives here (admin only) — Attendance stays attendance-only. */}
-      {isAdmin ? (
-        <>
-          <div className="card grid gap-3 p-4 md:grid-cols-3">
-            <Field label="Breakdown for employee">
-              <select className="input" value={breakdownEmployeeId} onChange={(e) => setBreakdownEmployeeId(e.target.value)}>
-                {breakdownEmployees.map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
-              </select>
-            </Field>
-            <Field label="Month">
-              <select className="input" value={genMonth} onChange={(e) => setGenMonth(Number(e.target.value))}>
-                {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-              </select>
-            </Field>
-            <Field label="Year"><input className="input" type="number" value={genYear} onChange={(e) => setGenYear(Number(e.target.value))} /></Field>
-          </div>
-          <MonthGrid isAdmin showSalary month={genMonth} year={genYear} employeeId={breakdownEmployeeId} />
-        </>
-      ) : null}
+      {/* Day-by-day salary breakdown — admin picks the employee, an employee sees their own. */}
+      <div className={classNames("card grid gap-3 p-4", isAdmin ? "md:grid-cols-3" : "md:grid-cols-2")}>
+        {isAdmin ? (
+          <Field label="Breakdown for employee">
+            <select className="input" value={breakdownEmployeeId} onChange={(e) => setBreakdownEmployeeId(e.target.value)}>
+              {breakdownEmployees.map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
+            </select>
+          </Field>
+        ) : null}
+        <Field label="Month">
+          <select className="input" value={genMonth} onChange={(e) => setGenMonth(Number(e.target.value))}>
+            {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="Year"><input className="input" type="number" value={genYear} onChange={(e) => setGenYear(Number(e.target.value))} /></Field>
+      </div>
+      <MonthGrid isAdmin={isAdmin} showSalary month={genMonth} year={genYear} employeeId={isAdmin ? breakdownEmployeeId : undefined} />
 
       <DataTable
         title="Salary Records"

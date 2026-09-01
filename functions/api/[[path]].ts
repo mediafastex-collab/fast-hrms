@@ -164,6 +164,23 @@ async function adminSummary(db: D1Database) {
     scalar(db, "SELECT COUNT(*) FROM salaries WHERE status = 'Done'"),
     scalar(db, "SELECT COALESCE(SUM(monthly_salary), 0) FROM employees WHERE employment_status = 'Active'"),
   ]);
+
+  // Actual amount payable for last month, computed from attendance (not a rough
+  // sum of monthly salaries).
+  const curYear = Number(today.slice(0, 4));
+  const curMonth = Number(today.slice(5, 7));
+  const lastMonth = curMonth === 1 ? 12 : curMonth - 1;
+  const lastMonthYear = curMonth === 1 ? curYear - 1 : curYear;
+  const activeEmployees = await db.prepare(employeeSelect("WHERE e.employment_status = 'Active'")).all<Record<string, unknown>>();
+  let lastMonthPayable = 0;
+  for (const employee of activeEmployees.results) {
+    const days = await monthDayBreakdown(db, employee, lastMonth, lastMonthYear);
+    const gross = Number(employee.monthly_salary) || 0;
+    const perDay = days.length ? gross / days.length : 0;
+    const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
+    lastMonthPayable += gross - perDay * deductionDays;
+  }
+
   return json({
     summary: {
       totalEmployees,
@@ -174,6 +191,8 @@ async function adminSummary(db: D1Database) {
       pendingSalaries,
       salaryDoneCount,
       estimatedMonthlyPayroll,
+      lastMonthPayable: Math.round(lastMonthPayable),
+      lastMonthLabel: `${monthName(lastMonth)} ${lastMonthYear}`,
     },
   });
 }
@@ -1080,31 +1099,20 @@ async function monthGrid(db: D1Database, user: AppUser, url: URL) {
     ? (await db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all()).results
     : undefined;
 
-  // Employees see attendance only — salary figures stay server-side for them
-  // (their salary detail lives in the payslip).
-  const isEmployee = user.role === "Employee";
+  // Employees may see their own breakdown (it is shown in their Payroll section).
   return json({
     month, year,
-    employee: {
-      id: employee.id,
-      full_name: employee.full_name,
-      joining_date: employee.joining_date,
-      ...(isEmployee ? {} : { monthly_salary: gross }),
+    employee: { id: employee.id, full_name: employee.full_name, joining_date: employee.joining_date, monthly_salary: gross },
+    days: days.map((d) => ({ ...d, amount: Math.round(perDay * (1 - d.factor) * 100) / 100 })),
+    summary: {
+      totalDays,
+      perDay: Math.round(perDay * 100) / 100,
+      deductionDays,
+      paidDays: Math.round((totalDays - deductionDays) * 100) / 100,
+      gross,
+      deductions: Math.round(perDay * deductionDays),
+      net: Math.round(gross - perDay * deductionDays),
     },
-    days: isEmployee
-      ? days.map(({ day, status, factor, hours, check_in, check_out, note }) => ({ day, status, factor, hours, check_in, check_out, note }))
-      : days.map((d) => ({ ...d, amount: Math.round(perDay * (1 - d.factor) * 100) / 100 })),
-    summary: isEmployee
-      ? { totalDays, deductionDays, paidDays: Math.round((totalDays - deductionDays) * 100) / 100 }
-      : {
-          totalDays,
-          perDay: Math.round(perDay * 100) / 100,
-          deductionDays,
-          paidDays: Math.round((totalDays - deductionDays) * 100) / 100,
-          gross,
-          deductions: Math.round(perDay * deductionDays),
-          net: Math.round(gross - perDay * deductionDays),
-        },
     employees,
   });
 }

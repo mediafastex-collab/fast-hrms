@@ -61,6 +61,7 @@ async function route(context: Context) {
   if (method === "GET" && path === "/work/tasks") return workTasks(db, user, url);
   if (method === "POST" && path === "/work/spaces") return saveSpace(db, user, await readBody(context.request));
   if (method === "POST" && path === "/work/lists") return saveList(db, user, await readBody(context.request));
+  if (method === "POST" && path === "/work/tasks") return createWorkTask(db, user, await readBody(context.request));
   if (method === "PUT" && path.match(/^\/work\/tasks\/\d+$/)) return updateWorkTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "GET" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return workComments(db, user, Number(path.split("/")[3]));
   if (method === "POST" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return addWorkComment(db, user, Number(path.split("/")[3]), await readBody(context.request));
@@ -98,7 +99,6 @@ async function route(context: Context) {
   if (method === "PUT" && path.match(/^\/work\/lists\/\d+$/)) return renameSpaceOrList(db, user, "lists", Number(path.split("/").pop()), await readBody(context.request));
   if (method === "DELETE" && path.match(/^\/work\/spaces\/\d+$/)) return deleteSpace(db, user, Number(path.split("/").pop()));
   if (method === "DELETE" && path.match(/^\/work\/lists\/\d+$/)) return deleteList(db, user, Number(path.split("/").pop()));
-  if (method === "POST" && path === "/work/tasks") return createWorkTask(db, user, await readBody(context.request));
   if (method === "DELETE" && path.match(/^\/work\/tasks\/\d+$/)) return deleteWorkTask(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path.match(/^\/attendance-requests\/\d+\/decision$/)) return decideAttendanceRequest(db, user, Number(path.split("/")[2]), await readBody(context.request));
   if (method === "GET" && path === "/attendance.csv") return attendanceCsv(db, user, url);
@@ -951,9 +951,12 @@ async function createWorkTask(db: D1Database, actor: AppUser, body: Record<strin
   const taskId = Number(res.meta.last_row_id);
 
   const assignees = Array.isArray(body.assignees) ? body.assignees.map(Number).filter(Boolean) : [];
+  // Employees only see work assigned to them, so a task they raise with nobody
+  // named would otherwise disappear the moment they created it.
+  if (!assignees.length && actor.role !== "Superadmin") assignees.push(actor.id);
   for (const userId of assignees) {
     await db.prepare("INSERT OR IGNORE INTO work_task_assignees (task_id, user_id) VALUES (?, ?)").bind(taskId, userId).run();
-    await notify(db, userId, "New task assigned", `${title}${text(body.due_date) ? ` · due ${text(body.due_date)}` : ""}`);
+    if (userId !== actor.id) await notify(db, userId, "New task assigned", `${title}${text(body.due_date) ? ` · due ${text(body.due_date)}` : ""}`);
   }
   return json({ ok: true, id: taskId });
 }
@@ -962,14 +965,17 @@ async function updateWorkTask(db: D1Database, user: AppUser, id: number, body: R
   const task = await db.prepare("SELECT * FROM work_tasks WHERE id = ?").bind(id).first<Record<string, unknown>>();
   if (!task) return json({ error: "Task not found" }, 404);
   const isAdmin = user.role === "Superadmin";
-  if (!isAdmin) {
+  // Whoever raised a task can keep it correct; everyone else assigned to it can
+  // only move it along the pipeline.
+  const isOwner = Number(task.created_by) === user.id;
+  if (!isAdmin && !isOwner) {
     const assigned = await db.prepare("SELECT 1 FROM work_task_assignees WHERE task_id = ? AND user_id = ?").bind(id, user.id).first();
     if (!assigned) return json({ error: "Not allowed" }, 403);
   }
 
-  // Employees can only move a task along the pipeline; admins can edit everything.
+  const canEdit = isAdmin || isOwner;
   const status = body.status !== undefined && workStatuses.includes(text(body.status)) ? text(body.status) : String(task.status);
-  if (!isAdmin) {
+  if (!canEdit) {
     await db.prepare("UPDATE work_tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, id).run();
     return json({ ok: true });
   }

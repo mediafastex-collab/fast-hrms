@@ -2077,11 +2077,11 @@ function Chat({ currentUserId }: { currentUserId: number }) {
   );
 }
 
-type WorkClient = { id: number; name: string; color: string };
-type WorkProject = { id: number; client_id: number; name: string; client_name: string; task_count: number; done_count: number; due_date?: string | null };
+type WorkSpace = { id: number; name: string; color: string; status: string; requested_by?: number | null };
+type WorkList = { id: number; space_id: number; name: string; space_name: string; status: string; requested_by?: number | null; task_count: number; done_count: number };
 type WorkAssignee = { user_id: number; display_name: string };
 type WorkTask = {
-  id: number; project_id: number; project_name: string; client_name: string; client_id: number;
+  id: number; list_id: number; list_name: string; space_name: string; space_id: number;
   title: string; description?: string | null; status: string; priority: string;
   start_date?: string | null; due_date?: string | null; estimate_hours?: number | null;
   assignees: WorkAssignee[]; comment_count: number;
@@ -2124,27 +2124,30 @@ function dueLabel(due?: string | null) {
 }
 
 function Tasks({ isAdmin }: { isAdmin: boolean }) {
-  const [clients, setClients] = useState<WorkClient[]>([]);
-  const [projects, setProjects] = useState<WorkProject[]>([]);
+  const [spaces, setSpaces] = useState<WorkSpace[]>([]);
+  const [lists, setLists] = useState<WorkList[]>([]);
   const [people, setPeople] = useState<WorkPerson[]>([]);
   const [tasks, setTasks] = useState<WorkTask[]>([]);
   const [view, setView] = useState<"board" | "list" | "calendar">("board");
-  const [projectId, setProjectId] = useState("");
+  const [spaceId, setSpaceId] = useState("");
+  const [listId, setListId] = useState("");
   const [mine, setMine] = useState(!isAdmin);
   const [message, setMessage] = useState("");
   const [openTask, setOpenTask] = useState<WorkTask | null>(null);
   const [newOpen, setNewOpen] = useState(false);
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newSpaceOpen, setNewSpaceOpen] = useState(false);
+  const [newListOpen, setNewListOpen] = useState(false);
   const [dragId, setDragId] = useState<number | null>(null);
 
   async function loadMeta() {
-    const m = await api<{ clients: WorkClient[]; projects: WorkProject[]; people: WorkPerson[] }>("/work/meta");
-    setClients(m.clients); setProjects(m.projects); setPeople(m.people);
+    const m = await api<{ spaces: WorkSpace[]; lists: WorkList[]; people: WorkPerson[] }>("/work/meta");
+    setSpaces(m.spaces); setLists(m.lists); setPeople(m.people);
   }
 
   async function loadTasks() {
     const p = new URLSearchParams();
-    if (projectId) p.set("projectId", projectId);
+    if (listId) p.set("listId", listId);
+    else if (spaceId) p.set("spaceId", spaceId);
     if (mine) p.set("mine", "1");
     const d = await api<{ tasks: WorkTask[] }>(`/work/tasks?${p.toString()}`);
     setTasks(d.tasks);
@@ -2155,7 +2158,23 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   }
 
   useEffect(() => { loadMeta().catch(() => undefined); }, []);
-  useEffect(() => { refresh(); }, [projectId, mine]);
+  useEffect(() => { refresh(); }, [spaceId, listId, mine]);
+
+  // Only approved spaces/lists can hold work; pending ones just await a decision.
+  const activeSpaces = spaces.filter((s) => s.status === "Active");
+  const activeLists = lists.filter((l) => l.status === "Active");
+  const listOptions = spaceId ? activeLists.filter((l) => String(l.space_id) === spaceId) : activeLists;
+  const pendingSpaces = spaces.filter((s) => s.status === "Pending");
+  const pendingLists = lists.filter((l) => l.status === "Pending");
+
+  async function decide(kind: "spaces" | "lists", id: number, status: "Active" | "Rejected") {
+    try {
+      await api(`/work/${kind}/${id}/decision`, { method: "POST", body: JSON.stringify({ status }) });
+      await loadMeta();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not save decision");
+    }
+  }
 
   async function setStatus(task: WorkTask, status: string) {
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status } : t)));
@@ -2181,22 +2200,52 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     <section className="space-y-4">
       <PageTitle
         title="Work"
-        description={isAdmin ? "Clients, projects and tasks across the team." : "Everything assigned to you."}
-        action={isAdmin ? (
+        description={isAdmin ? "Spaces, brand lists and tasks across the team." : "Everything assigned to you."}
+        action={(
           <div className="flex gap-2">
-            <button type="button" className="btn btn-soft" onClick={() => setNewProjectOpen(true)}><Plus size={16} />Project</button>
-            <button type="button" className="btn btn-primary" onClick={() => setNewOpen(true)}><Plus size={16} />Task</button>
+            <button type="button" className="btn btn-soft" onClick={() => setNewSpaceOpen(true)}><Plus size={16} />Space</button>
+            <button type="button" className="btn btn-soft" onClick={() => setNewListOpen(true)}><Plus size={16} />List</button>
+            {isAdmin ? <button type="button" className="btn btn-primary" onClick={() => setNewOpen(true)}><Plus size={16} />Task</button> : null}
           </div>
-        ) : undefined}
+        )}
       />
       {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
 
-      {/* Controls: project filter, My tasks toggle, and the view switcher */}
+      {/* Requests waiting on the admin — approve or reject a proposed space/list. */}
+      {pendingSpaces.length || pendingLists.length ? (
+        <div className="card space-y-2 border-amber-200 bg-amber-50/60 p-4">
+          <p className="text-xs font-bold uppercase tracking-wide text-amber-700">
+            {isAdmin ? "Waiting for your approval" : "Your requests"}
+          </p>
+          {[
+            ...pendingSpaces.map((s) => ({ kind: "spaces" as const, id: s.id, label: `Space · ${s.name}` })),
+            ...pendingLists.map((l) => ({ kind: "lists" as const, id: l.id, label: `List · ${l.space_name} › ${l.name}` })),
+          ].map((r) => (
+            <div key={`${r.kind}${r.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white px-3 py-2">
+              <span className="text-sm font-semibold text-ink">{r.label}</span>
+              {isAdmin ? (
+                <span className="flex gap-2">
+                  <button type="button" className="btn btn-soft py-1 text-emerald-700" onClick={() => decide(r.kind, r.id, "Active")}>Approve</button>
+                  <button type="button" className="btn btn-soft py-1 text-rose-600" onClick={() => decide(r.kind, r.id, "Rejected")}>Reject</button>
+                </span>
+              ) : <span className="badge bg-amber-100 text-amber-700">Awaiting approval</span>}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {/* Controls: space + list filters, My tasks toggle, and the view switcher */}
       <div className="card flex flex-wrap items-end gap-3 p-4">
-        <Field label="Project">
-          <select className="input h-10 py-1" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-            <option value="">All projects</option>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.client_name} · {p.name}</option>)}
+        <Field label="Space">
+          <select className="input h-10 py-1" value={spaceId} onChange={(e) => { setSpaceId(e.target.value); setListId(""); }}>
+            <option value="">All spaces</option>
+            {activeSpaces.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </Field>
+        <Field label="List">
+          <select className="input h-10 py-1" value={listId} onChange={(e) => setListId(e.target.value)}>
+            <option value="">All lists</option>
+            {listOptions.map((l) => <option key={l.id} value={l.id}>{l.space_name} · {l.name}</option>)}
           </select>
         </Field>
         {isAdmin ? (
@@ -2240,7 +2289,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                       <span className={classNames("mt-1 h-2 w-2 shrink-0 rounded-full", priorityStyle[t.priority]?.bar)} />
                       <p className="text-sm font-semibold text-ink">{t.title}</p>
                     </div>
-                    <p className="mt-1 text-[11px] text-slate-400">{t.client_name} · {t.project_name}</p>
+                    <p className="mt-1 text-[11px] text-slate-400">{t.space_name} · {t.list_name}</p>
                     <div className="mt-2 flex items-center justify-between">
                       <span className={classNames("text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date)}</span>
                       <span className="flex -space-x-1">
@@ -2267,7 +2316,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-4 py-3 font-bold">Task</th>
-                  <th className="px-4 py-3 font-bold">Client / Project</th>
+                  <th className="px-4 py-3 font-bold">Space / List</th>
                   <th className="px-4 py-3 font-bold">Assignees</th>
                   <th className="px-4 py-3 font-bold">Due</th>
                   <th className="px-4 py-3 font-bold">Priority</th>
@@ -2281,7 +2330,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                       {t.title}
                       {t.comment_count ? <span className="ml-2 text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{t.client_name} · {t.project_name}</td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{t.space_name} · {t.list_name}</td>
                     <td className="px-4 py-3">
                       <span className="flex -space-x-1">
                         {t.assignees.map((a) => (
@@ -2309,18 +2358,23 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
       {view === "calendar" ? <WorkCalendar tasks={tasks} onOpen={setOpenTask} /> : null}
 
       {openTask ? (
-        <WorkTaskModal task={openTask} isAdmin={isAdmin} people={people} projects={projects}
+        <WorkTaskModal task={openTask} isAdmin={isAdmin} people={people} lists={activeLists}
           onClose={() => setOpenTask(null)} onChanged={async () => { await refresh(); setOpenTask(null); }} />
       ) : null}
 
       {newOpen ? (
-        <WorkTaskForm projects={projects} people={people} onClose={() => setNewOpen(false)}
+        <WorkTaskForm lists={activeLists} people={people} onClose={() => setNewOpen(false)}
           onSaved={async () => { setNewOpen(false); await refresh(); }} />
       ) : null}
 
-      {newProjectOpen ? (
-        <NewProjectForm clients={clients} onClose={() => setNewProjectOpen(false)}
-          onSaved={async () => { setNewProjectOpen(false); await loadMeta(); }} />
+      {newSpaceOpen ? (
+        <NewSpaceForm isAdmin={isAdmin} onClose={() => setNewSpaceOpen(false)}
+          onSaved={async () => { setNewSpaceOpen(false); await loadMeta(); }} />
+      ) : null}
+
+      {newListOpen ? (
+        <NewListForm isAdmin={isAdmin} spaces={activeSpaces} onClose={() => setNewListOpen(false)}
+          onSaved={async () => { setNewListOpen(false); await loadMeta(); }} />
       ) : null}
     </section>
   );
@@ -2378,13 +2432,13 @@ function WorkCalendar({ tasks, onOpen }: { tasks: WorkTask[]; onOpen: (t: WorkTa
 }
 
 // Task detail: admins edit everything, employees move status and comment.
-function WorkTaskModal({ task, isAdmin, people, projects, onClose, onChanged }: {
-  task: WorkTask; isAdmin: boolean; people: WorkPerson[]; projects: WorkProject[];
+function WorkTaskModal({ task, isAdmin, people, lists, onClose, onChanged }: {
+  task: WorkTask; isAdmin: boolean; people: WorkPerson[]; lists: WorkList[];
   onClose: () => void; onChanged: () => void;
 }) {
   const [form, setForm] = useState({
     title: task.title, description: task.description ?? "", status: task.status, priority: task.priority,
-    due_date: task.due_date ?? "", project_id: String(task.project_id),
+    due_date: task.due_date ?? "", list_id: String(task.list_id),
     assignees: task.assignees.map((a) => a.user_id),
   });
   const [comments, setComments] = useState<WorkComment[]>([]);
@@ -2430,7 +2484,7 @@ function WorkTaskModal({ task, isAdmin, people, projects, onClose, onChanged }: 
             {isAdmin
               ? <input className="input text-lg font-bold" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
               : <h3 className="text-lg font-bold text-ink">{task.title}</h3>}
-            <p className="mt-1 text-xs text-slate-500">{task.client_name} · {task.project_name}</p>
+            <p className="mt-1 text-xs text-slate-500">{task.space_name} · {task.list_name}</p>
           </div>
           <button type="button" aria-label="Close" className="rounded-lg p-1.5 text-slate-400 hover:bg-stone-100" onClick={onClose}><X size={20} /></button>
         </div>
@@ -2450,9 +2504,9 @@ function WorkTaskModal({ task, isAdmin, people, projects, onClose, onChanged }: 
             <input className="input" type="date" value={form.due_date} disabled={!isAdmin} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
           </Field>
           {isAdmin ? (
-            <Field label="Project">
-              <select className="input" value={form.project_id} onChange={(e) => setForm({ ...form, project_id: e.target.value })}>
-                {projects.map((p) => <option key={p.id} value={p.id}>{p.client_name} · {p.name}</option>)}
+            <Field label="List">
+              <select className="input" value={form.list_id} onChange={(e) => setForm({ ...form, list_id: e.target.value })}>
+                {lists.map((l) => <option key={l.id} value={l.id}>{l.space_name} · {l.name}</option>)}
               </select>
             </Field>
           ) : null}
@@ -2513,11 +2567,11 @@ function WorkTaskModal({ task, isAdmin, people, projects, onClose, onChanged }: 
   );
 }
 
-function WorkTaskForm({ projects, people, onClose, onSaved }: {
-  projects: WorkProject[]; people: WorkPerson[]; onClose: () => void; onSaved: () => void;
+function WorkTaskForm({ lists, people, onClose, onSaved }: {
+  lists: WorkList[]; people: WorkPerson[]; onClose: () => void; onSaved: () => void;
 }) {
   const [form, setForm] = useState({
-    project_id: String(projects[0]?.id ?? ""), title: "", description: "",
+    list_id: "", title: "", description: "",
     priority: "Normal", status: "To Do", due_date: "", assignees: [] as number[],
   });
   const [busy, setBusy] = useState(false);
@@ -2525,6 +2579,8 @@ function WorkTaskForm({ projects, people, onClose, onSaved }: {
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    // Every task must sit under a brand list.
+    if (!form.list_id) { setError("Pick the list this task belongs to."); return; }
     setBusy(true); setError("");
     try {
       await api("/work/tasks", { method: "POST", body: JSON.stringify(form) });
@@ -2540,11 +2596,13 @@ function WorkTaskForm({ projects, people, onClose, onSaved }: {
       <form onSubmit={submit} className="card my-8 w-full max-w-lg space-y-4 p-6">
         <h3 className="text-lg font-bold text-ink">New task</h3>
         {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
-        <Field label="Project">
-          <select required className="input" value={form.project_id} onChange={(e) => setForm({ ...form, project_id: e.target.value })}>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.client_name} · {p.name}</option>)}
+        <Field label="List (required)">
+          <select required className="input" value={form.list_id} onChange={(e) => setForm({ ...form, list_id: e.target.value })}>
+            <option value="">Select a list…</option>
+            {lists.map((l) => <option key={l.id} value={l.id}>{l.space_name} · {l.name}</option>)}
           </select>
         </Field>
+        {!lists.length ? <p className="text-xs font-semibold text-amber-700">No approved lists yet — create one first.</p> : null}
         <Field label="Title"><input required autoFocus className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Design August reels" /></Field>
         <Field label="Description"><textarea className="input min-h-20" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
         <div className="grid grid-cols-3 gap-3">
@@ -2584,42 +2642,79 @@ function WorkTaskForm({ projects, people, onClose, onSaved }: {
   );
 }
 
-function NewProjectForm({ clients, onClose, onSaved }: { clients: WorkClient[]; onClose: () => void; onSaved: () => void }) {
-  const [clientId, setClientId] = useState(String(clients[0]?.id ?? ""));
-  const [newClient, setNewClient] = useState("");
+// Anyone can propose a space; an admin's goes live at once, everyone else's waits.
+function NewSpaceForm({ isAdmin, onClose, onSaved }: { isAdmin: boolean; onClose: () => void; onSaved: () => void }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    setBusy(true);
+    setBusy(true); setError("");
     try {
-      let cid = clientId;
-      if (newClient.trim()) {
-        const c = await api<{ id: number }>("/work/clients", { method: "POST", body: JSON.stringify({ name: newClient }) });
-        cid = String(c.id);
-      }
-      if (name.trim()) await api("/work/projects", { method: "POST", body: JSON.stringify({ client_id: Number(cid), name }) });
+      await api("/work/spaces", { method: "POST", body: JSON.stringify({ name }) });
       onSaved();
-    } catch { /* surfaced by the parent on reload */ }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create space");
+    }
     setBusy(false);
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 p-4 backdrop-blur-sm">
       <form onSubmit={submit} className="card w-full max-w-md space-y-4 p-6">
-        <h3 className="text-lg font-bold text-ink">New project</h3>
-        <p className="text-xs text-slate-500">Pick an existing client, or type a new client name to create one.</p>
-        <Field label="Client">
-          <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)} disabled={!!newClient.trim()}>
-            {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Or new client"><input className="input" value={newClient} onChange={(e) => setNewClient(e.target.value)} placeholder="e.g. Heaven Solar" /></Field>
-        <Field label="Project name"><input required className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. September Campaign" /></Field>
+        <h3 className="text-lg font-bold text-ink">{isAdmin ? "New space" : "Request a space"}</h3>
+        <p className="text-xs text-slate-500">
+          {isAdmin ? "Spaces group your brand lists — e.g. Clients, Internal." : "Your request goes to the admin for approval."}
+        </p>
+        {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
+        <Field label="Space name"><input required autoFocus className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Clients" /></Field>
         <div className="flex justify-end gap-3">
           <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Create"}</button>
+          <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : isAdmin ? "Create" : "Send request"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// Lists are the brands you work with, and they always live inside a space.
+function NewListForm({ isAdmin, spaces, onClose, onSaved }: { isAdmin: boolean; spaces: WorkSpace[]; onClose: () => void; onSaved: () => void }) {
+  const [spaceId, setSpaceId] = useState(String(spaces[0]?.id ?? ""));
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try {
+      await api("/work/lists", { method: "POST", body: JSON.stringify({ space_id: Number(spaceId), name }) });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create list");
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 p-4 backdrop-blur-sm">
+      <form onSubmit={submit} className="card w-full max-w-md space-y-4 p-6">
+        <h3 className="text-lg font-bold text-ink">{isAdmin ? "New list" : "Request a list"}</h3>
+        <p className="text-xs text-slate-500">
+          {isAdmin ? "One list per brand you work with." : "Your request goes to the admin for approval."}
+        </p>
+        {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
+        <Field label="Space">
+          <select required className="input" value={spaceId} onChange={(e) => setSpaceId(e.target.value)}>
+            {spaces.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </Field>
+        {!spaces.length ? <p className="text-xs font-semibold text-amber-700">No approved space yet — create a space first.</p> : null}
+        <Field label="Brand / list name"><input required className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Heaven Solar" /></Field>
+        <div className="flex justify-end gap-3">
+          <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={busy || !spaces.length}>{busy ? "Saving…" : isAdmin ? "Create" : "Send request"}</button>
         </div>
       </form>
     </div>

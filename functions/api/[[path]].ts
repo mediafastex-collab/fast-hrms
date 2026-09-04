@@ -59,6 +59,8 @@ async function route(context: Context) {
   if (method === "POST" && path === "/attendance-requests") return createAttendanceRequest(db, user, await readBody(context.request));
   if (method === "GET" && path === "/work/meta") return workMeta(db, user);
   if (method === "GET" && path === "/work/tasks") return workTasks(db, user, url);
+  if (method === "POST" && path === "/work/spaces") return saveSpace(db, user, await readBody(context.request));
+  if (method === "POST" && path === "/work/lists") return saveList(db, user, await readBody(context.request));
   if (method === "PUT" && path.match(/^\/work\/tasks\/\d+$/)) return updateWorkTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "GET" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return workComments(db, user, Number(path.split("/")[3]));
   if (method === "POST" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return addWorkComment(db, user, Number(path.split("/")[3]), await readBody(context.request));
@@ -89,9 +91,8 @@ async function route(context: Context) {
   if (method === "DELETE" && path.startsWith("/designations/")) return deleteNamed(db, "designations", "designation_id", Number(path.split("/").pop()));
   if (method === "POST" && path === "/attendance/manual") return manualAttendance(db, user, await readBody(context.request));
   if (method === "POST" && path === "/attendance/day-override") return saveDayOverride(db, user, await readBody(context.request));
-  if (method === "POST" && path === "/work/clients") return saveClient(db, user, await readBody(context.request));
-  if (method === "PUT" && path.match(/^\/work\/clients\/\d+$/)) return renameClient(db, user, Number(path.split("/").pop()), await readBody(context.request));
-  if (method === "POST" && path === "/work/projects") return saveProject(db, user, await readBody(context.request));
+  if (method === "POST" && path.match(/^\/work\/spaces\/\d+\/decision$/)) return decideSpaceOrList(db, user, "spaces", Number(path.split("/")[3]), await readBody(context.request));
+  if (method === "POST" && path.match(/^\/work\/lists\/\d+\/decision$/)) return decideSpaceOrList(db, user, "lists", Number(path.split("/")[3]), await readBody(context.request));
   if (method === "POST" && path === "/work/tasks") return createWorkTask(db, user, await readBody(context.request));
   if (method === "DELETE" && path.match(/^\/work\/tasks\/\d+$/)) return deleteWorkTask(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path.match(/^\/attendance-requests\/\d+\/decision$/)) return decideAttendanceRequest(db, user, Number(path.split("/")[2]), await readBody(context.request));
@@ -747,25 +748,78 @@ async function markNotificationsRead(db: D1Database, user: AppUser) {
 }
 
 // ---- Work management (Client > Project > Task) ----
-// Admin creates clients, projects and tasks and assigns people.
+// Spaces hold Lists (the brands we work with); every task belongs to one List.
 // Employees move their own tasks along the pipeline and comment.
 
 const workStatuses = ["Backlog", "To Do", "In Progress", "In Review", "Done"];
 const workPriorities = ["Urgent", "High", "Normal", "Low"];
 
 async function workMeta(db: D1Database, user: AppUser) {
-  const [clients, projects, people] = await Promise.all([
-    db.prepare("SELECT id, name, color, is_active FROM clients WHERE is_active = 1 ORDER BY name").all(),
+  const isAdmin = user.role === "Superadmin";
+  // Everyone sees Active spaces/lists; you also see your own pending requests,
+  // and admins see every pending request so they can approve them.
+  const visible = isAdmin ? "status IN ('Active','Pending')" : "(status = 'Active' OR (status = 'Pending' AND requested_by = ?))";
+  const bind = isAdmin ? [] : [user.id];
+  const [spaces, lists, people] = await Promise.all([
+    db.prepare(`SELECT id, name, color, status, requested_by FROM spaces WHERE ${visible} ORDER BY name`).bind(...bind).all(),
     db.prepare(
-      `SELECT p.id, p.client_id, p.name, p.due_date, c.name AS client_name,
-         (SELECT COUNT(*) FROM work_tasks t WHERE t.project_id = p.id) AS task_count,
-         (SELECT COUNT(*) FROM work_tasks t WHERE t.project_id = p.id AND t.status = 'Done') AS done_count
-       FROM projects p JOIN clients c ON c.id = p.client_id
-       WHERE p.archived = 0 ORDER BY c.name, p.name`,
-    ).all(),
+      `SELECT l.id, l.space_id, l.name, l.status, l.requested_by, s.name AS space_name,
+         (SELECT COUNT(*) FROM work_tasks t WHERE t.list_id = l.id) AS task_count,
+         (SELECT COUNT(*) FROM work_tasks t WHERE t.list_id = l.id AND t.status = 'Done') AS done_count
+       FROM lists l JOIN spaces s ON s.id = l.space_id
+       WHERE ${visible.replace(/status/g, "l.status").replace(/requested_by/g, "l.requested_by")}
+       ORDER BY s.name, l.name`,
+    ).bind(...bind).all(),
     db.prepare(`${chatUserSelect} WHERE u.is_active = 1 ORDER BY display_name`).all(),
   ]);
-  return json({ clients: clients.results, projects: projects.results, people: people.results, statuses: workStatuses, priorities: workPriorities, isAdmin: user.role === "Superadmin" });
+  return json({ spaces: spaces.results, lists: lists.results, people: people.results, statuses: workStatuses, priorities: workPriorities, isAdmin });
+}
+
+// Anyone can propose a Space; admins get one instantly, everyone else waits for approval.
+async function saveSpace(db: D1Database, user: AppUser, body: Record<string, unknown>) {
+  const name = text(body.name);
+  if (!name) return json({ error: "Space name is required" }, 400);
+  const isAdmin = user.role === "Superadmin";
+  const existing = await db.prepare("SELECT id, status FROM spaces WHERE LOWER(name) = LOWER(?) AND status != 'Rejected'").bind(name).first<{ id: number; status: string }>();
+  if (existing) return json({ error: `A space called "${name}" already exists${existing.status === "Pending" ? " and is awaiting approval" : ""}.` }, 400);
+  const res = await db.prepare("INSERT INTO spaces (name, color, status, requested_by) VALUES (?, ?, ?, ?)")
+    .bind(name, text(body.color) || "orange", isAdmin ? "Active" : "Pending", user.id).run();
+  if (!isAdmin) await notifyAdmins(db, "Space requested", `${user.employeeName ?? user.email} requested a new space "${name}".`);
+  else await audit(db, user, "Space created", "spaces", Number(res.meta.last_row_id), name);
+  return json({ ok: true, id: Number(res.meta.last_row_id), pending: !isAdmin });
+}
+
+// Lists are the brands you work with; they live inside a Space.
+async function saveList(db: D1Database, user: AppUser, body: Record<string, unknown>) {
+  const spaceId = number(body.space_id);
+  const name = text(body.name);
+  if (!spaceId || !name) return json({ error: "Space and list name are required" }, 400);
+  const space = await db.prepare("SELECT id, status FROM spaces WHERE id = ?").bind(spaceId).first<{ status: string }>();
+  if (!space) return json({ error: "Space not found" }, 404);
+  if (space.status !== "Active") return json({ error: "That space is still awaiting approval" }, 400);
+  const isAdmin = user.role === "Superadmin";
+  const existing = await db.prepare("SELECT id, status FROM lists WHERE space_id = ? AND LOWER(name) = LOWER(?) AND status != 'Rejected'").bind(spaceId, name).first<{ status: string }>();
+  if (existing) return json({ error: `"${name}" already exists in this space${existing.status === "Pending" ? " and is awaiting approval" : ""}.` }, 400);
+  const res = await db.prepare("INSERT INTO lists (space_id, name, status, requested_by) VALUES (?, ?, ?, ?)")
+    .bind(spaceId, name, isAdmin ? "Active" : "Pending", user.id).run();
+  if (!isAdmin) await notifyAdmins(db, "List requested", `${user.employeeName ?? user.email} requested a new list "${name}".`);
+  else await audit(db, user, "List created", "lists", Number(res.meta.last_row_id), name);
+  return json({ ok: true, id: Number(res.meta.last_row_id), pending: !isAdmin });
+}
+
+async function decideSpaceOrList(db: D1Database, actor: AppUser, table: "spaces" | "lists", id: number, body: Record<string, unknown>) {
+  const status = text(body.status);
+  if (!["Active", "Rejected"].includes(status)) return json({ error: "Invalid decision" }, 400);
+  const row = await db.prepare(`SELECT name, requested_by, status FROM ${table} WHERE id = ?`).bind(id).first<{ name: string; requested_by: number; status: string }>();
+  if (!row) return json({ error: "Not found" }, 404);
+  if (row.status !== "Pending") return json({ error: "Already decided" }, 400);
+  await db.prepare(`UPDATE ${table} SET status = ?, decided_by = ? WHERE id = ?`).bind(status, actor.id, id).run();
+  const label = table === "spaces" ? "Space" : "List";
+  if (row.requested_by) {
+    await notify(db, row.requested_by, `${label} ${status === "Active" ? "approved" : "rejected"}`, `Your ${label.toLowerCase()} "${row.name}" was ${status === "Active" ? "approved" : "rejected"}.`);
+  }
+  await audit(db, actor, `${label} ${status === "Active" ? "approved" : "rejected"}`, table, id, row.name);
+  return json({ ok: true });
 }
 
 // Attaches assignees + comment counts to a set of tasks in one batched pass.
@@ -802,12 +856,12 @@ async function decorateWorkTasks(db: D1Database, rows: Array<Record<string, unkn
 async function workTasks(db: D1Database, user: AppUser, url: URL) {
   const conditions: string[] = [];
   const params: unknown[] = [];
-  const projectId = url.searchParams.get("projectId");
-  const clientId = url.searchParams.get("clientId");
+  const listId = url.searchParams.get("listId");
+  const spaceId = url.searchParams.get("spaceId");
   const mine = url.searchParams.get("mine");
 
-  if (projectId) { conditions.push("t.project_id = ?"); params.push(projectId); }
-  if (clientId) { conditions.push("p.client_id = ?"); params.push(clientId); }
+  if (listId) { conditions.push("t.list_id = ?"); params.push(listId); }
+  if (spaceId) { conditions.push("l.space_id = ?"); params.push(spaceId); }
   // Employees only ever see work assigned to them; admins see everything.
   if (mine === "1" || user.role !== "Superadmin") {
     conditions.push("EXISTS (SELECT 1 FROM work_task_assignees a WHERE a.task_id = t.id AND a.user_id = ?)");
@@ -815,8 +869,8 @@ async function workTasks(db: D1Database, user: AppUser, url: URL) {
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const rows = await db.prepare(
-    `SELECT t.*, p.name AS project_name, c.name AS client_name, c.id AS client_id
-     FROM work_tasks t JOIN projects p ON p.id = t.project_id JOIN clients c ON c.id = p.client_id
+    `SELECT t.*, l.name AS list_name, s.name AS space_name, s.id AS space_id
+     FROM work_tasks t JOIN lists l ON l.id = t.list_id JOIN spaces s ON s.id = l.space_id
      ${where}
      ORDER BY CASE t.priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END,
               t.due_date IS NULL, t.due_date ASC, t.position ASC, t.id DESC`,
@@ -824,66 +878,23 @@ async function workTasks(db: D1Database, user: AppUser, url: URL) {
   return json({ tasks: await decorateWorkTasks(db, rows.results) });
 }
 
-async function saveClient(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
-  const name = text(body.name);
-  if (!name) return json({ error: "Client name is required" }, 400);
-  const existing = await db.prepare("SELECT id FROM clients WHERE LOWER(name) = LOWER(?)").bind(name).first<{ id: number }>();
-  if (existing) return json({ ok: true, id: existing.id });
-  const res = await db.prepare("INSERT INTO clients (name, color) VALUES (?, ?)").bind(name, text(body.color) || "orange").run();
-  const id = Number(res.meta.last_row_id);
-  // Every client starts with a General project so tasks have somewhere to live.
-  await db.prepare("INSERT INTO projects (client_id, name) VALUES (?, 'General')").bind(id).run();
-  await audit(db, actor, "Client added", "clients", id, name);
-  return json({ ok: true, id });
-}
 
 // Renaming to an existing client's name merges the two (fixes brand-name drift).
-async function renameClient(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
-  const name = text(body.name);
-  if (!name) return json({ error: "Client name is required" }, 400);
-  const target = await db.prepare("SELECT id FROM clients WHERE LOWER(name) = LOWER(?) AND id != ?").bind(name, id).first<{ id: number }>();
-  if (target) {
-    await db.prepare("UPDATE projects SET client_id = ? WHERE client_id = ?").bind(target.id, id).run();
-    // Fold same-named projects together so the merge doesn't leave two "General"s.
-    const dupes = await db.prepare(
-      `SELECT p.id, p.name, (SELECT MIN(q.id) FROM projects q WHERE q.client_id = ? AND q.name = p.name) AS keep_id
-       FROM projects p WHERE p.client_id = ?`,
-    ).bind(target.id, target.id).all<{ id: number; keep_id: number }>();
-    for (const d of dupes.results) {
-      if (Number(d.id) !== Number(d.keep_id)) {
-        await db.prepare("UPDATE work_tasks SET project_id = ? WHERE project_id = ?").bind(d.keep_id, d.id).run();
-        await db.prepare("DELETE FROM projects WHERE id = ?").bind(d.id).run();
-      }
-    }
-    await db.prepare("DELETE FROM clients WHERE id = ?").bind(id).run();
-    await audit(db, actor, "Clients merged", "clients", target.id, name);
-    return json({ ok: true, id: target.id, merged: true });
-  }
-  await db.prepare("UPDATE clients SET name = ? WHERE id = ?").bind(name, id).run();
-  await audit(db, actor, "Client renamed", "clients", id, name);
-  return json({ ok: true, id });
-}
 
-async function saveProject(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
-  const clientId = number(body.client_id);
-  const name = text(body.name);
-  if (!clientId || !name) return json({ error: "Client and project name are required" }, 400);
-  const res = await db.prepare("INSERT INTO projects (client_id, name, due_date) VALUES (?, ?, ?)")
-    .bind(clientId, name, text(body.due_date) || null).run();
-  await audit(db, actor, "Project added", "projects", Number(res.meta.last_row_id), name);
-  return json({ ok: true, id: Number(res.meta.last_row_id) });
-}
 
 async function createWorkTask(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
-  const projectId = number(body.project_id);
+  const listId = number(body.list_id);
   const title = text(body.title);
-  if (!projectId || !title) return json({ error: "Project and title are required" }, 400);
+  // A task always belongs to a brand list — that choice is compulsory.
+  if (!listId || !title) return json({ error: "List and title are required" }, 400);
+  const list = await db.prepare("SELECT id FROM lists WHERE id = ? AND status = 'Active'").bind(listId).first();
+  if (!list) return json({ error: "Pick an approved list for this task" }, 400);
   const status = workStatuses.includes(text(body.status)) ? text(body.status) : "To Do";
   const priority = workPriorities.includes(text(body.priority)) ? text(body.priority) : "Normal";
   const res = await db.prepare(
-    `INSERT INTO work_tasks (project_id, title, description, status, priority, start_date, due_date, estimate_hours, created_by)
+    `INSERT INTO work_tasks (list_id, title, description, status, priority, start_date, due_date, estimate_hours, created_by)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(projectId, title, text(body.description) || null, status, priority, text(body.start_date) || null, text(body.due_date) || null, body.estimate_hours ? number(body.estimate_hours) : null, actor.id).run();
+  ).bind(listId, title, text(body.description) || null, status, priority, text(body.start_date) || null, text(body.due_date) || null, body.estimate_hours ? number(body.estimate_hours) : null, actor.id).run();
   const taskId = Number(res.meta.last_row_id);
 
   const assignees = Array.isArray(body.assignees) ? body.assignees.map(Number).filter(Boolean) : [];
@@ -914,7 +925,7 @@ async function updateWorkTask(db: D1Database, user: AppUser, id: number, body: R
   const priority = body.priority !== undefined && workPriorities.includes(text(body.priority)) ? text(body.priority) : String(task.priority);
   await db.prepare(
     `UPDATE work_tasks SET title = ?, description = ?, status = ?, priority = ?, start_date = ?, due_date = ?,
-       estimate_hours = ?, project_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+       estimate_hours = ?, list_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
   ).bind(
     title,
     body.description !== undefined ? (text(body.description) || null) : (task.description ?? null),
@@ -923,7 +934,7 @@ async function updateWorkTask(db: D1Database, user: AppUser, id: number, body: R
     body.start_date !== undefined ? (text(body.start_date) || null) : (task.start_date ?? null),
     body.due_date !== undefined ? (text(body.due_date) || null) : (task.due_date ?? null),
     body.estimate_hours !== undefined ? (body.estimate_hours ? number(body.estimate_hours) : null) : (task.estimate_hours ?? null),
-    body.project_id !== undefined ? number(body.project_id) : Number(task.project_id),
+    body.list_id !== undefined ? number(body.list_id) : Number(task.list_id),
     id,
   ).run();
 

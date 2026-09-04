@@ -57,6 +57,11 @@ async function route(context: Context) {
   if (method === "GET" && path === "/attendance/month-grid") return monthGrid(db, user, url);
   if (method === "GET" && path === "/attendance-requests") return attendanceRequestList(db, user);
   if (method === "POST" && path === "/attendance-requests") return createAttendanceRequest(db, user, await readBody(context.request));
+  if (method === "GET" && path === "/work/meta") return workMeta(db, user);
+  if (method === "GET" && path === "/work/tasks") return workTasks(db, user, url);
+  if (method === "PUT" && path.match(/^\/work\/tasks\/\d+$/)) return updateWorkTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
+  if (method === "GET" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return workComments(db, user, Number(path.split("/")[3]));
+  if (method === "POST" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return addWorkComment(db, user, Number(path.split("/")[3]), await readBody(context.request));
   if (method === "GET" && path === "/notifications") return notificationsList(db, user);
   if (method === "POST" && path === "/notifications/read-all") return markNotificationsRead(db, user);
   if (method === "GET" && path === "/chat/channels") return chatChannels(db, user);
@@ -84,6 +89,11 @@ async function route(context: Context) {
   if (method === "DELETE" && path.startsWith("/designations/")) return deleteNamed(db, "designations", "designation_id", Number(path.split("/").pop()));
   if (method === "POST" && path === "/attendance/manual") return manualAttendance(db, user, await readBody(context.request));
   if (method === "POST" && path === "/attendance/day-override") return saveDayOverride(db, user, await readBody(context.request));
+  if (method === "POST" && path === "/work/clients") return saveClient(db, user, await readBody(context.request));
+  if (method === "PUT" && path.match(/^\/work\/clients\/\d+$/)) return renameClient(db, user, Number(path.split("/").pop()), await readBody(context.request));
+  if (method === "POST" && path === "/work/projects") return saveProject(db, user, await readBody(context.request));
+  if (method === "POST" && path === "/work/tasks") return createWorkTask(db, user, await readBody(context.request));
+  if (method === "DELETE" && path.match(/^\/work\/tasks\/\d+$/)) return deleteWorkTask(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path.match(/^\/attendance-requests\/\d+\/decision$/)) return decideAttendanceRequest(db, user, Number(path.split("/")[2]), await readBody(context.request));
   if (method === "GET" && path === "/attendance.csv") return attendanceCsv(db, user, url);
   if (method === "POST" && path.match(/^\/leaves\/\d+\/decision$/)) return decideLeave(db, user, Number(path.split("/")[2]), await readBody(context.request));
@@ -733,6 +743,229 @@ async function notificationsList(db: D1Database, user: AppUser) {
 
 async function markNotificationsRead(db: D1Database, user: AppUser) {
   await db.prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0").bind(user.id).run();
+  return json({ ok: true });
+}
+
+// ---- Work management (Client > Project > Task) ----
+// Admin creates clients, projects and tasks and assigns people.
+// Employees move their own tasks along the pipeline and comment.
+
+const workStatuses = ["Backlog", "To Do", "In Progress", "In Review", "Done"];
+const workPriorities = ["Urgent", "High", "Normal", "Low"];
+
+async function workMeta(db: D1Database, user: AppUser) {
+  const [clients, projects, people] = await Promise.all([
+    db.prepare("SELECT id, name, color, is_active FROM clients WHERE is_active = 1 ORDER BY name").all(),
+    db.prepare(
+      `SELECT p.id, p.client_id, p.name, p.due_date, c.name AS client_name,
+         (SELECT COUNT(*) FROM work_tasks t WHERE t.project_id = p.id) AS task_count,
+         (SELECT COUNT(*) FROM work_tasks t WHERE t.project_id = p.id AND t.status = 'Done') AS done_count
+       FROM projects p JOIN clients c ON c.id = p.client_id
+       WHERE p.archived = 0 ORDER BY c.name, p.name`,
+    ).all(),
+    db.prepare(`${chatUserSelect} WHERE u.is_active = 1 ORDER BY display_name`).all(),
+  ]);
+  return json({ clients: clients.results, projects: projects.results, people: people.results, statuses: workStatuses, priorities: workPriorities, isAdmin: user.role === "Superadmin" });
+}
+
+// Attaches assignees + comment counts to a set of tasks in one batched pass.
+async function decorateWorkTasks(db: D1Database, rows: Array<Record<string, unknown>>) {
+  const ids = rows.map((r) => Number(r.id));
+  if (!ids.length) return rows;
+  const byTask = new Map<number, Array<Record<string, unknown>>>();
+  const counts = new Map<number, number>();
+  for (let i = 0; i < ids.length; i += 60) {
+    const chunk = ids.slice(i, i + 60);
+    const marks = chunk.map(() => "?").join(",");
+    const [assignees, comments] = await Promise.all([
+      db.prepare(
+        `SELECT a.task_id, a.user_id, COALESCE(e.full_name, u.email) AS display_name
+         FROM work_task_assignees a JOIN users u ON u.id = a.user_id
+         LEFT JOIN employees e ON e.user_id = u.id WHERE a.task_id IN (${marks})`,
+      ).bind(...chunk).all<Record<string, unknown>>(),
+      db.prepare(`SELECT task_id, COUNT(*) AS n FROM work_task_comments WHERE task_id IN (${marks}) GROUP BY task_id`).bind(...chunk).all<{ task_id: number; n: number }>(),
+    ]);
+    for (const a of assignees.results) {
+      const key = Number(a.task_id);
+      if (!byTask.has(key)) byTask.set(key, []);
+      byTask.get(key)!.push({ user_id: a.user_id, display_name: a.display_name });
+    }
+    for (const c of comments.results) counts.set(Number(c.task_id), Number(c.n));
+  }
+  for (const row of rows) {
+    row.assignees = byTask.get(Number(row.id)) ?? [];
+    row.comment_count = counts.get(Number(row.id)) ?? 0;
+  }
+  return rows;
+}
+
+async function workTasks(db: D1Database, user: AppUser, url: URL) {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  const projectId = url.searchParams.get("projectId");
+  const clientId = url.searchParams.get("clientId");
+  const mine = url.searchParams.get("mine");
+
+  if (projectId) { conditions.push("t.project_id = ?"); params.push(projectId); }
+  if (clientId) { conditions.push("p.client_id = ?"); params.push(clientId); }
+  // Employees only ever see work assigned to them; admins see everything.
+  if (mine === "1" || user.role !== "Superadmin") {
+    conditions.push("EXISTS (SELECT 1 FROM work_task_assignees a WHERE a.task_id = t.id AND a.user_id = ?)");
+    params.push(user.id);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = await db.prepare(
+    `SELECT t.*, p.name AS project_name, c.name AS client_name, c.id AS client_id
+     FROM work_tasks t JOIN projects p ON p.id = t.project_id JOIN clients c ON c.id = p.client_id
+     ${where}
+     ORDER BY CASE t.priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END,
+              t.due_date IS NULL, t.due_date ASC, t.position ASC, t.id DESC`,
+  ).bind(...params).all<Record<string, unknown>>();
+  return json({ tasks: await decorateWorkTasks(db, rows.results) });
+}
+
+async function saveClient(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
+  const name = text(body.name);
+  if (!name) return json({ error: "Client name is required" }, 400);
+  const existing = await db.prepare("SELECT id FROM clients WHERE LOWER(name) = LOWER(?)").bind(name).first<{ id: number }>();
+  if (existing) return json({ ok: true, id: existing.id });
+  const res = await db.prepare("INSERT INTO clients (name, color) VALUES (?, ?)").bind(name, text(body.color) || "orange").run();
+  const id = Number(res.meta.last_row_id);
+  // Every client starts with a General project so tasks have somewhere to live.
+  await db.prepare("INSERT INTO projects (client_id, name) VALUES (?, 'General')").bind(id).run();
+  await audit(db, actor, "Client added", "clients", id, name);
+  return json({ ok: true, id });
+}
+
+// Renaming to an existing client's name merges the two (fixes brand-name drift).
+async function renameClient(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
+  const name = text(body.name);
+  if (!name) return json({ error: "Client name is required" }, 400);
+  const target = await db.prepare("SELECT id FROM clients WHERE LOWER(name) = LOWER(?) AND id != ?").bind(name, id).first<{ id: number }>();
+  if (target) {
+    await db.prepare("UPDATE projects SET client_id = ? WHERE client_id = ?").bind(target.id, id).run();
+    // Fold same-named projects together so the merge doesn't leave two "General"s.
+    const dupes = await db.prepare(
+      `SELECT p.id, p.name, (SELECT MIN(q.id) FROM projects q WHERE q.client_id = ? AND q.name = p.name) AS keep_id
+       FROM projects p WHERE p.client_id = ?`,
+    ).bind(target.id, target.id).all<{ id: number; keep_id: number }>();
+    for (const d of dupes.results) {
+      if (Number(d.id) !== Number(d.keep_id)) {
+        await db.prepare("UPDATE work_tasks SET project_id = ? WHERE project_id = ?").bind(d.keep_id, d.id).run();
+        await db.prepare("DELETE FROM projects WHERE id = ?").bind(d.id).run();
+      }
+    }
+    await db.prepare("DELETE FROM clients WHERE id = ?").bind(id).run();
+    await audit(db, actor, "Clients merged", "clients", target.id, name);
+    return json({ ok: true, id: target.id, merged: true });
+  }
+  await db.prepare("UPDATE clients SET name = ? WHERE id = ?").bind(name, id).run();
+  await audit(db, actor, "Client renamed", "clients", id, name);
+  return json({ ok: true, id });
+}
+
+async function saveProject(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
+  const clientId = number(body.client_id);
+  const name = text(body.name);
+  if (!clientId || !name) return json({ error: "Client and project name are required" }, 400);
+  const res = await db.prepare("INSERT INTO projects (client_id, name, due_date) VALUES (?, ?, ?)")
+    .bind(clientId, name, text(body.due_date) || null).run();
+  await audit(db, actor, "Project added", "projects", Number(res.meta.last_row_id), name);
+  return json({ ok: true, id: Number(res.meta.last_row_id) });
+}
+
+async function createWorkTask(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
+  const projectId = number(body.project_id);
+  const title = text(body.title);
+  if (!projectId || !title) return json({ error: "Project and title are required" }, 400);
+  const status = workStatuses.includes(text(body.status)) ? text(body.status) : "To Do";
+  const priority = workPriorities.includes(text(body.priority)) ? text(body.priority) : "Normal";
+  const res = await db.prepare(
+    `INSERT INTO work_tasks (project_id, title, description, status, priority, start_date, due_date, estimate_hours, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(projectId, title, text(body.description) || null, status, priority, text(body.start_date) || null, text(body.due_date) || null, body.estimate_hours ? number(body.estimate_hours) : null, actor.id).run();
+  const taskId = Number(res.meta.last_row_id);
+
+  const assignees = Array.isArray(body.assignees) ? body.assignees.map(Number).filter(Boolean) : [];
+  for (const userId of assignees) {
+    await db.prepare("INSERT OR IGNORE INTO work_task_assignees (task_id, user_id) VALUES (?, ?)").bind(taskId, userId).run();
+    await notify(db, userId, "New task assigned", `${title}${text(body.due_date) ? ` · due ${text(body.due_date)}` : ""}`);
+  }
+  return json({ ok: true, id: taskId });
+}
+
+async function updateWorkTask(db: D1Database, user: AppUser, id: number, body: Record<string, unknown>) {
+  const task = await db.prepare("SELECT * FROM work_tasks WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  if (!task) return json({ error: "Task not found" }, 404);
+  const isAdmin = user.role === "Superadmin";
+  if (!isAdmin) {
+    const assigned = await db.prepare("SELECT 1 FROM work_task_assignees WHERE task_id = ? AND user_id = ?").bind(id, user.id).first();
+    if (!assigned) return json({ error: "Not allowed" }, 403);
+  }
+
+  // Employees can only move a task along the pipeline; admins can edit everything.
+  const status = body.status !== undefined && workStatuses.includes(text(body.status)) ? text(body.status) : String(task.status);
+  if (!isAdmin) {
+    await db.prepare("UPDATE work_tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, id).run();
+    return json({ ok: true });
+  }
+
+  const title = body.title !== undefined ? (text(body.title) || String(task.title)) : String(task.title);
+  const priority = body.priority !== undefined && workPriorities.includes(text(body.priority)) ? text(body.priority) : String(task.priority);
+  await db.prepare(
+    `UPDATE work_tasks SET title = ?, description = ?, status = ?, priority = ?, start_date = ?, due_date = ?,
+       estimate_hours = ?, project_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+  ).bind(
+    title,
+    body.description !== undefined ? (text(body.description) || null) : (task.description ?? null),
+    status,
+    priority,
+    body.start_date !== undefined ? (text(body.start_date) || null) : (task.start_date ?? null),
+    body.due_date !== undefined ? (text(body.due_date) || null) : (task.due_date ?? null),
+    body.estimate_hours !== undefined ? (body.estimate_hours ? number(body.estimate_hours) : null) : (task.estimate_hours ?? null),
+    body.project_id !== undefined ? number(body.project_id) : Number(task.project_id),
+    id,
+  ).run();
+
+  if (Array.isArray(body.assignees)) {
+    const wanted = body.assignees.map(Number).filter(Boolean);
+    const current = await db.prepare("SELECT user_id FROM work_task_assignees WHERE task_id = ?").bind(id).all<{ user_id: number }>();
+    const had = new Set(current.results.map((r) => Number(r.user_id)));
+    await db.prepare("DELETE FROM work_task_assignees WHERE task_id = ?").bind(id).run();
+    for (const userId of wanted) {
+      await db.prepare("INSERT OR IGNORE INTO work_task_assignees (task_id, user_id) VALUES (?, ?)").bind(id, userId).run();
+      if (!had.has(userId)) await notify(db, userId, "New task assigned", title);
+    }
+  }
+  return json({ ok: true });
+}
+
+async function deleteWorkTask(db: D1Database, actor: AppUser, id: number) {
+  await db.prepare("DELETE FROM work_tasks WHERE id = ?").bind(id).run();
+  await audit(db, actor, "Task deleted", "work_tasks", id, "");
+  return json({ ok: true });
+}
+
+async function workComments(db: D1Database, user: AppUser, taskId: number) {
+  const rows = await db.prepare(
+    `SELECT wc.id, wc.body, wc.created_at, wc.user_id, COALESCE(e.full_name, u.email) AS author_name
+     FROM work_task_comments wc JOIN users u ON u.id = wc.user_id
+     LEFT JOIN employees e ON e.user_id = u.id
+     WHERE wc.task_id = ? ORDER BY wc.id ASC`,
+  ).bind(taskId).all();
+  return json({ comments: rows.results });
+}
+
+async function addWorkComment(db: D1Database, user: AppUser, taskId: number, body: Record<string, unknown>) {
+  const message = text(body.body);
+  if (!message) return json({ error: "Write a comment first" }, 400);
+  const task = await db.prepare("SELECT title FROM work_tasks WHERE id = ?").bind(taskId).first<{ title: string }>();
+  if (!task) return json({ error: "Task not found" }, 404);
+  await db.prepare("INSERT INTO work_task_comments (task_id, user_id, body) VALUES (?, ?, ?)").bind(taskId, user.id, message).run();
+  // Ping everyone else on the task.
+  const others = await db.prepare("SELECT user_id FROM work_task_assignees WHERE task_id = ? AND user_id != ?").bind(taskId, user.id).all<{ user_id: number }>();
+  const who = user.employeeName ?? user.email;
+  for (const o of others.results) await notify(db, o.user_id, `Comment on "${task.title}"`, `${who}: ${message.slice(0, 120)}`);
   return json({ ok: true });
 }
 

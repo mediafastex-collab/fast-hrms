@@ -2077,217 +2077,552 @@ function Chat({ currentUserId }: { currentUserId: number }) {
   );
 }
 
-function taskStatusTone(status: string) {
-  if (status === "Completed") return "bg-emerald-50 text-emerald-700";
-  if (status === "In Progress") return "bg-amber-50 text-amber-700";
-  return "bg-slate-100 text-slate-600";
-}
+type WorkClient = { id: number; name: string; color: string };
+type WorkProject = { id: number; client_id: number; name: string; client_name: string; task_count: number; done_count: number; due_date?: string | null };
+type WorkAssignee = { user_id: number; display_name: string };
+type WorkTask = {
+  id: number; project_id: number; project_name: string; client_name: string; client_id: number;
+  title: string; description?: string | null; status: string; priority: string;
+  start_date?: string | null; due_date?: string | null; estimate_hours?: number | null;
+  assignees: WorkAssignee[]; comment_count: number;
+};
+type WorkPerson = { id: number; display_name: string; role: string };
+type WorkComment = { id: number; body: string; created_at: string; user_id: number; author_name: string };
 
-const priorityMeta: Record<"High" | "Medium" | "Low", { dot: string; ring: string; label: string }> = {
-  High: { dot: "bg-rose-500", ring: "border-l-rose-400", label: "text-rose-700" },
-  Medium: { dot: "bg-amber-500", ring: "border-l-amber-400", label: "text-amber-700" },
-  Low: { dot: "bg-emerald-500", ring: "border-l-emerald-400", label: "text-emerald-700" },
+const WORK_STATUSES = ["Backlog", "To Do", "In Progress", "In Review", "Done"];
+
+const statusStyle: Record<string, string> = {
+  "Backlog": "bg-slate-100 text-slate-600",
+  "To Do": "bg-sky-50 text-sky-700",
+  "In Progress": "bg-amber-50 text-amber-700",
+  "In Review": "bg-violet-50 text-violet-700",
+  "Done": "bg-emerald-50 text-emerald-700",
 };
 
+const priorityStyle: Record<string, { chip: string; bar: string }> = {
+  Urgent: { chip: "bg-rose-100 text-rose-700", bar: "bg-rose-500" },
+  High: { chip: "bg-orange-100 text-orange-700", bar: "bg-orange-500" },
+  Normal: { chip: "bg-slate-100 text-slate-600", bar: "bg-slate-400" },
+  Low: { chip: "bg-emerald-50 text-emerald-700", bar: "bg-emerald-400" },
+};
+
+function dueTone(due?: string | null, status?: string) {
+  if (!due || status === "Done") return "text-slate-400";
+  const diff = Math.round((Date.parse(due) - Date.parse(today)) / 86400000);
+  if (diff < 0) return "text-rose-600 font-semibold";
+  if (diff === 0) return "text-amber-600 font-semibold";
+  return "text-slate-500";
+}
+
+function dueLabel(due?: string | null) {
+  if (!due) return "No due date";
+  const diff = Math.round((Date.parse(due) - Date.parse(today)) / 86400000);
+  if (diff === 0) return "Due today";
+  if (diff === 1) return "Due tomorrow";
+  if (diff < 0) return `${Math.abs(diff)}d overdue`;
+  return due;
+}
+
 function Tasks({ isAdmin }: { isAdmin: boolean }) {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [date, setDate] = useState(today);
-  const [employeeId, setEmployeeId] = useState("");
+  const [clients, setClients] = useState<WorkClient[]>([]);
+  const [projects, setProjects] = useState<WorkProject[]>([]);
+  const [people, setPeople] = useState<WorkPerson[]>([]);
+  const [tasks, setTasks] = useState<WorkTask[]>([]);
+  const [view, setView] = useState<"board" | "list" | "calendar">("board");
+  const [projectId, setProjectId] = useState("");
+  const [mine, setMine] = useState(!isAdmin);
   const [message, setMessage] = useState("");
-  const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState<{ title: string; company: string; priority: "High" | "Medium" | "Low"; deadline: string }>({ title: "", company: "", priority: "Medium", deadline: "" });
-  const [assignEmployeeId, setAssignEmployeeId] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [reportPeriod, setReportPeriod] = useState("Today");
+  const [openTask, setOpenTask] = useState<WorkTask | null>(null);
+  const [newOpen, setNewOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [dragId, setDragId] = useState<number | null>(null);
 
-  function openAdd() {
-    if (isAdmin) setAssignEmployeeId(employeeId || String(employees[0]?.id ?? ""));
-    setForm({ title: "", company: "", priority: "Medium", deadline: "" });
-    setMessage("");
-    setAddOpen(true);
+  async function loadMeta() {
+    const m = await api<{ clients: WorkClient[]; projects: WorkProject[]; people: WorkPerson[] }>("/work/meta");
+    setClients(m.clients); setProjects(m.projects); setPeople(m.people);
   }
 
-  // Report/export date range for the selected preset.
-  function reportRange(): { start: string; end: string } {
-    const d = new Date();
-    const iso = (x: Date) => x.toISOString().slice(0, 10);
-    if (reportPeriod === "Today") return { start: iso(d), end: iso(d) };
-    if (reportPeriod === "Yesterday") { const y = new Date(d); y.setDate(d.getDate() - 1); return { start: iso(y), end: iso(y) }; }
-    if (reportPeriod === "Last 7 days") { const s = new Date(d); s.setDate(d.getDate() - 6); return { start: iso(s), end: iso(d) }; }
-    const s = new Date(d); s.setMonth(d.getMonth() - 3); return { start: iso(s), end: iso(d) };
+  async function loadTasks() {
+    const p = new URLSearchParams();
+    if (projectId) p.set("projectId", projectId);
+    if (mine) p.set("mine", "1");
+    const d = await api<{ tasks: WorkTask[] }>(`/work/tasks?${p.toString()}`);
+    setTasks(d.tasks);
   }
 
-  const exportHref = (() => {
-    const { start, end } = reportRange();
-    const p = new URLSearchParams({ start, end });
-    if (isAdmin && employeeId) p.set("employeeId", employeeId);
-    return `/api/tasks.csv?${p.toString()}`;
-  })();
-
-  async function load() {
-    const params = new URLSearchParams({ date });
-    if (isAdmin && employeeId) params.set("employeeId", employeeId);
-    const data = await api<{ tasks: Task[]; employees?: Employee[] }>(`/tasks?${params.toString()}`);
-    setTasks(data.tasks);
-    if (data.employees) setEmployees(data.employees);
+  async function refresh() {
+    try { await loadTasks(); } catch (err) { setMessage(err instanceof Error ? err.message : "Failed to load tasks"); }
   }
 
-  useEffect(() => {
-    load().catch((err) => setMessage(err instanceof Error ? err.message : "Failed to load tasks"));
-  }, []);
+  useEffect(() => { loadMeta().catch(() => undefined); }, []);
+  useEffect(() => { refresh(); }, [projectId, mine]);
 
-  async function addTask(e: FormEvent) {
-    e.preventDefault();
-    if (!form.title.trim()) return;
-    if (isAdmin && !assignEmployeeId) { setMessage("Choose an employee to assign the task to."); return; }
-    setBusy(true);
-    setMessage("");
+  async function setStatus(task: WorkTask, status: string) {
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status } : t)));
     try {
-      const payload: Record<string, unknown> = { ...form, task_date: date };
-      if (isAdmin) payload.employee_id = Number(assignEmployeeId);
-      await api("/tasks", { method: "POST", body: JSON.stringify(payload) });
-      setAddOpen(false);
-      setForm({ title: "", company: "", priority: "Medium", deadline: "" });
-      await load();
+      await api(`/work/tasks/${task.id}`, { method: "PUT", body: JSON.stringify({ status }) });
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to add task");
+      setMessage(err instanceof Error ? err.message : "Could not update");
+    }
+    await refresh();
+  }
+
+  const grouped = useMemo(() => {
+    const map: Record<string, WorkTask[]> = {};
+    for (const s of WORK_STATUSES) map[s] = [];
+    for (const t of tasks) (map[t.status] ??= []).push(t);
+    return map;
+  }, [tasks]);
+
+  const openCount = tasks.filter((t) => t.status !== "Done").length;
+  const overdue = tasks.filter((t) => t.due_date && t.status !== "Done" && Date.parse(t.due_date) < Date.parse(today)).length;
+
+  return (
+    <section className="space-y-4">
+      <PageTitle
+        title="Work"
+        description={isAdmin ? "Clients, projects and tasks across the team." : "Everything assigned to you."}
+        action={isAdmin ? (
+          <div className="flex gap-2">
+            <button type="button" className="btn btn-soft" onClick={() => setNewProjectOpen(true)}><Plus size={16} />Project</button>
+            <button type="button" className="btn btn-primary" onClick={() => setNewOpen(true)}><Plus size={16} />Task</button>
+          </div>
+        ) : undefined}
+      />
+      {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+
+      {/* Controls: project filter, My tasks toggle, and the view switcher */}
+      <div className="card flex flex-wrap items-end gap-3 p-4">
+        <Field label="Project">
+          <select className="input h-10 py-1" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+            <option value="">All projects</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.client_name} · {p.name}</option>)}
+          </select>
+        </Field>
+        {isAdmin ? (
+          <label className="flex h-10 cursor-pointer items-center gap-2 self-end rounded-xl border border-line px-3 text-sm font-semibold text-stone-600">
+            <input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} />
+            My tasks only
+          </label>
+        ) : null}
+        <div className="ml-auto flex self-end overflow-hidden rounded-xl border border-line">
+          {(["board", "list", "calendar"] as const).map((v) => (
+            <button key={v} type="button" onClick={() => setView(v)}
+              className={classNames("px-4 py-2 text-sm font-semibold capitalize transition", view === v ? "bg-brand text-white" : "bg-white text-stone-600 hover:bg-stone-50")}>
+              {v}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="card p-4"><p className="text-xs font-semibold uppercase text-slate-500">Open tasks</p><p className="mt-1 text-2xl font-bold text-ink">{openCount}</p></div>
+        <div className="card p-4"><p className="text-xs font-semibold uppercase text-slate-500">Completed</p><p className="mt-1 text-2xl font-bold text-emerald-600">{tasks.length - openCount}</p></div>
+        <div className="card p-4"><p className="text-xs font-semibold uppercase text-slate-500">Overdue</p><p className="mt-1 text-2xl font-bold text-rose-600">{overdue}</p></div>
+      </div>
+
+      {view === "board" ? (
+        <div className="grid gap-3 lg:grid-cols-5">
+          {WORK_STATUSES.map((status) => (
+            <div key={status}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => { const t = tasks.find((x) => x.id === dragId); if (t && t.status !== status) setStatus(t, status); setDragId(null); }}
+              className="card flex min-h-[220px] flex-col overflow-hidden">
+              <div className="flex items-center justify-between border-b border-line px-3 py-2">
+                <span className={classNames("badge", statusStyle[status])}>{status}</span>
+                <span className="text-xs text-slate-400">{grouped[status]?.length ?? 0}</span>
+              </div>
+              <div className="flex-1 space-y-2 p-2">
+                {(grouped[status] ?? []).map((t) => (
+                  <button key={t.id} type="button" draggable onDragStart={() => setDragId(t.id)} onClick={() => setOpenTask(t)}
+                    className="w-full rounded-xl border border-line bg-white p-3 text-left transition hover:shadow-md">
+                    <div className="flex items-start gap-2">
+                      <span className={classNames("mt-1 h-2 w-2 shrink-0 rounded-full", priorityStyle[t.priority]?.bar)} />
+                      <p className="text-sm font-semibold text-ink">{t.title}</p>
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-400">{t.client_name} · {t.project_name}</p>
+                    <div className="mt-2 flex items-center justify-between">
+                      <span className={classNames("text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date)}</span>
+                      <span className="flex -space-x-1">
+                        {t.assignees.slice(0, 3).map((a) => (
+                          <span key={a.user_id} title={a.display_name} className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700 ring-1 ring-white">
+                            {initialsOf(a.display_name)}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+                {!(grouped[status] ?? []).length ? <p className="px-1 py-6 text-center text-xs text-slate-300">Empty</p> : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {view === "list" ? (
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-3 font-bold">Task</th>
+                  <th className="px-4 py-3 font-bold">Client / Project</th>
+                  <th className="px-4 py-3 font-bold">Assignees</th>
+                  <th className="px-4 py-3 font-bold">Due</th>
+                  <th className="px-4 py-3 font-bold">Priority</th>
+                  <th className="px-4 py-3 font-bold">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {tasks.length ? tasks.map((t) => (
+                  <tr key={t.id} className="cursor-pointer bg-white hover:bg-stone-50" onClick={() => setOpenTask(t)}>
+                    <td className="px-4 py-3 font-semibold text-ink">
+                      {t.title}
+                      {t.comment_count ? <span className="ml-2 text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{t.client_name} · {t.project_name}</td>
+                    <td className="px-4 py-3">
+                      <span className="flex -space-x-1">
+                        {t.assignees.map((a) => (
+                          <span key={a.user_id} title={a.display_name} className="flex h-6 w-6 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700 ring-1 ring-white">{initialsOf(a.display_name)}</span>
+                        ))}
+                        {!t.assignees.length ? <span className="text-xs text-slate-400">—</span> : null}
+                      </span>
+                    </td>
+                    <td className={classNames("px-4 py-3 text-xs", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date)}</td>
+                    <td className="px-4 py-3"><span className={classNames("badge", priorityStyle[t.priority]?.chip)}>{t.priority}</span></td>
+                    <td className="px-4 py-3">
+                      <select className={classNames("input h-8 w-auto py-0 text-xs font-semibold", statusStyle[t.status])}
+                        value={t.status} onClick={(e) => e.stopPropagation()} onChange={(e) => setStatus(t, e.target.value)}>
+                        {WORK_STATUSES.map((s) => <option key={s}>{s}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                )) : <tr><td className="px-4 py-10 text-center text-slate-500" colSpan={6}>No tasks here yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {view === "calendar" ? <WorkCalendar tasks={tasks} onOpen={setOpenTask} /> : null}
+
+      {openTask ? (
+        <WorkTaskModal task={openTask} isAdmin={isAdmin} people={people} projects={projects}
+          onClose={() => setOpenTask(null)} onChanged={async () => { await refresh(); setOpenTask(null); }} />
+      ) : null}
+
+      {newOpen ? (
+        <WorkTaskForm projects={projects} people={people} onClose={() => setNewOpen(false)}
+          onSaved={async () => { setNewOpen(false); await refresh(); }} />
+      ) : null}
+
+      {newProjectOpen ? (
+        <NewProjectForm clients={clients} onClose={() => setNewProjectOpen(false)}
+          onSaved={async () => { setNewProjectOpen(false); await loadMeta(); }} />
+      ) : null}
+    </section>
+  );
+}
+
+// Month grid of tasks placed on their due date.
+function WorkCalendar({ tasks, onOpen }: { tasks: WorkTask[]; onOpen: (t: WorkTask) => void }) {
+  const now = new Date();
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [year, setYear] = useState(now.getFullYear());
+  const days = new Date(year, month, 0).getDate();
+  const firstDow = new Date(year, month - 1, 1).getDay();
+  const byDay = useMemo(() => {
+    const m: Record<string, WorkTask[]> = {};
+    for (const t of tasks) if (t.due_date) (m[t.due_date] ??= []).push(t);
+    return m;
+  }, [tasks]);
+
+  return (
+    <div className="card p-4">
+      <div className="mb-3 flex flex-wrap items-end gap-2">
+        <Field label="Month">
+          <select className="input h-10 py-1" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+            {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="Year"><input className="input h-10 w-24 py-1" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-bold uppercase text-slate-400">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => <div key={d} className="py-1">{d}</div>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {Array.from({ length: firstDow }).map((_, i) => <div key={`pad${i}`} />)}
+        {Array.from({ length: days }).map((_, i) => {
+          const day = `${year}-${String(month).padStart(2, "0")}-${String(i + 1).padStart(2, "0")}`;
+          const list = byDay[day] ?? [];
+          return (
+            <div key={day} className={classNames("min-h-[86px] rounded-lg border p-1", day === today ? "border-brand bg-orange-50/40" : "border-line")}>
+              <p className="px-1 text-[11px] font-bold text-slate-500">{i + 1}</p>
+              <div className="space-y-1">
+                {list.slice(0, 3).map((t) => (
+                  <button key={t.id} type="button" onClick={() => onOpen(t)}
+                    className={classNames("block w-full truncate rounded px-1 py-0.5 text-left text-[10px] font-semibold", statusStyle[t.status])}>
+                    {t.title}
+                  </button>
+                ))}
+                {list.length > 3 ? <p className="px-1 text-[10px] text-slate-400">+{list.length - 3} more</p> : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Task detail: admins edit everything, employees move status and comment.
+function WorkTaskModal({ task, isAdmin, people, projects, onClose, onChanged }: {
+  task: WorkTask; isAdmin: boolean; people: WorkPerson[]; projects: WorkProject[];
+  onClose: () => void; onChanged: () => void;
+}) {
+  const [form, setForm] = useState({
+    title: task.title, description: task.description ?? "", status: task.status, priority: task.priority,
+    due_date: task.due_date ?? "", project_id: String(task.project_id),
+    assignees: task.assignees.map((a) => a.user_id),
+  });
+  const [comments, setComments] = useState<WorkComment[]>([]);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function loadComments() {
+    const d = await api<{ comments: WorkComment[] }>(`/work/tasks/${task.id}/comments`);
+    setComments(d.comments);
+  }
+  useEffect(() => { loadComments().catch(() => undefined); }, [task.id]);
+
+  async function save() {
+    setBusy(true);
+    await api(`/work/tasks/${task.id}`, { method: "PUT", body: JSON.stringify(isAdmin ? form : { status: form.status }) }).catch(() => undefined);
+    setBusy(false);
+    onChanged();
+  }
+
+  async function comment(e: FormEvent) {
+    e.preventDefault();
+    if (!draft.trim()) return;
+    await api(`/work/tasks/${task.id}/comments`, { method: "POST", body: JSON.stringify({ body: draft }) });
+    setDraft("");
+    await loadComments();
+  }
+
+  async function remove() {
+    if (!window.confirm("Delete this task?")) return;
+    await api(`/work/tasks/${task.id}`, { method: "DELETE" });
+    onChanged();
+  }
+
+  function toggleAssignee(id: number) {
+    setForm((f) => ({ ...f, assignees: f.assignees.includes(id) ? f.assignees.filter((x) => x !== id) : [...f.assignees, id] }));
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/50 p-4 backdrop-blur-sm">
+      <div className="card my-8 w-full max-w-2xl p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            {isAdmin
+              ? <input className="input text-lg font-bold" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+              : <h3 className="text-lg font-bold text-ink">{task.title}</h3>}
+            <p className="mt-1 text-xs text-slate-500">{task.client_name} · {task.project_name}</p>
+          </div>
+          <button type="button" aria-label="Close" className="rounded-lg p-1.5 text-slate-400 hover:bg-stone-100" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <Field label="Status">
+            <select className="input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              {WORK_STATUSES.map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Priority">
+            <select className="input" value={form.priority} disabled={!isAdmin} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
+              {["Urgent", "High", "Normal", "Low"].map((p) => <option key={p}>{p}</option>)}
+            </select>
+          </Field>
+          <Field label="Due date">
+            <input className="input" type="date" value={form.due_date} disabled={!isAdmin} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+          </Field>
+          {isAdmin ? (
+            <Field label="Project">
+              <select className="input" value={form.project_id} onChange={(e) => setForm({ ...form, project_id: e.target.value })}>
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.client_name} · {p.name}</option>)}
+              </select>
+            </Field>
+          ) : null}
+        </div>
+
+        <div className="mt-4">
+          <p className="label">Description</p>
+          {isAdmin
+            ? <textarea className="input min-h-20" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            : <p className="rounded-xl border border-line p-3 text-sm text-slate-600">{task.description || "No description."}</p>}
+        </div>
+
+        <div className="mt-4">
+          <p className="label">Assignees</p>
+          <div className="flex flex-wrap gap-2">
+            {people.map((p) => {
+              const on = form.assignees.includes(p.id);
+              return (
+                <button key={p.id} type="button" disabled={!isAdmin} onClick={() => toggleAssignee(p.id)}
+                  className={classNames("flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold transition",
+                    on ? "border-brand bg-orange-50 text-brand" : "border-line bg-white text-stone-500", !isAdmin && "cursor-default")}>
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
+                  {p.display_name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-5 border-t border-line pt-4">
+          <p className="label">Comments</p>
+          <div className="max-h-52 space-y-3 overflow-y-auto">
+            {comments.length ? comments.map((c) => (
+              <div key={c.id} className="flex gap-2">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[10px] font-bold text-orange-700">{initialsOf(c.author_name)}</span>
+                <div>
+                  <p className="text-[11px] text-slate-400"><span className="font-semibold text-slate-600">{c.author_name}</span> · {chatTime(c.created_at)}</p>
+                  <p className="whitespace-pre-wrap text-sm text-ink">{c.body}</p>
+                </div>
+              </div>
+            )) : <p className="text-sm text-slate-400">No comments yet.</p>}
+          </div>
+          <form onSubmit={comment} className="mt-3 flex gap-2">
+            <input className="input flex-1" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Write a comment…" />
+            <button type="submit" className="btn btn-soft">Post</button>
+          </form>
+        </div>
+
+        <div className="mt-5 flex justify-between gap-3">
+          {isAdmin ? <button type="button" className="btn btn-soft text-rose-600" onClick={remove}><Trash2 size={16} />Delete</button> : <span />}
+          <div className="flex gap-3">
+            <button type="button" className="btn btn-soft" onClick={onClose}>Close</button>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WorkTaskForm({ projects, people, onClose, onSaved }: {
+  projects: WorkProject[]; people: WorkPerson[]; onClose: () => void; onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    project_id: String(projects[0]?.id ?? ""), title: "", description: "",
+    priority: "Normal", status: "To Do", due_date: "", assignees: [] as number[],
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try {
+      await api("/work/tasks", { method: "POST", body: JSON.stringify(form) });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create task");
     }
     setBusy(false);
   }
 
-  async function patchTask(id: number, body: Record<string, unknown>) {
-    await api(`/tasks/${id}`, { method: "PUT", body: JSON.stringify(body) });
-    await load();
-  }
-
-  async function removeTask(id: number) {
-    if (!window.confirm("Delete this task permanently?")) return;
-    await api(`/tasks/${id}`, { method: "DELETE" });
-    await load();
-  }
-
-  const completed = tasks.filter((t) => t.status === "Completed").length;
-  const inProgress = tasks.filter((t) => t.status === "In Progress").length;
-  const pending = tasks.length - completed - inProgress;
-  const groups = (["High", "Medium", "Low"] as const).map((p) => [p, tasks.filter((t) => t.priority === p)] as const);
-
   return (
-    <section className="space-y-5">
-      <PageTitle
-        title="Daily Tasks"
-        description={isAdmin ? "Review and assign employee tasks for the day, by priority." : "Plan your day per brand, set priority, and mark what's done."}
-        action={<button type="button" className="btn btn-primary" onClick={openAdd}><Plus size={17} />{isAdmin ? "Assign task" : "Add task"}</button>}
-      />
-      {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
-
-      <div className={classNames("card grid gap-3 p-4", isAdmin ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
-        {isAdmin ? (
-          <Field label="Employee">
-            <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
-              <option value="">All employees</option>
-              {employees.map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
-            </select>
-          </Field>
-        ) : null}
-        <Field label="Day"><input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
-        <button type="button" className="btn btn-primary self-end" onClick={load}><RefreshCcw size={17} />Show</button>
-      </div>
-
-      {/* End-of-day summary */}
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div className="card p-4"><p className="text-sm font-medium text-slate-500">Total tasks</p><p className="mt-1 text-2xl font-bold text-ink">{tasks.length}</p></div>
-        <div className="card p-4"><p className="text-sm font-medium text-slate-500">Completed</p><p className="mt-1 text-2xl font-bold text-emerald-600">{completed}</p></div>
-        <div className="card p-4"><p className="text-sm font-medium text-slate-500">Pending / In progress</p><p className="mt-1 text-2xl font-bold text-amber-600">{pending + inProgress}</p></div>
-      </div>
-
-      {/* Task report — export to CSV */}
-      <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
-        <Field label="Report period">
-          <select className="input" value={reportPeriod} onChange={(e) => setReportPeriod(e.target.value)}>
-            <option>Today</option>
-            <option>Yesterday</option>
-            <option>Last 7 days</option>
-            <option>Last 3 months</option>
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/50 p-4 backdrop-blur-sm">
+      <form onSubmit={submit} className="card my-8 w-full max-w-lg space-y-4 p-6">
+        <h3 className="text-lg font-bold text-ink">New task</h3>
+        {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
+        <Field label="Project">
+          <select required className="input" value={form.project_id} onChange={(e) => setForm({ ...form, project_id: e.target.value })}>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.client_name} · {p.name}</option>)}
           </select>
         </Field>
-        <a className="btn btn-primary self-end" href={exportHref}><Download size={17} />Export CSV</a>
-        <p className="self-center text-xs text-slate-400">{isAdmin && employeeId ? "Selected employee" : isAdmin ? "All employees" : "Your tasks"} · {reportRange().start} → {reportRange().end}</p>
-      </div>
-
-      {tasks.length === 0 ? (
-        <EmptyState title={isAdmin ? "No tasks for this selection." : "No tasks yet for this day — add your first one."} />
-      ) : (
-        groups.map(([priority, list]) => list.length ? (
-          <div key={priority} className="card overflow-hidden">
-            <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-              <span className={classNames("h-2.5 w-2.5 rounded-full", priorityMeta[priority].dot)} />
-              <h3 className={classNames("font-bold", priorityMeta[priority].label)}>{priority} priority</h3>
-              <span className="text-xs text-slate-400">· {list.length}</span>
-            </div>
-            <div className="divide-y divide-line">
-              {list.map((task) => (
-                <div key={task.id} className={classNames("flex flex-col gap-3 border-l-4 px-4 py-3 sm:flex-row sm:items-center sm:justify-between", priorityMeta[task.priority].ring)}>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className={classNames("font-semibold text-ink", task.status === "Completed" && "line-through text-slate-400")}>{task.title}</p>
-                      {task.company ? <span className="badge bg-sky-50 text-sky-700">{task.company}</span> : null}
-                      {task.assigned_by_admin ? <span className="badge bg-orange-50 text-orange-700">From admin</span> : null}
-                      {task.deadline ? <span className="badge bg-rose-50 text-rose-700">Due {task.deadline}</span> : null}
-                    </div>
-                    {isAdmin ? <p className="mt-0.5 text-xs text-slate-500">{task.employee_name}</p> : null}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select className="input h-9 w-auto py-1 text-xs" value={task.priority} onChange={(e) => patchTask(task.id, { priority: e.target.value })}>
-                      <option>High</option><option>Medium</option><option>Low</option>
-                    </select>
-                    <select className={classNames("input h-9 w-auto py-1 text-xs font-semibold", taskStatusTone(task.status))} value={task.status} onChange={(e) => patchTask(task.id, { status: e.target.value })}>
-                      <option>Pending</option><option>In Progress</option><option>Completed</option>
-                    </select>
-                    {isAdmin ? (
-                      <button type="button" className="btn btn-soft" title="Delete task (admin only)" onClick={() => removeTask(task.id)}><Trash2 size={16} /></button>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null)
-      )}
-
-      {addOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
-          <form onSubmit={addTask} className="card w-full max-w-md p-6 space-y-4">
-            <h3 className="text-lg font-bold text-ink">{isAdmin ? "Assign task" : "Add task"} for {date}</h3>
-            <p className="text-xs text-slate-500">{isAdmin ? "The employee will see this on their board flagged “From admin” and can update its status." : "Once added, only an admin can delete it — you can still update its status."}</p>
-            {isAdmin ? (
-              <Field label="Assign to">
-                <select required className="input" value={assignEmployeeId} onChange={(e) => setAssignEmployeeId(e.target.value)}>
-                  <option value="">Select employee</option>
-                  {employees.map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
-                </select>
-              </Field>
-            ) : null}
-            <Field label="Task"><input autoFocus required className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Schedule Instagram reels" /></Field>
-            <Field label="Company / Brand"><input className="input" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} placeholder="Which brand is this for?" /></Field>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Priority">
-                <select className="input" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as "High" | "Medium" | "Low" })}>
-                  <option>High</option><option>Medium</option><option>Low</option>
-                </select>
-              </Field>
-              <Field label="Deadline (optional)">
-                <input className="input" type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} />
-              </Field>
-            </div>
-            <div className="flex justify-end gap-3 pt-2">
-              <button type="button" className="btn btn-soft" onClick={() => setAddOpen(false)}>Cancel</button>
-              <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving..." : isAdmin ? "Assign task" : "Add task"}</button>
-            </div>
-          </form>
+        <Field label="Title"><input required autoFocus className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Design August reels" /></Field>
+        <Field label="Description"><textarea className="input min-h-20" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Status">
+            <select className="input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              {WORK_STATUSES.map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Priority">
+            <select className="input" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
+              {["Urgent", "High", "Normal", "Low"].map((p) => <option key={p}>{p}</option>)}
+            </select>
+          </Field>
+          <Field label="Due"><input className="input" type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} /></Field>
         </div>
-      )}
-    </section>
+        <div>
+          <p className="label">Assign to</p>
+          <div className="flex flex-wrap gap-2">
+            {people.map((p) => {
+              const on = form.assignees.includes(p.id);
+              return (
+                <button key={p.id} type="button"
+                  onClick={() => setForm((f) => ({ ...f, assignees: on ? f.assignees.filter((x) => x !== p.id) : [...f.assignees, p.id] }))}
+                  className={classNames("rounded-full border px-3 py-1 text-xs font-semibold", on ? "border-brand bg-orange-50 text-brand" : "border-line text-stone-500")}>
+                  {p.display_name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex justify-end gap-3">
+          <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Creating…" : "Create task"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function NewProjectForm({ clients, onClose, onSaved }: { clients: WorkClient[]; onClose: () => void; onSaved: () => void }) {
+  const [clientId, setClientId] = useState(String(clients[0]?.id ?? ""));
+  const [newClient, setNewClient] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      let cid = clientId;
+      if (newClient.trim()) {
+        const c = await api<{ id: number }>("/work/clients", { method: "POST", body: JSON.stringify({ name: newClient }) });
+        cid = String(c.id);
+      }
+      if (name.trim()) await api("/work/projects", { method: "POST", body: JSON.stringify({ client_id: Number(cid), name }) });
+      onSaved();
+    } catch { /* surfaced by the parent on reload */ }
+    setBusy(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 p-4 backdrop-blur-sm">
+      <form onSubmit={submit} className="card w-full max-w-md space-y-4 p-6">
+        <h3 className="text-lg font-bold text-ink">New project</h3>
+        <p className="text-xs text-slate-500">Pick an existing client, or type a new client name to create one.</p>
+        <Field label="Client">
+          <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)} disabled={!!newClient.trim()}>
+            {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Or new client"><input className="input" value={newClient} onChange={(e) => setNewClient(e.target.value)} placeholder="e.g. Heaven Solar" /></Field>
+        <Field label="Project name"><input required className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. September Campaign" /></Field>
+        <div className="flex justify-end gap-3">
+          <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Create"}</button>
+        </div>
+      </form>
+    </div>
   );
 }
 

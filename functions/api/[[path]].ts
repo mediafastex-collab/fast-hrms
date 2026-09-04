@@ -57,6 +57,15 @@ async function route(context: Context) {
   if (method === "GET" && path === "/attendance/month-grid") return monthGrid(db, user, url);
   if (method === "GET" && path === "/attendance-requests") return attendanceRequestList(db, user);
   if (method === "POST" && path === "/attendance-requests") return createAttendanceRequest(db, user, await readBody(context.request));
+  if (method === "GET" && path === "/notifications") return notificationsList(db, user);
+  if (method === "POST" && path === "/notifications/read-all") return markNotificationsRead(db, user);
+  if (method === "GET" && path === "/chat/channels") return chatChannels(db, user);
+  if (method === "POST" && path === "/chat/channels") return createChatChannel(db, user, await readBody(context.request));
+  if (method === "GET" && path === "/chat/directory") return chatDirectory(db, user);
+  if (method === "GET" && path.match(/^\/chat\/channels\/\d+\/messages$/)) return chatMessages(db, user, Number(path.split("/")[3]), url);
+  if (method === "POST" && path.match(/^\/chat\/channels\/\d+\/messages$/)) return sendChatMessage(db, user, Number(path.split("/")[3]), await readBody(context.request));
+  if (method === "POST" && path.match(/^\/chat\/channels\/\d+\/read$/)) return markChatRead(db, user, Number(path.split("/")[3]), await readBody(context.request));
+  if (method === "DELETE" && path.match(/^\/chat\/messages\/\d+$/)) return deleteChatMessage(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/tasks") return taskList(db, user, url);
   if (method === "GET" && path === "/tasks.csv") return tasksCsv(db, user, url);
   if (method === "POST" && path === "/tasks") return createTask(db, user, await readBody(context.request));
@@ -712,6 +721,177 @@ async function auditLogs(db: D1Database) {
      ORDER BY a.created_at DESC LIMIT 100`,
   ).all();
   return json({ logs: rows.results });
+}
+
+async function notificationsList(db: D1Database, user: AppUser) {
+  const [rows, unread] = await Promise.all([
+    db.prepare("SELECT id, title, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 30").bind(user.id).all(),
+    scalar(db, "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0", user.id),
+  ]);
+  return json({ notifications: rows.results, unread });
+}
+
+async function markNotificationsRead(db: D1Database, user: AppUser) {
+  await db.prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0").bind(user.id).run();
+  return json({ ok: true });
+}
+
+// ---- Team chat ----
+// Public channels are open to everyone in the org; DMs are private to their two
+// members. Membership rows double as the read cursor for unread counts.
+
+const chatUserSelect = `SELECT u.id, u.email, u.role, COALESCE(e.full_name, u.email) AS display_name
+  FROM users u LEFT JOIN employees e ON e.user_id = u.id`;
+
+async function chatDirectory(db: D1Database, user: AppUser) {
+  const rows = await db.prepare(`${chatUserSelect} WHERE u.is_active = 1 AND u.id != ? ORDER BY display_name`).bind(user.id).all();
+  return json({ people: rows.results });
+}
+
+async function chatChannels(db: D1Database, user: AppUser) {
+  // Public channels (everyone) + DMs this user belongs to.
+  const rows = await db.prepare(
+    `SELECT c.id, c.name, c.kind,
+       COALESCE(m.last_read_message_id, 0) AS last_read_message_id,
+       (SELECT COUNT(*) FROM chat_messages msg
+         WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL
+           AND msg.id > COALESCE(m.last_read_message_id, 0) AND msg.user_id != ?) AS unread,
+       (SELECT msg.body FROM chat_messages msg WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_body,
+       (SELECT msg.created_at FROM chat_messages msg WHERE msg.channel_id = c.id ORDER BY msg.id DESC LIMIT 1) AS last_at,
+       (SELECT COALESCE(e2.full_name, u2.email) FROM chat_members cm2
+          JOIN users u2 ON u2.id = cm2.user_id LEFT JOIN employees e2 ON e2.user_id = u2.id
+          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) AS peer_name
+     FROM chat_channels c
+     LEFT JOIN chat_members m ON m.channel_id = c.id AND m.user_id = ?
+     WHERE c.kind = 'channel' OR m.id IS NOT NULL
+     ORDER BY c.kind ASC, last_at DESC NULLS LAST, c.name ASC`,
+  ).bind(user.id, user.id, user.id).all();
+  return json({ channels: rows.results });
+}
+
+async function createChatChannel(db: D1Database, user: AppUser, body: Record<string, unknown>) {
+  const kind = text(body.kind) === "dm" ? "dm" : "channel";
+  if (kind === "dm") {
+    const peerId = number(body.user_id);
+    if (!peerId || peerId === user.id) return json({ error: "Choose someone to message" }, 400);
+    // Reuse an existing DM between these two people.
+    const existing = await db.prepare(
+      `SELECT c.id FROM chat_channels c
+       JOIN chat_members a ON a.channel_id = c.id AND a.user_id = ?
+       JOIN chat_members b ON b.channel_id = c.id AND b.user_id = ?
+       WHERE c.kind = 'dm' LIMIT 1`,
+    ).bind(user.id, peerId).first<{ id: number }>();
+    if (existing) return json({ ok: true, id: existing.id });
+    const created = await db.prepare("INSERT INTO chat_channels (kind, created_by) VALUES ('dm', ?)").bind(user.id).run();
+    const channelId = Number(created.meta.last_row_id);
+    await db.prepare("INSERT INTO chat_members (channel_id, user_id) VALUES (?, ?), (?, ?)").bind(channelId, user.id, channelId, peerId).run();
+    return json({ ok: true, id: channelId });
+  }
+  const name = text(body.name).replace(/^#/, "").trim().toLowerCase().replace(/\s+/g, "-");
+  if (!name) return json({ error: "Channel name is required" }, 400);
+  const dupe = await db.prepare("SELECT id FROM chat_channels WHERE kind = 'channel' AND name = ?").bind(name).first();
+  if (dupe) return json({ error: "A channel with that name already exists" }, 400);
+  const created = await db.prepare("INSERT INTO chat_channels (name, kind, created_by) VALUES (?, 'channel', ?)").bind(name, user.id).run();
+  return json({ ok: true, id: Number(created.meta.last_row_id) });
+}
+
+// Confirms the user may read/write this channel (public channels are open to all).
+async function chatChannelFor(db: D1Database, user: AppUser, channelId: number) {
+  const channel = await db.prepare("SELECT * FROM chat_channels WHERE id = ?").bind(channelId).first<Record<string, unknown>>();
+  if (!channel) return null;
+  if (channel.kind === "channel") return channel;
+  const member = await db.prepare("SELECT id FROM chat_members WHERE channel_id = ? AND user_id = ?").bind(channelId, user.id).first();
+  return member ? channel : null;
+}
+
+async function chatMessages(db: D1Database, user: AppUser, channelId: number, url: URL) {
+  const channel = await chatChannelFor(db, user, channelId);
+  if (!channel) return json({ error: "Channel not found" }, 404);
+  const after = Number(url.searchParams.get("after")) || 0;
+  const rows = await db.prepare(
+    `SELECT m.id, m.channel_id, m.user_id, m.body, m.reply_to_id, m.attachment, m.attachment_name, m.deleted_at, m.created_at,
+       COALESCE(e.full_name, u.email) AS author_name,
+       (SELECT COALESCE(e2.full_name, u2.email) FROM chat_messages p
+          JOIN users u2 ON u2.id = p.user_id LEFT JOIN employees e2 ON e2.user_id = u2.id
+          WHERE p.id = m.reply_to_id) AS reply_to_author,
+       (SELECT p.body FROM chat_messages p WHERE p.id = m.reply_to_id) AS reply_to_body
+     FROM chat_messages m
+     JOIN users u ON u.id = m.user_id LEFT JOIN employees e ON e.user_id = u.id
+     WHERE m.channel_id = ? AND m.id > ?
+     ORDER BY m.id ASC LIMIT 200`,
+  ).bind(channelId, after).all();
+  return json({ messages: rows.results, channel });
+}
+
+async function sendChatMessage(db: D1Database, user: AppUser, channelId: number, body: Record<string, unknown>) {
+  const channel = await chatChannelFor(db, user, channelId);
+  if (!channel) return json({ error: "Channel not found" }, 404);
+  const message = text(body.body);
+  const attachment = body.attachment ? docOrNull(body.attachment) : null;
+  if (!message && !attachment) return json({ error: "Write a message first" }, 400);
+
+  const result = await db.prepare(
+    "INSERT INTO chat_messages (channel_id, user_id, body, reply_to_id, attachment, attachment_name) VALUES (?, ?, ?, ?, ?, ?)",
+  ).bind(channelId, user.id, message || null, numOrNull(body.reply_to_id), attachment, text(body.attachment_name) || null).run();
+  const messageId = Number(result.meta.last_row_id);
+
+  // Sender has implicitly read their own message.
+  await db.prepare(
+    `INSERT INTO chat_members (channel_id, user_id, last_read_message_id) VALUES (?, ?, ?)
+     ON CONFLICT(channel_id, user_id) DO UPDATE SET last_read_message_id = excluded.last_read_message_id`,
+  ).bind(channelId, user.id, messageId).run();
+
+  const senderName = user.employeeName ?? user.email;
+  const label = channel.kind === "dm" ? "New message" : `New message in #${channel.name}`;
+
+  if (channel.kind === "dm") {
+    const peers = await db.prepare("SELECT user_id FROM chat_members WHERE channel_id = ? AND user_id != ?").bind(channelId, user.id).all<{ user_id: number }>();
+    for (const p of peers.results) await notify(db, p.user_id, label, `${senderName}: ${(message || "sent an attachment").slice(0, 120)}`);
+  } else if (message) {
+    // @mentions ping the named people via the notification bell. Each @token is
+    // matched both as "@First Last" and as just "@First".
+    const mentioned = new Set<string>();
+    for (const m of message.matchAll(/@([\w.\-]+(?:\s+[\w.\-]+)?)/g)) {
+      const raw = m[1].trim().toLowerCase();
+      mentioned.add(raw);
+      mentioned.add(raw.split(/\s+/)[0]);
+    }
+    if (mentioned.size) {
+      const people = await db.prepare(`${chatUserSelect} WHERE u.is_active = 1 AND u.id != ?`).bind(user.id).all<{ id: number; display_name: string; email: string }>();
+      const seen = new Set<number>();
+      for (const person of people.results) {
+        const name = String(person.display_name).toLowerCase();
+        const first = name.split(" ")[0];
+        const handle = String(person.email).split("@")[0].toLowerCase();
+        if (mentioned.has(name) || mentioned.has(first) || mentioned.has(handle)) {
+          if (seen.has(person.id)) continue;
+          seen.add(person.id);
+          await notify(db, person.id, `${senderName} mentioned you in #${channel.name}`, message.slice(0, 140));
+        }
+      }
+    }
+  }
+  return json({ ok: true, id: messageId });
+}
+
+async function markChatRead(db: D1Database, user: AppUser, channelId: number, body: Record<string, unknown>) {
+  const channel = await chatChannelFor(db, user, channelId);
+  if (!channel) return json({ error: "Channel not found" }, 404);
+  const lastId = number(body.last_message_id);
+  await db.prepare(
+    `INSERT INTO chat_members (channel_id, user_id, last_read_message_id) VALUES (?, ?, ?)
+     ON CONFLICT(channel_id, user_id) DO UPDATE SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id)`,
+  ).bind(channelId, user.id, lastId).run();
+  return json({ ok: true });
+}
+
+async function deleteChatMessage(db: D1Database, user: AppUser, id: number) {
+  const message = await db.prepare("SELECT user_id FROM chat_messages WHERE id = ?").bind(id).first<{ user_id: number }>();
+  if (!message) return json({ error: "Message not found" }, 404);
+  // Authors can remove their own messages; admins can remove any.
+  if (message.user_id !== user.id && user.role !== "Superadmin") return json({ error: "Not allowed" }, 403);
+  await db.prepare("UPDATE chat_messages SET deleted_at = CURRENT_TIMESTAMP, body = NULL, attachment = NULL WHERE id = ?").bind(id).run();
+  return json({ ok: true });
 }
 
 // ---- Daily task management ----

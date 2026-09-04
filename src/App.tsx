@@ -1,5 +1,6 @@
 import {
   Banknote,
+  Bell,
   BriefcaseBusiness,
   Building2,
   CalendarCheck,
@@ -23,9 +24,10 @@ import {
   X,
   Image as ImageIcon,
   ClipboardList,
+  MessageSquare,
   Trash2,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Role = "Superadmin" | "Employee";
 type View =
@@ -34,6 +36,7 @@ type View =
   | "departments"
   | "attendance"
   | "tasks"
+  | "chat"
   | "leave"
   | "payroll"
   | "holidays"
@@ -427,6 +430,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
     { id: "departments" as View, label: "Departments", icon: Building2, show: isAdmin },
     { id: "attendance" as View, label: "Attendance", icon: CalendarCheck, show: true },
     { id: "tasks" as View, label: "Tasks", icon: ClipboardList, show: true },
+    { id: "chat" as View, label: "Chat", icon: MessageSquare, show: true },
     { id: "leave" as View, label: "Leave", icon: FileText, show: true },
     { id: "payroll" as View, label: "Payroll", icon: Banknote, show: true },
     { id: "holidays" as View, label: "Holidays", icon: Sparkles, show: true },
@@ -478,6 +482,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
               <h2 className="text-lg font-bold text-ink">{user.employeeName ?? user.email}</h2>
             </div>
             <div className="flex items-center gap-2">
+              <NotificationBell />
               <button className="btn btn-soft lg:hidden" onClick={() => setMobileOpen((open) => !open)} title="Menu">
                 <Menu size={17} />
               </button>
@@ -508,6 +513,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           {view === "departments" && isAdmin ? <Departments /> : null}
           {view === "attendance" ? <Attendance isAdmin={isAdmin} /> : null}
           {view === "tasks" ? <Tasks isAdmin={isAdmin} /> : null}
+          {view === "chat" ? <Chat currentUserId={user.id} /> : null}
           {view === "leave" ? <Leave isAdmin={isAdmin} /> : null}
           {view === "payroll" ? <Payroll isAdmin={isAdmin} /> : null}
           {view === "holidays" ? <Holidays isAdmin={isAdmin} /> : null}
@@ -1708,6 +1714,363 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
               <button type="submit" className="btn btn-primary">Save Changes</button>
             </div>
           </form>
+        </div>
+      )}
+    </section>
+  );
+}
+
+type ChatChannel = { id: number; name: string | null; kind: "channel" | "dm"; unread: number; last_body?: string | null; last_at?: string | null; peer_name?: string | null };
+type ChatMessage = {
+  id: number; channel_id: number; user_id: number; body: string | null;
+  reply_to_id?: number | null; reply_to_author?: string | null; reply_to_body?: string | null;
+  attachment?: string | null; attachment_name?: string | null; deleted_at?: string | null;
+  created_at: string; author_name: string;
+};
+type ChatPerson = { id: number; email: string; role: string; display_name: string };
+
+function channelLabel(c: ChatChannel) {
+  return c.kind === "dm" ? (c.peer_name || "Direct message") : `#${c.name}`;
+}
+
+function chatTime(ts: string) {
+  // Stored as UTC "YYYY-MM-DD HH:MM:SS"; render in the viewer's local time.
+  const d = new Date(ts.replace(" ", "T") + "Z");
+  if (Number.isNaN(d.getTime())) return ts.slice(11, 16);
+  const todayStr = new Date().toDateString();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === todayStr ? time : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
+}
+
+function initialsOf(name: string) {
+  return name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+}
+
+type AppNotification = { id: number; title: string; message: string; is_read: number; created_at: string };
+
+// Header bell — surfaces @mentions, DMs, leave decisions and salary updates.
+function NotificationBell() {
+  const [items, setItems] = useState<AppNotification[]>([]);
+  const [unread, setUnread] = useState(0);
+  const [open, setOpen] = useState(false);
+
+  async function load() {
+    try {
+      const d = await api<{ notifications: AppNotification[]; unread: number }>("/notifications");
+      setItems(d.notifications);
+      setUnread(d.unread);
+    } catch { /* keep last known list if a poll fails */ }
+  }
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 20000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function markAllRead() {
+    await api("/notifications/read-all", { method: "POST" }).catch(() => undefined);
+    await load();
+  }
+
+  return (
+    <div className="relative">
+      <button type="button" className="btn btn-soft relative" title="Notifications" onClick={() => setOpen((v) => !v)}>
+        <Bell size={17} />
+        {unread ? <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white">{unread > 9 ? "9+" : unread}</span> : null}
+      </button>
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-30 mt-2 w-80 max-w-[90vw] overflow-hidden rounded-xl border border-line bg-white shadow-lg">
+            <div className="flex items-center justify-between border-b border-line px-4 py-3">
+              <h3 className="font-bold text-ink">Notifications</h3>
+              {unread ? <button type="button" className="text-xs font-semibold text-brand" onClick={markAllRead}>Mark all read</button> : null}
+            </div>
+            <div className="max-h-80 overflow-y-auto">
+              {items.length ? items.map((n) => (
+                <div key={n.id} className={classNames("border-b border-line px-4 py-3 last:border-0", !n.is_read && "bg-orange-50/60")}>
+                  <p className="text-sm font-semibold text-ink">{n.title}</p>
+                  <p className="mt-0.5 text-xs text-slate-600">{n.message}</p>
+                </div>
+              )) : <p className="px-4 py-8 text-center text-sm text-slate-500">Nothing new.</p>}
+            </div>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function Chat({ currentUserId }: { currentUserId: number }) {
+  const [channels, setChannels] = useState<ChatChannel[]>([]);
+  const [people, setPeople] = useState<ChatPerson[]>([]);
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [draft, setDraft] = useState("");
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+  const [file, setFile] = useState<{ data: string; name: string } | null>(null);
+  const [newChannelOpen, setNewChannelOpen] = useState(false);
+  const [newChannelName, setNewChannelName] = useState("");
+  const [dmOpen, setDmOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const activeIdRef = useRef<number | null>(null);
+  activeIdRef.current = activeId;
+
+  async function loadChannels() {
+    try {
+      const d = await api<{ channels: ChatChannel[] }>("/chat/channels");
+      setChannels(d.channels);
+      if (!activeIdRef.current && d.channels.length) setActiveId(d.channels[0].id);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to load channels");
+    }
+  }
+
+  async function loadMessages(channelId: number, incremental = false) {
+    try {
+      const after = incremental && messages.length ? messages[messages.length - 1].id : 0;
+      const d = await api<{ messages: ChatMessage[] }>(`/chat/channels/${channelId}/messages?after=${after}`);
+      if (!d.messages.length) return;
+      setMessages((prev) => (incremental ? [...prev, ...d.messages] : d.messages));
+      const lastId = d.messages[d.messages.length - 1].id;
+      await api(`/chat/channels/${channelId}/read`, { method: "POST", body: JSON.stringify({ last_message_id: lastId }) }).catch(() => undefined);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to load messages");
+    }
+  }
+
+  useEffect(() => {
+    loadChannels();
+    api<{ people: ChatPerson[] }>("/chat/directory").then((d) => setPeople(d.people)).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!activeId) return;
+    setMessages([]);
+    loadMessages(activeId);
+  }, [activeId]);
+
+  // Polling: new messages for the open channel, plus unread badges elsewhere.
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (activeIdRef.current) loadMessages(activeIdRef.current, true);
+      loadChannels();
+    }, 3000);
+    return () => clearInterval(t);
+  }, [messages]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+
+  async function send(e: FormEvent) {
+    e.preventDefault();
+    if (!activeId || (!draft.trim() && !file)) return;
+    setSending(true);
+    try {
+      await api(`/chat/channels/${activeId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ body: draft, reply_to_id: replyTo?.id ?? null, attachment: file?.data ?? null, attachment_name: file?.name ?? null }),
+      });
+      setDraft(""); setReplyTo(null); setFile(null);
+      await loadMessages(activeId, true);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to send");
+    }
+    setSending(false);
+  }
+
+  function pickFile(f?: File) {
+    setMessage("");
+    if (!f) return;
+    if (f.size > 1.5 * 1024 * 1024) { setMessage("Attachments must be under 1.5MB."); return; }
+    const reader = new FileReader();
+    reader.onload = () => setFile({ data: String(reader.result), name: f.name });
+    reader.readAsDataURL(f);
+  }
+
+  async function startDm(userId: number) {
+    const res = await api<{ id: number }>("/chat/channels", { method: "POST", body: JSON.stringify({ kind: "dm", user_id: userId }) });
+    setDmOpen(false);
+    await loadChannels();
+    setActiveId(res.id);
+  }
+
+  async function createChannel(e: FormEvent) {
+    e.preventDefault();
+    if (!newChannelName.trim()) return;
+    try {
+      const res = await api<{ id: number }>("/chat/channels", { method: "POST", body: JSON.stringify({ kind: "channel", name: newChannelName }) });
+      setNewChannelOpen(false); setNewChannelName("");
+      await loadChannels();
+      setActiveId(res.id);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to create channel");
+    }
+  }
+
+  async function removeMessage(id: number) {
+    if (!window.confirm("Delete this message?")) return;
+    await api(`/chat/messages/${id}`, { method: "DELETE" });
+    if (activeId) { setMessages([]); await loadMessages(activeId); }
+  }
+
+  const active = channels.find((c) => c.id === activeId) ?? null;
+  const groupChannels = channels.filter((c) => c.kind === "channel");
+  const dms = channels.filter((c) => c.kind === "dm");
+
+  return (
+    <section className="space-y-4">
+      <PageTitle title="Chat" description="Talk to your team — channels for topics, direct messages for one-to-one." />
+      {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+
+      <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
+        {/* Channel + DM list */}
+        <div className="card flex max-h-[70vh] flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-line px-4 py-3">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Channels</h3>
+            <button type="button" className="text-brand hover:opacity-70" title="New channel" onClick={() => setNewChannelOpen(true)}><Plus size={16} /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2">
+            {groupChannels.map((c) => (
+              <button key={c.id} type="button" onClick={() => setActiveId(c.id)}
+                className={classNames("flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition",
+                  c.id === activeId ? "bg-orange-50 text-brand" : "text-stone-600 hover:bg-stone-50")}>
+                <span className="truncate">#{c.name}</span>
+                {c.unread > 0 ? <span className="badge bg-rose-500 text-white">{c.unread}</span> : null}
+              </button>
+            ))}
+            <div className="mt-3 flex items-center justify-between px-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Direct messages</h3>
+              <button type="button" className="text-brand hover:opacity-70" title="New message" onClick={() => setDmOpen(true)}><Plus size={16} /></button>
+            </div>
+            {dms.map((c) => (
+              <button key={c.id} type="button" onClick={() => setActiveId(c.id)}
+                className={classNames("mt-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition",
+                  c.id === activeId ? "bg-orange-50 text-brand" : "text-stone-600 hover:bg-stone-50")}>
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-stone-200 text-[10px] font-bold text-stone-600">{initialsOf(c.peer_name || "?")}</span>
+                  <span className="truncate">{c.peer_name}</span>
+                </span>
+                {c.unread > 0 ? <span className="badge bg-rose-500 text-white">{c.unread}</span> : null}
+              </button>
+            ))}
+            {!dms.length ? <p className="px-3 py-2 text-xs text-slate-400">No conversations yet.</p> : null}
+          </div>
+        </div>
+
+        {/* Message pane */}
+        <div className="card flex max-h-[70vh] flex-col overflow-hidden">
+          <div className="border-b border-line px-4 py-3">
+            <h3 className="font-bold text-ink">{active ? channelLabel(active) : "Select a conversation"}</h3>
+            {active?.kind === "channel" ? <p className="text-xs text-slate-500">Everyone in the team can see this channel. Use @name to notify someone.</p> : null}
+          </div>
+
+          <div className="flex-1 space-y-3 overflow-y-auto p-4">
+            {messages.length ? messages.map((m) => {
+              const mine = m.user_id === currentUserId;
+              return (
+                <div key={m.id} className={classNames("group flex gap-3", mine && "flex-row-reverse")}>
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(m.author_name)}</span>
+                  <div className={classNames("max-w-[75%] min-w-0", mine && "text-right")}>
+                    <p className="text-[11px] text-slate-400">
+                      <span className="font-semibold text-slate-600">{mine ? "You" : m.author_name}</span> · {chatTime(m.created_at)}
+                    </p>
+                    {m.reply_to_id && !m.deleted_at ? (
+                      <div className="mt-1 rounded-lg border-l-2 border-brand/40 bg-stone-50 px-2 py-1 text-left text-[11px] text-slate-500">
+                        <span className="font-semibold">{m.reply_to_author}</span>: {(m.reply_to_body || "attachment").slice(0, 80)}
+                      </div>
+                    ) : null}
+                    <div className={classNames("mt-1 inline-block rounded-2xl px-3 py-2 text-left text-sm",
+                      m.deleted_at ? "bg-stone-100 italic text-slate-400" : mine ? "bg-brand text-white" : "bg-stone-100 text-ink")}>
+                      {m.deleted_at ? "Message deleted" : (
+                        <>
+                          {m.body ? <p className="whitespace-pre-wrap break-words">{m.body}</p> : null}
+                          {m.attachment ? (
+                            m.attachment.startsWith("data:image")
+                              ? <img src={m.attachment} alt={m.attachment_name ?? "attachment"} className="mt-1 max-h-56 rounded-lg" />
+                              : <a href={m.attachment} download={m.attachment_name ?? "file"} className="mt-1 flex items-center gap-1 underline"><Download size={14} />{m.attachment_name}</a>
+                          ) : null}
+                        </>
+                      )}
+                    </div>
+                    {!m.deleted_at ? (
+                      <div className={classNames("mt-1 flex gap-2 text-[11px] text-slate-400 opacity-0 transition group-hover:opacity-100", mine && "justify-end")}>
+                        <button type="button" className="hover:text-brand" onClick={() => setReplyTo(m)}>Reply</button>
+                        {mine ? <button type="button" className="hover:text-rose-600" onClick={() => removeMessage(m.id)}>Delete</button> : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            }) : <p className="py-10 text-center text-sm text-slate-400">No messages yet — say hello.</p>}
+            <div ref={endRef} />
+          </div>
+
+          {active ? (
+            <form onSubmit={send} className="border-t border-line p-3">
+              {replyTo ? (
+                <div className="mb-2 flex items-center justify-between rounded-lg bg-stone-50 px-3 py-2 text-xs">
+                  <span className="truncate text-slate-500">Replying to <b>{replyTo.author_name}</b>: {(replyTo.body || "attachment").slice(0, 60)}</span>
+                  <button type="button" onClick={() => setReplyTo(null)}><X size={14} /></button>
+                </div>
+              ) : null}
+              {file ? (
+                <div className="mb-2 flex items-center justify-between rounded-lg bg-orange-50 px-3 py-2 text-xs">
+                  <span className="truncate text-brand">📎 {file.name}</span>
+                  <button type="button" onClick={() => setFile(null)}><X size={14} /></button>
+                </div>
+              ) : null}
+              <div className="flex items-end gap-2">
+                <label className="btn btn-soft cursor-pointer px-3" title="Attach a file">
+                  <Plus size={16} />
+                  <input type="file" className="hidden" accept="image/*,application/pdf" onChange={(e) => pickFile(e.target.files?.[0])} />
+                </label>
+                <textarea
+                  className="input min-h-[44px] flex-1 resize-none py-2"
+                  rows={1}
+                  placeholder={active.kind === "dm" ? `Message ${active.peer_name}` : `Message #${active.name} — use @name to notify`}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as unknown as FormEvent); } }}
+                />
+                <button type="submit" className="btn btn-primary" disabled={sending || (!draft.trim() && !file)}>Send</button>
+              </div>
+            </form>
+          ) : null}
+        </div>
+      </div>
+
+      {newChannelOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+          <form onSubmit={createChannel} className="card w-full max-w-sm p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">New channel</h3>
+            <Field label="Channel name"><input autoFocus required className="input" value={newChannelName} onChange={(e) => setNewChannelName(e.target.value)} placeholder="e.g. design" /></Field>
+            <p className="text-xs text-slate-500">Channels are visible to everyone in the team.</p>
+            <div className="flex justify-end gap-3">
+              <button type="button" className="btn btn-soft" onClick={() => setNewChannelOpen(false)}>Cancel</button>
+              <button type="submit" className="btn btn-primary">Create</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {dmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+          <div className="card w-full max-w-sm p-6 space-y-4">
+            <h3 className="text-lg font-bold text-ink">Start a conversation</h3>
+            <div className="max-h-72 space-y-1 overflow-y-auto">
+              {people.map((p) => (
+                <button key={p.id} type="button" onClick={() => startDm(p.id)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-stone-50">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
+                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{p.display_name}</span><span className="block truncate text-xs text-slate-500">{p.role}</span></span>
+                </button>
+              ))}
+              {!people.length ? <p className="py-4 text-center text-sm text-slate-400">No other team members yet.</p> : null}
+            </div>
+            <div className="flex justify-end"><button type="button" className="btn btn-soft" onClick={() => setDmOpen(false)}>Close</button></div>
+          </div>
         </div>
       )}
     </section>

@@ -93,6 +93,10 @@ async function route(context: Context) {
   if (method === "POST" && path === "/attendance/day-override") return saveDayOverride(db, user, await readBody(context.request));
   if (method === "POST" && path.match(/^\/work\/spaces\/\d+\/decision$/)) return decideSpaceOrList(db, user, "spaces", Number(path.split("/")[3]), await readBody(context.request));
   if (method === "POST" && path.match(/^\/work\/lists\/\d+\/decision$/)) return decideSpaceOrList(db, user, "lists", Number(path.split("/")[3]), await readBody(context.request));
+  if (method === "PUT" && path.match(/^\/work\/spaces\/\d+$/)) return renameSpaceOrList(db, user, "spaces", Number(path.split("/").pop()), await readBody(context.request));
+  if (method === "PUT" && path.match(/^\/work\/lists\/\d+$/)) return renameSpaceOrList(db, user, "lists", Number(path.split("/").pop()), await readBody(context.request));
+  if (method === "DELETE" && path.match(/^\/work\/spaces\/\d+$/)) return deleteSpace(db, user, Number(path.split("/").pop()));
+  if (method === "DELETE" && path.match(/^\/work\/lists\/\d+$/)) return deleteList(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path === "/work/tasks") return createWorkTask(db, user, await readBody(context.request));
   if (method === "DELETE" && path.match(/^\/work\/tasks\/\d+$/)) return deleteWorkTask(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path.match(/^\/attendance-requests\/\d+\/decision$/)) return decideAttendanceRequest(db, user, Number(path.split("/")[2]), await readBody(context.request));
@@ -761,7 +765,12 @@ async function workMeta(db: D1Database, user: AppUser) {
   const visible = isAdmin ? "status IN ('Active','Pending')" : "(status = 'Active' OR (status = 'Pending' AND requested_by = ?))";
   const bind = isAdmin ? [] : [user.id];
   const [spaces, lists, people] = await Promise.all([
-    db.prepare(`SELECT id, name, color, status, requested_by FROM spaces WHERE ${visible} ORDER BY name`).bind(...bind).all(),
+    db.prepare(
+      `SELECT s.id, s.name, s.color, s.status, s.requested_by,
+         (SELECT COUNT(*) FROM lists l WHERE l.space_id = s.id) AS list_count,
+         (SELECT COUNT(*) FROM work_tasks t JOIN lists l ON l.id = t.list_id WHERE l.space_id = s.id) AS task_count
+       FROM spaces s WHERE ${visible.replace(/status/g, "s.status").replace(/requested_by/g, "s.requested_by")} ORDER BY s.name`,
+    ).bind(...bind).all(),
     db.prepare(
       `SELECT l.id, l.space_id, l.name, l.status, l.requested_by, s.name AS space_name,
          (SELECT COUNT(*) FROM work_tasks t WHERE t.list_id = l.id) AS task_count,
@@ -805,6 +814,49 @@ async function saveList(db: D1Database, user: AppUser, body: Record<string, unkn
   if (!isAdmin) await notifyAdmins(db, "List requested", `${user.employeeName ?? user.email} requested a new list "${name}".`);
   else await audit(db, user, "List created", "lists", Number(res.meta.last_row_id), name);
   return json({ ok: true, id: Number(res.meta.last_row_id), pending: !isAdmin });
+}
+
+async function renameSpaceOrList(db: D1Database, actor: AppUser, table: "spaces" | "lists", id: number, body: Record<string, unknown>) {
+  const name = text(body.name);
+  if (!name) return json({ error: "Name is required" }, 400);
+  const row = await db.prepare(`SELECT name${table === "lists" ? ", space_id" : ""} FROM ${table} WHERE id = ?`).bind(id).first<{ name: string; space_id?: number }>();
+  if (!row) return json({ error: "Not found" }, 404);
+  const clash = table === "lists"
+    ? await db.prepare("SELECT 1 FROM lists WHERE space_id = ? AND LOWER(name) = LOWER(?) AND id != ? AND status != 'Rejected'").bind(row.space_id, name, id).first()
+    : await db.prepare("SELECT 1 FROM spaces WHERE LOWER(name) = LOWER(?) AND id != ? AND status != 'Rejected'").bind(name, id).first();
+  if (clash) return json({ error: `"${name}" already exists.` }, 400);
+  await db.prepare(`UPDATE ${table} SET name = ? WHERE id = ?`).bind(name, id).run();
+  await audit(db, actor, `${table === "spaces" ? "Space" : "List"} renamed`, table, id, `${row.name} → ${name}`);
+  return json({ ok: true });
+}
+
+// Deleting a list takes its tasks with it, so clear the children first —
+// D1 does not enforce the schema's cascades for us.
+async function deleteListRows(db: D1Database, listIds: number[]) {
+  for (const listId of listIds) {
+    await db.prepare("DELETE FROM work_task_comments WHERE task_id IN (SELECT id FROM work_tasks WHERE list_id = ?)").bind(listId).run();
+    await db.prepare("DELETE FROM work_task_assignees WHERE task_id IN (SELECT id FROM work_tasks WHERE list_id = ?)").bind(listId).run();
+    await db.prepare("DELETE FROM work_tasks WHERE list_id = ?").bind(listId).run();
+    await db.prepare("DELETE FROM lists WHERE id = ?").bind(listId).run();
+  }
+}
+
+async function deleteList(db: D1Database, actor: AppUser, id: number) {
+  const row = await db.prepare("SELECT name FROM lists WHERE id = ?").bind(id).first<{ name: string }>();
+  if (!row) return json({ error: "List not found" }, 404);
+  await deleteListRows(db, [id]);
+  await audit(db, actor, "List deleted", "lists", id, row.name);
+  return json({ ok: true });
+}
+
+async function deleteSpace(db: D1Database, actor: AppUser, id: number) {
+  const row = await db.prepare("SELECT name FROM spaces WHERE id = ?").bind(id).first<{ name: string }>();
+  if (!row) return json({ error: "Space not found" }, 404);
+  const lists = await db.prepare("SELECT id FROM lists WHERE space_id = ?").bind(id).all<{ id: number }>();
+  await deleteListRows(db, lists.results.map((l) => Number(l.id)));
+  await db.prepare("DELETE FROM spaces WHERE id = ?").bind(id).run();
+  await audit(db, actor, "Space deleted", "spaces", id, row.name);
+  return json({ ok: true });
 }
 
 async function decideSpaceOrList(db: D1Database, actor: AppUser, table: "spaces" | "lists", id: number, body: Record<string, unknown>) {

@@ -26,6 +26,9 @@ import {
   ClipboardList,
   MessageSquare,
   Trash2,
+  Pencil,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
@@ -2077,7 +2080,7 @@ function Chat({ currentUserId }: { currentUserId: number }) {
   );
 }
 
-type WorkSpace = { id: number; name: string; color: string; status: string; requested_by?: number | null };
+type WorkSpace = { id: number; name: string; color: string; status: string; requested_by?: number | null; list_count: number; task_count: number };
 type WorkList = { id: number; space_id: number; name: string; space_name: string; status: string; requested_by?: number | null; task_count: number; done_count: number };
 type WorkAssignee = { user_id: number; display_name: string };
 type WorkTask = {
@@ -2088,15 +2091,25 @@ type WorkTask = {
 };
 type WorkPerson = { id: number; display_name: string; role: string };
 type WorkComment = { id: number; body: string; created_at: string; user_id: number; author_name: string };
+type WorkScope = { kind: "all" | "space" | "list"; id: number };
 
 const WORK_STATUSES = ["Backlog", "To Do", "In Progress", "In Review", "Done"];
 
+// A colour per column, the way ClickUp tints its statuses.
 const statusStyle: Record<string, string> = {
   "Backlog": "bg-slate-100 text-slate-600",
   "To Do": "bg-sky-50 text-sky-700",
   "In Progress": "bg-amber-50 text-amber-700",
   "In Review": "bg-violet-50 text-violet-700",
   "Done": "bg-emerald-50 text-emerald-700",
+};
+
+const statusBar: Record<string, string> = {
+  "Backlog": "bg-slate-300",
+  "To Do": "bg-sky-400",
+  "In Progress": "bg-amber-400",
+  "In Review": "bg-violet-400",
+  "Done": "bg-emerald-400",
 };
 
 const priorityStyle: Record<string, { chip: string; bar: string }> = {
@@ -2129,14 +2142,13 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [people, setPeople] = useState<WorkPerson[]>([]);
   const [tasks, setTasks] = useState<WorkTask[]>([]);
   const [view, setView] = useState<"board" | "list" | "calendar">("board");
-  const [spaceId, setSpaceId] = useState("");
-  const [listId, setListId] = useState("");
+  const [scope, setScope] = useState<WorkScope>({ kind: "all", id: 0 });
   const [mine, setMine] = useState(!isAdmin);
   const [message, setMessage] = useState("");
   const [openTask, setOpenTask] = useState<WorkTask | null>(null);
-  const [newOpen, setNewOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState<{ status: string; listId: string } | null>(null);
   const [newSpaceOpen, setNewSpaceOpen] = useState(false);
-  const [newListOpen, setNewListOpen] = useState(false);
+  const [newListFor, setNewListFor] = useState<number | null>(null);
   const [dragId, setDragId] = useState<number | null>(null);
 
   async function loadMeta() {
@@ -2146,8 +2158,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
 
   async function loadTasks() {
     const p = new URLSearchParams();
-    if (listId) p.set("listId", listId);
-    else if (spaceId) p.set("spaceId", spaceId);
+    if (scope.kind === "list") p.set("listId", String(scope.id));
+    if (scope.kind === "space") p.set("spaceId", String(scope.id));
     if (mine) p.set("mine", "1");
     const d = await api<{ tasks: WorkTask[] }>(`/work/tasks?${p.toString()}`);
     setTasks(d.tasks);
@@ -2158,31 +2170,56 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   }
 
   useEffect(() => { loadMeta().catch(() => undefined); }, []);
-  useEffect(() => { refresh(); }, [spaceId, listId, mine]);
+  useEffect(() => { refresh(); }, [scope.kind, scope.id, mine]);
 
-  // Only approved spaces/lists can hold work; pending ones just await a decision.
+  // Only approved spaces/lists hold work; pending ones just wait for a decision.
   const activeSpaces = spaces.filter((s) => s.status === "Active");
   const activeLists = lists.filter((l) => l.status === "Active");
-  const listOptions = spaceId ? activeLists.filter((l) => String(l.space_id) === spaceId) : activeLists;
-  const pendingSpaces = spaces.filter((s) => s.status === "Pending");
-  const pendingLists = lists.filter((l) => l.status === "Pending");
+  const pending = [
+    ...spaces.filter((s) => s.status === "Pending").map((s) => ({ kind: "spaces" as const, id: s.id, label: `Space · ${s.name}` })),
+    ...lists.filter((l) => l.status === "Pending").map((l) => ({ kind: "lists" as const, id: l.id, label: `List · ${l.space_name} › ${l.name}` })),
+  ];
+
+  const scopeLabel = scope.kind === "list"
+    ? (() => { const l = activeLists.find((x) => x.id === scope.id); return l ? `${l.space_name} › ${l.name}` : "All work"; })()
+    : scope.kind === "space"
+      ? (activeSpaces.find((s) => s.id === scope.id)?.name ?? "All work")
+      : "All work";
+
+  const defaultListId = scope.kind === "list" ? String(scope.id)
+    : scope.kind === "space" ? String(activeLists.find((l) => l.space_id === scope.id)?.id ?? "")
+    : "";
 
   async function decide(kind: "spaces" | "lists", id: number, status: "Active" | "Rejected") {
     try {
       await api(`/work/${kind}/${id}/decision`, { method: "POST", body: JSON.stringify({ status }) });
       await loadMeta();
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Could not save decision");
-    }
+    } catch (err) { setMessage(err instanceof Error ? err.message : "Could not save decision"); }
+  }
+
+  async function rename(kind: "spaces" | "lists", id: number, name: string) {
+    try {
+      await api(`/work/${kind}/${id}`, { method: "PUT", body: JSON.stringify({ name }) });
+      await loadMeta(); await refresh();
+    } catch (err) { setMessage(err instanceof Error ? err.message : "Could not rename"); }
+  }
+
+  async function remove(kind: "spaces" | "lists", id: number, warning: string) {
+    if (!window.confirm(warning)) return;
+    try {
+      await api(`/work/${kind}/${id}`, { method: "DELETE" });
+      if ((kind === "spaces" && scope.kind === "space" && scope.id === id) || (kind === "lists" && scope.kind === "list" && scope.id === id)) {
+        setScope({ kind: "all", id: 0 });
+      }
+      await loadMeta(); await refresh();
+    } catch (err) { setMessage(err instanceof Error ? err.message : "Could not delete"); }
   }
 
   async function setStatus(task: WorkTask, status: string) {
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status } : t)));
     try {
       await api(`/work/tasks/${task.id}`, { method: "PUT", body: JSON.stringify({ status }) });
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Could not update");
-    }
+    } catch (err) { setMessage(err instanceof Error ? err.message : "Could not update"); }
     await refresh();
   }
 
@@ -2193,34 +2230,27 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     return map;
   }, [tasks]);
 
-  const openCount = tasks.filter((t) => t.status !== "Done").length;
+  const done = tasks.filter((t) => t.status === "Done").length;
   const overdue = tasks.filter((t) => t.due_date && t.status !== "Done" && Date.parse(t.due_date) < Date.parse(today)).length;
 
   return (
     <section className="space-y-4">
       <PageTitle
         title="Work"
-        description={isAdmin ? "Spaces, brand lists and tasks across the team." : "Everything assigned to you."}
-        action={(
-          <div className="flex gap-2">
-            <button type="button" className="btn btn-soft" onClick={() => setNewSpaceOpen(true)}><Plus size={16} />Space</button>
-            <button type="button" className="btn btn-soft" onClick={() => setNewListOpen(true)}><Plus size={16} />List</button>
-            {isAdmin ? <button type="button" className="btn btn-primary" onClick={() => setNewOpen(true)}><Plus size={16} />Task</button> : null}
-          </div>
-        )}
+        description={isAdmin ? "Spaces hold your brand lists. Every task lives in a list." : "Everything assigned to you."}
+        action={isAdmin ? (
+          <button type="button" className="btn btn-primary" onClick={() => setNewOpen({ status: "To Do", listId: defaultListId })}>
+            <Plus size={16} />New task
+          </button>
+        ) : undefined}
       />
-      {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+      {message ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
 
-      {/* Requests waiting on the admin — approve or reject a proposed space/list. */}
-      {pendingSpaces.length || pendingLists.length ? (
+      {/* Requests waiting on the admin, or your own still in the queue. */}
+      {pending.length ? (
         <div className="card space-y-2 border-amber-200 bg-amber-50/60 p-4">
-          <p className="text-xs font-bold uppercase tracking-wide text-amber-700">
-            {isAdmin ? "Waiting for your approval" : "Your requests"}
-          </p>
-          {[
-            ...pendingSpaces.map((s) => ({ kind: "spaces" as const, id: s.id, label: `Space · ${s.name}` })),
-            ...pendingLists.map((l) => ({ kind: "lists" as const, id: l.id, label: `List · ${l.space_name} › ${l.name}` })),
-          ].map((r) => (
+          <p className="text-xs font-bold uppercase tracking-wide text-amber-700">{isAdmin ? "Waiting for your approval" : "Your requests"}</p>
+          {pending.map((r) => (
             <div key={`${r.kind}${r.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white px-3 py-2">
               <span className="text-sm font-semibold text-ink">{r.label}</span>
               {isAdmin ? (
@@ -2234,128 +2264,135 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         </div>
       ) : null}
 
-      {/* Controls: space + list filters, My tasks toggle, and the view switcher */}
-      <div className="card flex flex-wrap items-end gap-3 p-4">
-        <Field label="Space">
-          <select className="input h-10 py-1" value={spaceId} onChange={(e) => { setSpaceId(e.target.value); setListId(""); }}>
-            <option value="">All spaces</option>
-            {activeSpaces.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </Field>
-        <Field label="List">
-          <select className="input h-10 py-1" value={listId} onChange={(e) => setListId(e.target.value)}>
-            <option value="">All lists</option>
-            {listOptions.map((l) => <option key={l.id} value={l.id}>{l.space_name} · {l.name}</option>)}
-          </select>
-        </Field>
-        {isAdmin ? (
-          <label className="flex h-10 cursor-pointer items-center gap-2 self-end rounded-xl border border-line px-3 text-sm font-semibold text-stone-600">
-            <input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} />
-            My tasks only
-          </label>
-        ) : null}
-        <div className="ml-auto flex self-end overflow-hidden rounded-xl border border-line">
-          {(["board", "list", "calendar"] as const).map((v) => (
-            <button key={v} type="button" onClick={() => setView(v)}
-              className={classNames("px-4 py-2 text-sm font-semibold capitalize transition", view === v ? "bg-brand text-white" : "bg-white text-stone-600 hover:bg-stone-50")}>
-              {v}
-            </button>
-          ))}
-        </div>
-      </div>
+      <div className="grid gap-4 lg:grid-cols-[232px_minmax(0,1fr)]">
+        <WorkSidebar
+          isAdmin={isAdmin} spaces={activeSpaces} lists={activeLists} scope={scope}
+          onScope={setScope} onRename={rename} onDelete={remove}
+          onNewSpace={() => setNewSpaceOpen(true)} onNewList={(spaceId) => setNewListFor(spaceId)}
+        />
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="card p-4"><p className="text-xs font-semibold uppercase text-slate-500">Open tasks</p><p className="mt-1 text-2xl font-bold text-ink">{openCount}</p></div>
-        <div className="card p-4"><p className="text-xs font-semibold uppercase text-slate-500">Completed</p><p className="mt-1 text-2xl font-bold text-emerald-600">{tasks.length - openCount}</p></div>
-        <div className="card p-4"><p className="text-xs font-semibold uppercase text-slate-500">Overdue</p><p className="mt-1 text-2xl font-bold text-rose-600">{overdue}</p></div>
-      </div>
+        <div className="min-w-0 space-y-3">
+          {/* One toolbar: where you are, what you filter to, how you look at it. */}
+          <div className="card flex flex-wrap items-center gap-3 px-4 py-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold text-ink">{scopeLabel}</p>
+              <p className="text-xs text-slate-400">
+                {tasks.length - done} open{done ? ` · ${done} done` : ""}{overdue ? ` · ${overdue} overdue` : ""}
+              </p>
+            </div>
+            {isAdmin ? (
+              <label className="flex cursor-pointer items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-stone-600">
+                <input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} />
+                My tasks
+              </label>
+            ) : null}
+            <div className="ml-auto flex gap-1 rounded-full bg-stone-100 p-1">
+              {(["board", "list", "calendar"] as const).map((v) => (
+                <button key={v} type="button" onClick={() => setView(v)}
+                  className={classNames("rounded-full px-3 py-1 text-xs font-semibold capitalize transition",
+                    view === v ? "bg-white text-ink shadow-sm" : "text-stone-500 hover:text-ink")}>
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
 
-      {view === "board" ? (
-        <div className="grid gap-3 lg:grid-cols-5">
-          {WORK_STATUSES.map((status) => (
-            <div key={status}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => { const t = tasks.find((x) => x.id === dragId); if (t && t.status !== status) setStatus(t, status); setDragId(null); }}
-              className="card flex min-h-[220px] flex-col overflow-hidden">
-              <div className="flex items-center justify-between border-b border-line px-3 py-2">
-                <span className={classNames("badge", statusStyle[status])}>{status}</span>
-                <span className="text-xs text-slate-400">{grouped[status]?.length ?? 0}</span>
-              </div>
-              <div className="flex-1 space-y-2 p-2">
-                {(grouped[status] ?? []).map((t) => (
-                  <button key={t.id} type="button" draggable onDragStart={() => setDragId(t.id)} onClick={() => setOpenTask(t)}
-                    className="w-full rounded-xl border border-line bg-white p-3 text-left transition hover:shadow-md">
-                    <div className="flex items-start gap-2">
-                      <span className={classNames("mt-1 h-2 w-2 shrink-0 rounded-full", priorityStyle[t.priority]?.bar)} />
-                      <p className="text-sm font-semibold text-ink">{t.title}</p>
-                    </div>
-                    <p className="mt-1 text-[11px] text-slate-400">{t.space_name} · {t.list_name}</p>
-                    <div className="mt-2 flex items-center justify-between">
-                      <span className={classNames("text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date)}</span>
-                      <span className="flex -space-x-1">
-                        {t.assignees.slice(0, 3).map((a) => (
-                          <span key={a.user_id} title={a.display_name} className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700 ring-1 ring-white">
-                            {initialsOf(a.display_name)}
+          {/* Board columns scroll sideways rather than wrapping into a ragged grid. */}
+          {view === "board" ? (
+            <div className="flex items-start gap-3 overflow-x-auto pb-2">
+              {WORK_STATUSES.map((status) => (
+                <div key={status}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => { const t = tasks.find((x) => x.id === dragId); if (t && t.status !== status) setStatus(t, status); setDragId(null); }}
+                  className="flex w-[240px] shrink-0 grow flex-col rounded-2xl bg-stone-50/80 p-2">
+                  <div className="flex items-center gap-2 px-1 pb-2">
+                    <span className={classNames("h-1.5 w-1.5 rounded-full", statusBar[status])} />
+                    <span className="text-xs font-bold uppercase tracking-wide text-stone-500">{status}</span>
+                    <span className="ml-auto text-xs text-slate-400">{grouped[status]?.length ?? 0}</span>
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    {(grouped[status] ?? []).map((t) => (
+                      <button key={t.id} type="button" draggable onDragStart={() => setDragId(t.id)} onClick={() => setOpenTask(t)}
+                        className="w-full rounded-xl border border-line bg-white p-3 text-left transition hover:border-stone-300 hover:shadow-sm">
+                        <p className="text-sm font-semibold leading-snug text-ink">{t.title}</p>
+                        {scope.kind !== "list" ? <p className="mt-1 truncate text-[11px] text-slate-400">{t.space_name} › {t.list_name}</p> : null}
+                        <div className="mt-2 flex items-center gap-2">
+                          <span className={classNames("h-1.5 w-1.5 shrink-0 rounded-full", priorityStyle[t.priority]?.bar)} title={t.priority} />
+                          <span className={classNames("truncate text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date)}</span>
+                          {t.comment_count ? <span className="text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
+                          <span className="ml-auto flex -space-x-1">
+                            {t.assignees.slice(0, 3).map((a) => (
+                              <span key={a.user_id} title={a.display_name} className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700 ring-1 ring-white">
+                                {initialsOf(a.display_name)}
+                              </span>
+                            ))}
                           </span>
-                        ))}
-                      </span>
-                    </div>
-                  </button>
-                ))}
-                {!(grouped[status] ?? []).length ? <p className="px-1 py-6 text-center text-xs text-slate-300">Empty</p> : null}
+                        </div>
+                      </button>
+                    ))}
+                    {isAdmin ? (
+                      <button type="button" onClick={() => setNewOpen({ status, listId: defaultListId })}
+                        className="flex w-full items-center gap-1 rounded-xl px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-white hover:text-brand">
+                        <Plus size={13} />Task
+                      </button>
+                    ) : null}
+                    {!(grouped[status] ?? []).length && !isAdmin ? <p className="px-1 py-6 text-center text-xs text-slate-300">Empty</p> : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {view === "list" ? (
+            <div className="card overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[680px] text-left text-sm">
+                  <thead className="bg-stone-50 text-[11px] uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3 font-bold">Task</th>
+                      <th className="px-4 py-3 font-bold">List</th>
+                      <th className="px-4 py-3 font-bold">Assignees</th>
+                      <th className="px-4 py-3 font-bold">Due</th>
+                      <th className="px-4 py-3 font-bold">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {tasks.length ? tasks.map((t) => (
+                      <tr key={t.id} className="cursor-pointer bg-white hover:bg-stone-50" onClick={() => setOpenTask(t)}>
+                        <td className="px-4 py-3">
+                          <span className="flex items-center gap-2">
+                            <span className={classNames("h-1.5 w-1.5 shrink-0 rounded-full", priorityStyle[t.priority]?.bar)} title={t.priority} />
+                            <span className="font-semibold text-ink">{t.title}</span>
+                            {t.comment_count ? <span className="text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-500">{t.space_name} › {t.list_name}</td>
+                        <td className="px-4 py-3">
+                          <span className="flex -space-x-1">
+                            {t.assignees.map((a) => (
+                              <span key={a.user_id} title={a.display_name} className="flex h-6 w-6 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700 ring-1 ring-white">{initialsOf(a.display_name)}</span>
+                            ))}
+                            {!t.assignees.length ? <span className="text-xs text-slate-400">—</span> : null}
+                          </span>
+                        </td>
+                        <td className={classNames("px-4 py-3 text-xs", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date)}</td>
+                        <td className="px-4 py-3">
+                          <select className={classNames("input h-8 w-auto py-0 text-xs font-semibold", statusStyle[t.status])}
+                            value={t.status} onClick={(e) => e.stopPropagation()} onChange={(e) => setStatus(t, e.target.value)}>
+                            {WORK_STATUSES.map((s) => <option key={s}>{s}</option>)}
+                          </select>
+                        </td>
+                      </tr>
+                    )) : <tr><td className="px-4 py-10 text-center text-slate-500" colSpan={5}>Nothing here yet.</td></tr>}
+                  </tbody>
+                </table>
               </div>
             </div>
-          ))}
-        </div>
-      ) : null}
+          ) : null}
 
-      {view === "list" ? (
-        <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className="px-4 py-3 font-bold">Task</th>
-                  <th className="px-4 py-3 font-bold">Space / List</th>
-                  <th className="px-4 py-3 font-bold">Assignees</th>
-                  <th className="px-4 py-3 font-bold">Due</th>
-                  <th className="px-4 py-3 font-bold">Priority</th>
-                  <th className="px-4 py-3 font-bold">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
-                {tasks.length ? tasks.map((t) => (
-                  <tr key={t.id} className="cursor-pointer bg-white hover:bg-stone-50" onClick={() => setOpenTask(t)}>
-                    <td className="px-4 py-3 font-semibold text-ink">
-                      {t.title}
-                      {t.comment_count ? <span className="ml-2 text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{t.space_name} · {t.list_name}</td>
-                    <td className="px-4 py-3">
-                      <span className="flex -space-x-1">
-                        {t.assignees.map((a) => (
-                          <span key={a.user_id} title={a.display_name} className="flex h-6 w-6 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700 ring-1 ring-white">{initialsOf(a.display_name)}</span>
-                        ))}
-                        {!t.assignees.length ? <span className="text-xs text-slate-400">—</span> : null}
-                      </span>
-                    </td>
-                    <td className={classNames("px-4 py-3 text-xs", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date)}</td>
-                    <td className="px-4 py-3"><span className={classNames("badge", priorityStyle[t.priority]?.chip)}>{t.priority}</span></td>
-                    <td className="px-4 py-3">
-                      <select className={classNames("input h-8 w-auto py-0 text-xs font-semibold", statusStyle[t.status])}
-                        value={t.status} onClick={(e) => e.stopPropagation()} onChange={(e) => setStatus(t, e.target.value)}>
-                        {WORK_STATUSES.map((s) => <option key={s}>{s}</option>)}
-                      </select>
-                    </td>
-                  </tr>
-                )) : <tr><td className="px-4 py-10 text-center text-slate-500" colSpan={6}>No tasks here yet.</td></tr>}
-              </tbody>
-            </table>
-          </div>
+          {view === "calendar" ? <WorkCalendar tasks={tasks} onOpen={setOpenTask} /> : null}
         </div>
-      ) : null}
-
-      {view === "calendar" ? <WorkCalendar tasks={tasks} onOpen={setOpenTask} /> : null}
+      </div>
 
       {openTask ? (
         <WorkTaskModal task={openTask} isAdmin={isAdmin} people={people} lists={activeLists}
@@ -2363,8 +2400,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
       ) : null}
 
       {newOpen ? (
-        <WorkTaskForm lists={activeLists} people={people} onClose={() => setNewOpen(false)}
-          onSaved={async () => { setNewOpen(false); await refresh(); }} />
+        <WorkTaskForm lists={activeLists} people={people} initial={newOpen} onClose={() => setNewOpen(null)}
+          onSaved={async () => { setNewOpen(null); await refresh(); await loadMeta(); }} />
       ) : null}
 
       {newSpaceOpen ? (
@@ -2372,11 +2409,119 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
           onSaved={async () => { setNewSpaceOpen(false); await loadMeta(); }} />
       ) : null}
 
-      {newListOpen ? (
-        <NewListForm isAdmin={isAdmin} spaces={activeSpaces} onClose={() => setNewListOpen(false)}
-          onSaved={async () => { setNewListOpen(false); await loadMeta(); }} />
+      {newListFor !== null ? (
+        <NewListForm isAdmin={isAdmin} spaces={activeSpaces} initialSpaceId={newListFor} onClose={() => setNewListFor(null)}
+          onSaved={async () => { setNewListFor(null); await loadMeta(); }} />
       ) : null}
     </section>
+  );
+}
+
+// The ClickUp-style rail: spaces expand into their brand lists, and admins
+// rename or delete either one right where they see it.
+function WorkSidebar({ isAdmin, spaces, lists, scope, onScope, onRename, onDelete, onNewSpace, onNewList }: {
+  isAdmin: boolean; spaces: WorkSpace[]; lists: WorkList[]; scope: WorkScope;
+  onScope: (s: WorkScope) => void;
+  onRename: (kind: "spaces" | "lists", id: number, name: string) => void;
+  onDelete: (kind: "spaces" | "lists", id: number, warning: string) => void;
+  onNewSpace: () => void; onNewList: (spaceId: number) => void;
+}) {
+  const [collapsed, setCollapsed] = useState<number[]>([]);
+  const [editing, setEditing] = useState<{ kind: "spaces" | "lists"; id: number } | null>(null);
+  const [draft, setDraft] = useState("");
+
+  function startEdit(kind: "spaces" | "lists", id: number, name: string) {
+    setEditing({ kind, id }); setDraft(name);
+  }
+  function commitEdit() {
+    if (editing && draft.trim()) onRename(editing.kind, editing.id, draft.trim());
+    setEditing(null);
+  }
+
+  const rowBase = "group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition";
+
+  return (
+    <aside className="card h-fit p-2 lg:sticky lg:top-4">
+      <button type="button" onClick={() => onScope({ kind: "all", id: 0 })}
+        className={classNames(rowBase, scope.kind === "all" ? "bg-orange-50 font-bold text-brand" : "font-semibold text-stone-600 hover:bg-stone-50")}>
+        <ClipboardList size={15} />All work
+      </button>
+
+      <p className="mt-3 px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Spaces</p>
+
+      {spaces.map((space) => {
+        const open = !collapsed.includes(space.id);
+        const spaceLists = lists.filter((l) => l.space_id === space.id);
+        const editingThis = editing?.kind === "spaces" && editing.id === space.id;
+        return (
+          <div key={space.id} className="mb-0.5">
+            {editingThis ? (
+              <input autoFocus className="input h-8 py-0 text-sm" value={draft} onChange={(e) => setDraft(e.target.value)}
+                onBlur={commitEdit} onKeyDown={(e) => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditing(null); }} />
+            ) : (
+              <div className={classNames(rowBase, scope.kind === "space" && scope.id === space.id ? "bg-orange-50 text-brand" : "text-stone-700 hover:bg-stone-50")}>
+                <button type="button" aria-label={open ? "Collapse" : "Expand"} className="text-slate-400"
+                  onClick={() => setCollapsed((c) => (open ? [...c, space.id] : c.filter((x) => x !== space.id)))}>
+                  {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
+                <button type="button" className="min-w-0 flex-1 truncate text-left font-semibold" onClick={() => onScope({ kind: "space", id: space.id })}>
+                  {space.name}
+                </button>
+                {isAdmin ? (
+                  <span className="flex shrink-0 gap-0.5 opacity-0 transition group-hover:opacity-100">
+                    <button type="button" aria-label="Rename space" className="rounded p-0.5 text-slate-400 hover:text-ink" onClick={() => startEdit("spaces", space.id, space.name)}><Pencil size={12} /></button>
+                    <button type="button" aria-label="Delete space" className="rounded p-0.5 text-slate-400 hover:text-rose-600"
+                      onClick={() => onDelete("spaces", space.id, `Delete the space "${space.name}"? This also deletes ${space.list_count} list(s) and ${space.task_count} task(s).`)}>
+                      <Trash2 size={12} />
+                    </button>
+                  </span>
+                ) : null}
+              </div>
+            )}
+
+            {open ? (
+              <div className="ml-4 border-l border-line pl-1">
+                {spaceLists.map((l) => {
+                  const editingList = editing?.kind === "lists" && editing.id === l.id;
+                  if (editingList) {
+                    return (
+                      <input key={l.id} autoFocus className="input h-8 py-0 text-sm" value={draft} onChange={(e) => setDraft(e.target.value)}
+                        onBlur={commitEdit} onKeyDown={(e) => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditing(null); }} />
+                    );
+                  }
+                  return (
+                    <div key={l.id} className={classNames(rowBase, scope.kind === "list" && scope.id === l.id ? "bg-orange-50 font-semibold text-brand" : "text-stone-600 hover:bg-stone-50")}>
+                      <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => onScope({ kind: "list", id: l.id })}>{l.name}</button>
+                      <span className="shrink-0 text-[11px] text-slate-400 group-hover:hidden">{l.task_count || ""}</span>
+                      {isAdmin ? (
+                        <span className="hidden shrink-0 gap-0.5 group-hover:flex">
+                          <button type="button" aria-label="Rename list" className="rounded p-0.5 text-slate-400 hover:text-ink" onClick={() => startEdit("lists", l.id, l.name)}><Pencil size={12} /></button>
+                          <button type="button" aria-label="Delete list" className="rounded p-0.5 text-slate-400 hover:text-rose-600"
+                            onClick={() => onDelete("lists", l.id, `Delete the list "${l.name}"? This also deletes its ${l.task_count} task(s).`)}>
+                            <Trash2 size={12} />
+                          </button>
+                        </span>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                <button type="button" onClick={() => onNewList(space.id)}
+                  className="flex w-full items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-slate-400 transition hover:bg-stone-50 hover:text-brand">
+                  <Plus size={12} />{isAdmin ? "List" : "Request list"}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+
+      {!spaces.length ? <p className="px-2 py-3 text-xs text-slate-400">No spaces yet.</p> : null}
+
+      <button type="button" onClick={onNewSpace}
+        className="mt-2 flex w-full items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-stone-50 hover:text-brand">
+        <Plus size={13} />{isAdmin ? "New space" : "Request space"}
+      </button>
+    </aside>
   );
 }
 
@@ -2481,10 +2626,10 @@ function WorkTaskModal({ task, isAdmin, people, lists, onClose, onChanged }: {
       <div className="card my-8 w-full max-w-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{task.space_name} › {task.list_name}</p>
             {isAdmin
-              ? <input className="input text-lg font-bold" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-              : <h3 className="text-lg font-bold text-ink">{task.title}</h3>}
-            <p className="mt-1 text-xs text-slate-500">{task.space_name} · {task.list_name}</p>
+              ? <input className="input mt-1 text-lg font-bold" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+              : <h3 className="mt-1 text-lg font-bold text-ink">{task.title}</h3>}
           </div>
           <button type="button" aria-label="Close" className="rounded-lg p-1.5 text-slate-400 hover:bg-stone-100" onClick={onClose}><X size={20} /></button>
         </div>
@@ -2506,7 +2651,7 @@ function WorkTaskModal({ task, isAdmin, people, lists, onClose, onChanged }: {
           {isAdmin ? (
             <Field label="List">
               <select className="input" value={form.list_id} onChange={(e) => setForm({ ...form, list_id: e.target.value })}>
-                {lists.map((l) => <option key={l.id} value={l.id}>{l.space_name} · {l.name}</option>)}
+                {lists.map((l) => <option key={l.id} value={l.id}>{l.space_name} › {l.name}</option>)}
               </select>
             </Field>
           ) : null}
@@ -2567,12 +2712,13 @@ function WorkTaskModal({ task, isAdmin, people, lists, onClose, onChanged }: {
   );
 }
 
-function WorkTaskForm({ lists, people, onClose, onSaved }: {
-  lists: WorkList[]; people: WorkPerson[]; onClose: () => void; onSaved: () => void;
+function WorkTaskForm({ lists, people, initial, onClose, onSaved }: {
+  lists: WorkList[]; people: WorkPerson[]; initial: { status: string; listId: string };
+  onClose: () => void; onSaved: () => void;
 }) {
   const [form, setForm] = useState({
-    list_id: "", title: "", description: "",
-    priority: "Normal", status: "To Do", due_date: "", assignees: [] as number[],
+    list_id: initial.listId, title: "", description: "",
+    priority: "Normal", status: initial.status, due_date: "", assignees: [] as number[],
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -2599,7 +2745,7 @@ function WorkTaskForm({ lists, people, onClose, onSaved }: {
         <Field label="List (required)">
           <select required className="input" value={form.list_id} onChange={(e) => setForm({ ...form, list_id: e.target.value })}>
             <option value="">Select a list…</option>
-            {lists.map((l) => <option key={l.id} value={l.id}>{l.space_name} · {l.name}</option>)}
+            {lists.map((l) => <option key={l.id} value={l.id}>{l.space_name} › {l.name}</option>)}
           </select>
         </Field>
         {!lists.length ? <p className="text-xs font-semibold text-amber-700">No approved lists yet — create one first.</p> : null}
@@ -2679,8 +2825,10 @@ function NewSpaceForm({ isAdmin, onClose, onSaved }: { isAdmin: boolean; onClose
 }
 
 // Lists are the brands you work with, and they always live inside a space.
-function NewListForm({ isAdmin, spaces, onClose, onSaved }: { isAdmin: boolean; spaces: WorkSpace[]; onClose: () => void; onSaved: () => void }) {
-  const [spaceId, setSpaceId] = useState(String(spaces[0]?.id ?? ""));
+function NewListForm({ isAdmin, spaces, initialSpaceId, onClose, onSaved }: {
+  isAdmin: boolean; spaces: WorkSpace[]; initialSpaceId: number; onClose: () => void; onSaved: () => void;
+}) {
+  const [spaceId, setSpaceId] = useState(String(initialSpaceId || spaces[0]?.id || ""));
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -2711,7 +2859,7 @@ function NewListForm({ isAdmin, spaces, onClose, onSaved }: { isAdmin: boolean; 
           </select>
         </Field>
         {!spaces.length ? <p className="text-xs font-semibold text-amber-700">No approved space yet — create a space first.</p> : null}
-        <Field label="Brand / list name"><input required className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Heaven Solar" /></Field>
+        <Field label="Brand / list name"><input required autoFocus className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Heaven Solar" /></Field>
         <div className="flex justify-end gap-3">
           <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
           <button type="submit" className="btn btn-primary" disabled={busy || !spaces.length}>{busy ? "Saving…" : isAdmin ? "Create" : "Send request"}</button>

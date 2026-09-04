@@ -1805,6 +1805,24 @@ function NotificationBell() {
   );
 }
 
+// People without a full name fall back to their email, and "@aagam" reads a lot
+// better than "@aagam@fastexmedia.com" — the server matches the handle either way.
+function mentionToken(displayName: string) {
+  return displayName.includes("@") ? displayName.split("@")[0] : displayName;
+}
+
+// Tint any "@Name" that matches a real teammate, so a mention is obvious in the
+// thread and a mistyped one visibly isn't one.
+function highlightMentions(body: string, people: ChatPerson[], onBrand = false) {
+  const names = people.flatMap((p) => [p.display_name, mentionToken(p.display_name), p.display_name.split(" ")[0]]).filter(Boolean);
+  if (!names.length) return body;
+  const unique = [...new Set(names)].sort((a, b) => b.length - a.length).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const parts = body.split(new RegExp(`(@(?:${unique.join("|")})(?![\\w.\\-]))`, "gi"));
+  return parts.map((part, i) => (part.startsWith("@")
+    ? <span key={i} className={classNames("rounded px-1 font-semibold", onBrand ? "bg-white/25 text-white" : "bg-orange-100 text-orange-700")}>{part}</span>
+    : part));
+}
+
 function Chat({ currentUserId }: { currentUserId: number }) {
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [people, setPeople] = useState<ChatPerson[]>([]);
@@ -1818,9 +1836,39 @@ function Chat({ currentUserId }: { currentUserId: number }) {
   const [dmOpen, setDmOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
+  // @mention state: who can be named here, what's being typed after the "@",
+  // and the ids picked from the menu so the server never has to guess.
+  const [mentionable, setMentionable] = useState<ChatPerson[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const [mentionIds, setMentionIds] = useState<number[]>([]);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const activeIdRef = useRef<number | null>(null);
   activeIdRef.current = activeId;
+
+  const mentionMatches = useMemo(() => {
+    if (mentionQuery === null) return [];
+    const q = mentionQuery.toLowerCase();
+    return mentionable.filter((p) => p.display_name.toLowerCase().includes(q)).slice(0, 6);
+  }, [mentionQuery, mentionable]);
+
+  function onDraftChange(value: string, caret: number) {
+    setDraft(value);
+    const token = value.slice(0, caret).match(/@([\w.\-]*)$/);
+    setMentionQuery(token ? token[1] : null);
+    setMentionIdx(0);
+  }
+
+  function insertMention(person: ChatPerson) {
+    const area = draftRef.current;
+    const caret = area?.selectionStart ?? draft.length;
+    const before = draft.slice(0, caret).replace(/@([\w.\-]*)$/, `@${mentionToken(person.display_name)} `);
+    setDraft(before + draft.slice(caret));
+    setMentionIds((ids) => (ids.includes(person.id) ? ids : [...ids, person.id]));
+    setMentionQuery(null);
+    requestAnimationFrame(() => { area?.focus(); area?.setSelectionRange(before.length, before.length); });
+  }
 
   async function loadChannels() {
     try {
@@ -1853,7 +1901,10 @@ function Chat({ currentUserId }: { currentUserId: number }) {
   useEffect(() => {
     if (!activeId) return;
     setMessages([]);
+    setMentionIds([]); setMentionQuery(null);
     loadMessages(activeId);
+    api<{ people: ChatPerson[] }>(`/chat/channels/${activeId}/mentionable`)
+      .then((d) => setMentionable(d.people)).catch(() => setMentionable([]));
   }, [activeId]);
 
   // Polling: new messages for the open channel, plus unread badges elsewhere.
@@ -1871,12 +1922,18 @@ function Chat({ currentUserId }: { currentUserId: number }) {
     e.preventDefault();
     if (!activeId || (!draft.trim() && !file)) return;
     setSending(true);
+    // Only send ids whose @name survived any later editing of the draft.
+    const mentions = mentionIds.filter((id) => {
+      const p = mentionable.find((x) => x.id === id);
+      return p && draft.toLowerCase().includes(`@${mentionToken(p.display_name).toLowerCase()}`);
+    });
     try {
       await api(`/chat/channels/${activeId}/messages`, {
         method: "POST",
-        body: JSON.stringify({ body: draft, reply_to_id: replyTo?.id ?? null, attachment: file?.data ?? null, attachment_name: file?.name ?? null }),
+        body: JSON.stringify({ body: draft, mentions, reply_to_id: replyTo?.id ?? null, attachment: file?.data ?? null, attachment_name: file?.name ?? null }),
       });
       setDraft(""); setReplyTo(null); setFile(null);
+      setMentionIds([]); setMentionQuery(null);
       await loadMessages(activeId, true);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Failed to send");
@@ -1989,7 +2046,7 @@ function Chat({ currentUserId }: { currentUserId: number }) {
                       m.deleted_at ? "bg-stone-100 italic text-slate-400" : mine ? "bg-brand text-white" : "bg-stone-100 text-ink")}>
                       {m.deleted_at ? "Message deleted" : (
                         <>
-                          {m.body ? <p className="whitespace-pre-wrap break-words">{m.body}</p> : null}
+                          {m.body ? <p className="whitespace-pre-wrap break-words">{highlightMentions(m.body, people, mine)}</p> : null}
                           {m.attachment ? (
                             m.attachment.startsWith("data:image")
                               ? <img src={m.attachment} alt={m.attachment_name ?? "attachment"} className="mt-1 max-h-56 rounded-lg" />
@@ -2030,14 +2087,40 @@ function Chat({ currentUserId }: { currentUserId: number }) {
                   <Plus size={16} />
                   <input type="file" className="hidden" accept="image/*,application/pdf" onChange={(e) => pickFile(e.target.files?.[0])} />
                 </label>
-                <textarea
-                  className="input min-h-[44px] flex-1 resize-none py-2"
-                  rows={1}
-                  placeholder={active.kind === "dm" ? `Message ${active.peer_name}` : `Message #${active.name} — use @name to notify`}
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as unknown as FormEvent); } }}
-                />
+                <div className="relative flex-1">
+                  {/* Type "@" to pick someone — the menu inserts the exact name and
+                      remembers who to notify, so a typo can't swallow the ping. */}
+                  {mentionMatches.length ? (
+                    <div className="absolute bottom-full left-0 z-20 mb-2 w-64 overflow-hidden rounded-xl border border-line bg-white shadow-lg">
+                      {mentionMatches.map((p, i) => (
+                        <button key={p.id} type="button" onMouseDown={(e) => { e.preventDefault(); insertMention(p); }}
+                          onMouseEnter={() => setMentionIdx(i)}
+                          className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", i === mentionIdx ? "bg-orange-50 text-brand" : "text-stone-600")}>
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
+                          <span className="truncate font-semibold">{p.display_name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <textarea
+                    ref={draftRef}
+                    className="input min-h-[44px] w-full resize-none py-2"
+                    rows={1}
+                    placeholder={active.kind === "dm" ? `Message ${active.peer_name} — @ to notify` : `Message #${active.name} — @ to notify`}
+                    value={draft}
+                    onChange={(e) => onDraftChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+                    onBlur={() => setMentionQuery(null)}
+                    onKeyDown={(e) => {
+                      if (mentionMatches.length) {
+                        if (e.key === "ArrowDown") { e.preventDefault(); setMentionIdx((i) => (i + 1) % mentionMatches.length); return; }
+                        if (e.key === "ArrowUp") { e.preventDefault(); setMentionIdx((i) => (i - 1 + mentionMatches.length) % mentionMatches.length); return; }
+                        if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); insertMention(mentionMatches[mentionIdx]); return; }
+                        if (e.key === "Escape") { e.preventDefault(); setMentionQuery(null); return; }
+                      }
+                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as unknown as FormEvent); }
+                    }}
+                  />
+                </div>
                 <button type="submit" className="btn btn-primary" disabled={sending || (!draft.trim() && !file)}>Send</button>
               </div>
             </form>

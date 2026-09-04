@@ -69,6 +69,7 @@ async function route(context: Context) {
   if (method === "GET" && path === "/chat/channels") return chatChannels(db, user);
   if (method === "POST" && path === "/chat/channels") return createChatChannel(db, user, await readBody(context.request));
   if (method === "GET" && path === "/chat/directory") return chatDirectory(db, user);
+  if (method === "GET" && path.match(/^\/chat\/channels\/\d+\/mentionable$/)) return chatMentionable(db, user, Number(path.split("/")[3]));
   if (method === "GET" && path.match(/^\/chat\/channels\/\d+\/messages$/)) return chatMessages(db, user, Number(path.split("/")[3]), url);
   if (method === "POST" && path.match(/^\/chat\/channels\/\d+\/messages$/)) return sendChatMessage(db, user, Number(path.split("/")[3]), await readBody(context.request));
   if (method === "POST" && path.match(/^\/chat\/channels\/\d+\/read$/)) return markChatRead(db, user, Number(path.split("/")[3]), await readBody(context.request));
@@ -1138,36 +1139,61 @@ async function sendChatMessage(db: D1Database, user: AppUser, channelId: number,
   ).bind(channelId, user.id, messageId).run();
 
   const senderName = user.employeeName ?? user.email;
-  const label = channel.kind === "dm" ? "New message" : `New message in #${channel.name}`;
+
+  // Who did this message call out? Ids picked from the composer's @ menu are
+  // authoritative; the text scan still catches names typed out by hand.
+  const picked = Array.isArray(body.mentions) ? body.mentions.map(Number).filter(Boolean) : [];
+  const people = await db.prepare(`${chatUserSelect} WHERE u.is_active = 1 AND u.id != ?`).bind(user.id).all<{ id: number; display_name: string; email: string }>();
+  const mentioned = new Set<number>();
+  for (const person of people.results) {
+    const id = Number(person.id);
+    if (picked.includes(id) || (message && mentionsPerson(message, person))) mentioned.add(id);
+  }
+
+  // A DM only ever notifies the people in it, whoever the message names.
+  const members = new Set(
+    (await db.prepare("SELECT user_id FROM chat_members WHERE channel_id = ?").bind(channelId).all<{ user_id: number }>())
+      .results.map((r) => Number(r.user_id)),
+  );
 
   if (channel.kind === "dm") {
-    const peers = await db.prepare("SELECT user_id FROM chat_members WHERE channel_id = ? AND user_id != ?").bind(channelId, user.id).all<{ user_id: number }>();
-    for (const p of peers.results) await notify(db, p.user_id, label, `${senderName}: ${(message || "sent an attachment").slice(0, 120)}`);
-  } else if (message) {
-    // @mentions ping the named people via the notification bell. Each @token is
-    // matched both as "@First Last" and as just "@First".
-    const mentioned = new Set<string>();
-    for (const m of message.matchAll(/@([\w.\-]+(?:\s+[\w.\-]+)?)/g)) {
-      const raw = m[1].trim().toLowerCase();
-      mentioned.add(raw);
-      mentioned.add(raw.split(/\s+/)[0]);
+    for (const peerId of members) {
+      if (peerId === user.id) continue;
+      if (mentioned.has(peerId)) await notify(db, peerId, `${senderName} mentioned you`, (message || "").slice(0, 140));
+      else await notify(db, peerId, "New message", `${senderName}: ${(message || "sent an attachment").slice(0, 120)}`);
     }
-    if (mentioned.size) {
-      const people = await db.prepare(`${chatUserSelect} WHERE u.is_active = 1 AND u.id != ?`).bind(user.id).all<{ id: number; display_name: string; email: string }>();
-      const seen = new Set<number>();
-      for (const person of people.results) {
-        const name = String(person.display_name).toLowerCase();
-        const first = name.split(" ")[0];
-        const handle = String(person.email).split("@")[0].toLowerCase();
-        if (mentioned.has(name) || mentioned.has(first) || mentioned.has(handle)) {
-          if (seen.has(person.id)) continue;
-          seen.add(person.id);
-          await notify(db, person.id, `${senderName} mentioned you in #${channel.name}`, message.slice(0, 140));
-        }
-      }
+  } else {
+    for (const id of mentioned) {
+      await notify(db, id, `${senderName} mentioned you in #${channel.name}`, (message || "sent an attachment").slice(0, 140));
     }
   }
   return json({ ok: true, id: messageId });
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// "@Khushboo Das", "@Khushboo" and "@khushboo.das" all reach the same person.
+function mentionsPerson(message: string, person: { display_name: string; email: string }) {
+  const name = String(person.display_name).toLowerCase();
+  const candidates = [name, name.split(" ")[0], String(person.email).split("@")[0].toLowerCase()];
+  const haystack = message.toLowerCase();
+  return candidates.some((c) => c && new RegExp(`@${escapeRegex(c)}(?![\\w.\\-])`).test(haystack));
+}
+
+// Who you are allowed to @ here — everyone for a public channel, and only the
+// other person in a DM, so a mention can never leak a private thread.
+async function chatMentionable(db: D1Database, user: AppUser, channelId: number) {
+  const channel = await chatChannelFor(db, user, channelId);
+  if (!channel) return json({ error: "Channel not found" }, 404);
+  const rows = channel.kind === "dm"
+    ? await db.prepare(
+        `${chatUserSelect} JOIN chat_members cm ON cm.user_id = u.id AND cm.channel_id = ?
+         WHERE u.is_active = 1 AND u.id != ? ORDER BY display_name`,
+      ).bind(channelId, user.id).all()
+    : await db.prepare(`${chatUserSelect} WHERE u.is_active = 1 AND u.id != ? ORDER BY display_name`).bind(user.id).all();
+  return json({ people: rows.results });
 }
 
 async function markChatRead(db: D1Database, user: AppUser, channelId: number, body: Record<string, unknown>) {

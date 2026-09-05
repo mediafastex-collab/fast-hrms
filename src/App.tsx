@@ -1809,14 +1809,37 @@ function presenceLabel(status?: string | null) {
   return status === "online" ? "Online" : status === "away" ? "Away" : "Offline";
 }
 
-// A desktop notification, when the browser has been given permission.
-function notifyBrowser(title: string, body: string, tag: string) {
-  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+// Registered once, on load. Notifications posted through the registration reach
+// macOS Notification Center reliably; `new Notification()` from the page often
+// does not, which is why alerts appeared to vanish even with permission granted.
+let swRegistration: ServiceWorkerRegistration | null = null;
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js")
+    .then((reg) => { swRegistration = reg; })
+    .catch(() => { /* fall back to the page-level notification */ });
+}
+
+async function notifyBrowser(title: string, body: string, tag: string, channelId?: number) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return "blocked";
+  // A tag per message, plus renotify, so a second message alerts again rather
+  // than silently replacing the first.
+  const options: NotificationOptions & { renotify?: boolean } = {
+    body: body.slice(0, 140),
+    tag: `chat-${tag}`,
+    renotify: true,
+    icon: "/notification-icon.png",
+    badge: "/notification-icon.png",
+    data: { channelId },
+  };
   try {
-    // A tag per message, so a second message doesn't silently replace the first.
-    const n = new Notification(title, { body: body.slice(0, 140), tag: `chat-${tag}` });
+    const reg = swRegistration ?? (await navigator.serviceWorker?.ready);
+    if (reg) { await reg.showNotification(title, options); return "service worker"; }
+  } catch { /* fall through to the page-level constructor */ }
+  try {
+    const n = new Notification(title, options);
     n.onclick = () => { window.focus(); n.close(); };
-  } catch { /* some browsers only allow this from a service worker */ }
+    return "browser";
+  } catch { return "failed"; }
 }
 
 // A tab left open all day keeps running the bundle it first loaded, so a fix can
@@ -1897,7 +1920,7 @@ function useChatPulse(currentUserId: number, mutedChannelId: number | null) {
           // on top means you are not reading it.
           if (mutedRef.current === c.id && document.visibilityState === "visible" && document.hasFocus()) continue;
           setIncoming({ channelId: c.id, messageId: last });
-          notifyBrowser(channelLabel(c), `${c.last_author ?? "Someone"}: ${c.last_body || "sent an attachment"}`, `${c.id}-${last}`);
+          notifyBrowser(channelLabel(c), `${c.last_author ?? "Someone"}: ${c.last_body || "sent an attachment"}`, `${c.id}-${last}`, c.id);
         }
         primed.current = true;
       } catch { /* logged out or offline — try again next tick */ }
@@ -1924,7 +1947,7 @@ function useChatPulse(currentUserId: number, mutedChannelId: number | null) {
 // button rather than something the app does on load.
 function NotificationOptIn({ compact }: { compact?: boolean }) {
   const [permission, setPermission] = useState(typeof Notification === "undefined" ? "unsupported" : Notification.permission);
-  const [tested, setTested] = useState(false);
+  const [tested, setTested] = useState("");
   if (permission === "unsupported") return null;
 
   // Permission can read as granted while macOS or Chrome quietly drops the
@@ -1932,9 +1955,12 @@ function NotificationOptIn({ compact }: { compact?: boolean }) {
   if (permission === "granted") {
     return (
       <button type="button"
-        onClick={() => { notifyBrowser("Fast HRMS", "Test notification — desktop alerts are working.", `test-${Date.now()}`); setTested(true); }}
-        className={classNames("text-xs font-semibold text-slate-500 hover:text-brand", compact && "w-full px-4 py-2 text-left")}>
-        {tested ? "Sent — no banner? Allow Chrome in System Settings → Notifications." : "Send a test notification"}
+        onClick={async () => {
+          const via = await notifyBrowser("Fast HRMS", "Test notification — desktop alerts are working.", `test-${Date.now()}`);
+          setTested(via === "failed" ? "Could not post a notification from this browser." : `Sent via ${via}. No banner? Allow Chrome in System Settings → Notifications, and check Focus is off.`);
+        }}
+        className={classNames("max-w-md text-left text-xs font-semibold text-slate-500 hover:text-brand", compact && "w-full px-4 py-2")}>
+        {tested || "Send a test notification"}
       </button>
     );
   }

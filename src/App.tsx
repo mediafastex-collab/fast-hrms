@@ -437,6 +437,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   // Collapsed rail vs. full-width nav, remembered between visits.
   const [chatTarget, setChatTarget] = useState<number | null>(null);
   // Polled once for the whole app so messages reach you on any screen.
+  const newVersion = useNewVersionAvailable();
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
   const { channels: chatChannels, incoming: chatIncoming } = useChatPulse(user.id, view === "chat" ? activeChatId : null);
   const [toast, setToast] = useState<{ channelId: number; title: string; body: string } | null>(null);
@@ -528,6 +529,14 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
       </aside>
 
       <div className={navOpen ? "lg:pl-64" : "lg:pl-20"}>
+        {newVersion ? (
+          <div className="flex flex-wrap items-center justify-center gap-3 bg-brand px-4 py-2 text-sm font-semibold text-white">
+            A newer version of Fast HRMS is ready.
+            <button type="button" className="rounded-full bg-white/20 px-3 py-1 hover:bg-white/30" onClick={() => window.location.reload()}>
+              Reload
+            </button>
+          </div>
+        ) : null}
         <header className="sticky top-0 z-10 border-b border-line bg-white/95 backdrop-blur">
           <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
             <div>
@@ -1810,6 +1819,35 @@ function notifyBrowser(title: string, body: string, tag: string) {
   } catch { /* some browsers only allow this from a service worker */ }
 }
 
+// A tab left open all day keeps running the bundle it first loaded, so a fix can
+// ship without ever reaching it. Compare the served bundle against ours.
+function useNewVersionAvailable() {
+  const [stale, setStale] = useState(false);
+
+  useEffect(() => {
+    const loaded = document.querySelector<HTMLScriptElement>('script[type="module"]')?.getAttribute("src");
+    if (!loaded) return;
+    let alive = true;
+
+    async function check() {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const html = await (await fetch("/", { cache: "no-store" })).text();
+        const served = html.match(/src="(\/assets\/index-[^"]+\.js)"/)?.[1];
+        if (alive && served && served !== loaded) setStale(true);
+      } catch { /* offline — ask again later */ }
+    }
+
+    const timer = setInterval(check, 120000);
+    const onVisible = () => check();
+    document.addEventListener("visibilitychange", onVisible);
+    check();
+    return () => { alive = false; clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
+  }, []);
+
+  return stale;
+}
+
 // The in-app version of the same alert. macOS and Chrome can both swallow a
 // desktop notification without telling the page, so the preview also shows here.
 function ChatToast({ title, body, onOpen, onClose }: { title: string; body: string; onOpen: () => void; onClose: () => void }) {
@@ -1855,7 +1893,9 @@ function useChatPulse(currentUserId: number, mutedChannelId: number | null) {
           if (Number(c.last_user_id) === currentUserId) continue;
           // Reading the chat screen right now is its own notification.
           // The thread you are looking at right now announces itself.
-          if (mutedRef.current === c.id && document.visibilityState === "visible") continue;
+          // Quiet only for the thread genuinely in front of you — another window
+          // on top means you are not reading it.
+          if (mutedRef.current === c.id && document.visibilityState === "visible" && document.hasFocus()) continue;
           setIncoming({ channelId: c.id, messageId: last });
           notifyBrowser(channelLabel(c), `${c.last_author ?? "Someone"}: ${c.last_body || "sent an attachment"}`, `${c.id}-${last}`);
         }
@@ -1884,7 +1924,20 @@ function useChatPulse(currentUserId: number, mutedChannelId: number | null) {
 // button rather than something the app does on load.
 function NotificationOptIn({ compact }: { compact?: boolean }) {
   const [permission, setPermission] = useState(typeof Notification === "undefined" ? "unsupported" : Notification.permission);
-  if (permission === "granted" || permission === "unsupported") return null;
+  const [tested, setTested] = useState(false);
+  if (permission === "unsupported") return null;
+
+  // Permission can read as granted while macOS or Chrome quietly drops the
+  // notification, so give people a one-click way to find out which it is.
+  if (permission === "granted") {
+    return (
+      <button type="button"
+        onClick={() => { notifyBrowser("Fast HRMS", "Test notification — desktop alerts are working.", `test-${Date.now()}`); setTested(true); }}
+        className={classNames("text-xs font-semibold text-slate-500 hover:text-brand", compact && "w-full px-4 py-2 text-left")}>
+        {tested ? "Sent — no banner? Allow Chrome in System Settings → Notifications." : "Send a test notification"}
+      </button>
+    );
+  }
 
   if (permission === "denied") {
     return (

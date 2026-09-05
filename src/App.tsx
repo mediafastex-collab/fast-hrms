@@ -437,7 +437,23 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   // Collapsed rail vs. full-width nav, remembered between visits.
   const [chatTarget, setChatTarget] = useState<number | null>(null);
   // Polled once for the whole app so messages reach you on any screen.
-  const { channels: chatChannels, incoming: chatIncoming } = useChatPulse(user.id, view === "chat");
+  const [activeChatId, setActiveChatId] = useState<number | null>(null);
+  const { channels: chatChannels, incoming: chatIncoming } = useChatPulse(user.id, view === "chat" ? activeChatId : null);
+  const [toast, setToast] = useState<{ channelId: number; title: string; body: string } | null>(null);
+
+  // On the chat screen the dock is hidden, so the preview shows as a toast.
+  useEffect(() => {
+    if (!chatIncoming) return;
+    const c = chatChannels.find((x) => x.id === chatIncoming.channelId);
+    if (!c) return;
+    setToast({
+      channelId: c.id,
+      title: channelLabel(c),
+      body: `${c.last_author ? `${c.last_author}: ` : ""}${c.last_body || "sent an attachment"}`,
+    });
+    const timer = setTimeout(() => setToast(null), 7000);
+    return () => clearTimeout(timer);
+  }, [chatIncoming?.messageId]);
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("fast_hrms_nav") !== "collapsed");
   useEffect(() => { localStorage.setItem("fast_hrms_nav", navOpen ? "open" : "collapsed"); }, [navOpen]);
   const nav = [
@@ -550,7 +566,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           {view === "departments" && isAdmin ? <Departments /> : null}
           {view === "attendance" ? <Attendance isAdmin={isAdmin} /> : null}
           {view === "tasks" ? <Tasks isAdmin={isAdmin} /> : null}
-          {view === "chat" ? <Chat currentUserId={user.id} initialChannelId={chatTarget} /> : null}
+          {view === "chat" ? <Chat currentUserId={user.id} initialChannelId={chatTarget} onActiveChannel={setActiveChatId} /> : null}
           {view === "leave" ? <Leave isAdmin={isAdmin} /> : null}
           {view === "payroll" ? <Payroll isAdmin={isAdmin} /> : null}
           {view === "holidays" ? <Holidays isAdmin={isAdmin} /> : null}
@@ -560,6 +576,12 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           {view === "profile" && !isAdmin ? <Profile /> : null}
         </main>
       </div>
+
+      {view === "chat" && toast ? (
+        <ChatToast title={toast.title} body={toast.body}
+          onOpen={() => { setChatTarget(toast.channelId); setToast(null); }}
+          onClose={() => setToast(null)} />
+      ) : null}
 
       {/* The dock stands in for chat everywhere except the chat screen itself. */}
       {view !== "chat" ? (
@@ -1779,22 +1801,43 @@ function presenceLabel(status?: string | null) {
 }
 
 // A desktop notification, when the browser has been given permission.
-function notifyBrowser(title: string, body: string) {
+function notifyBrowser(title: string, body: string, tag: string) {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
   try {
-    new Notification(title, { body: body.slice(0, 140), tag: `chat-${title}`, icon: "/favicon.svg" });
+    // A tag per message, so a second message doesn't silently replace the first.
+    const n = new Notification(title, { body: body.slice(0, 140), tag: `chat-${tag}` });
+    n.onclick = () => { window.focus(); n.close(); };
   } catch { /* some browsers only allow this from a service worker */ }
+}
+
+// The in-app version of the same alert. macOS and Chrome can both swallow a
+// desktop notification without telling the page, so the preview also shows here.
+function ChatToast({ title, body, onOpen, onClose }: { title: string; body: string; onOpen: () => void; onClose: () => void }) {
+  return (
+    <div className="fixed bottom-6 right-6 z-50 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-line bg-white shadow-xl">
+      <div className="flex items-start gap-3 p-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">
+          {initialsOf(title.replace(/^#/, ""))}
+        </span>
+        <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+          <span className="block truncate text-sm font-semibold text-ink">{title}</span>
+          <span className="mt-0.5 block truncate text-xs text-slate-500">{body}</span>
+        </button>
+        <button type="button" aria-label="Dismiss" className="shrink-0 text-slate-400 hover:text-ink" onClick={onClose}><X size={15} /></button>
+      </div>
+    </div>
+  );
 }
 
 // One poll for the whole app: it feeds the messenger dock and raises a desktop
 // notification whenever someone else's message lands.
-function useChatPulse(currentUserId: number, muted: boolean) {
+function useChatPulse(currentUserId: number, mutedChannelId: number | null) {
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [incoming, setIncoming] = useState<{ channelId: number; messageId: number } | null>(null);
-  const mutedRef = useRef(muted);
+  const mutedRef = useRef(mutedChannelId);
   const seen = useRef(new Map<number, number>());
   const primed = useRef(false);
-  mutedRef.current = muted;
+  mutedRef.current = mutedChannelId;
 
   useEffect(() => {
     let alive = true;
@@ -1811,10 +1854,10 @@ function useChatPulse(currentUserId: number, muted: boolean) {
           if (!primed.current || before === undefined || last <= before) continue;
           if (Number(c.last_user_id) === currentUserId) continue;
           // Reading the chat screen right now is its own notification.
-          // Pops the dock open, the way a messenger window announces itself.
+          // The thread you are looking at right now announces itself.
+          if (mutedRef.current === c.id && document.visibilityState === "visible") continue;
           setIncoming({ channelId: c.id, messageId: last });
-          if (mutedRef.current && document.visibilityState === "visible") continue;
-          notifyBrowser(channelLabel(c), `${c.last_author ?? "Someone"}: ${c.last_body || "sent an attachment"}`);
+          notifyBrowser(channelLabel(c), `${c.last_author ?? "Someone"}: ${c.last_body || "sent an attachment"}`, `${c.id}-${last}`);
         }
         primed.current = true;
       } catch { /* logged out or offline — try again next tick */ }
@@ -2010,7 +2053,9 @@ function highlightMentions(body: string, people: ChatPerson[], onBrand = false) 
     : part));
 }
 
-function Chat({ currentUserId, initialChannelId }: { currentUserId: number; initialChannelId?: number | null }) {
+function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
+  currentUserId: number; initialChannelId?: number | null; onActiveChannel?: (id: number | null) => void;
+}) {
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [people, setPeople] = useState<ChatPerson[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -2032,7 +2077,9 @@ function Chat({ currentUserId, initialChannelId }: { currentUserId: number; init
   const endRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const activeIdRef = useRef<number | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
   activeIdRef.current = activeId;
+  messagesRef.current = messages;
 
   const mentionMatches = useMemo(() => {
     if (mentionQuery === null) return [];
@@ -2069,10 +2116,19 @@ function Chat({ currentUserId, initialChannelId }: { currentUserId: number; init
 
   async function loadMessages(channelId: number, incremental = false) {
     try {
-      const after = incremental && messages.length ? messages[messages.length - 1].id : 0;
+      // Read the cursor from the ref, not from a render-time closure: the 3s poll
+      // and the load right after sending used to compute the same "after" and
+      // each append the same row, which is why a sent message appeared twice.
+      const current = messagesRef.current;
+      const after = incremental && current.length ? current[current.length - 1].id : 0;
       const d = await api<{ messages: ChatMessage[] }>(`/chat/channels/${channelId}/messages?after=${after}`);
       if (!d.messages.length) return;
-      setMessages((prev) => (incremental ? [...prev, ...d.messages] : d.messages));
+      setMessages((prev) => {
+        if (!incremental) return d.messages;
+        const known = new Set(prev.map((m) => m.id));
+        const fresh = d.messages.filter((m) => !known.has(m.id));
+        return fresh.length ? [...prev, ...fresh] : prev;
+      });
       const lastId = d.messages[d.messages.length - 1].id;
       await api(`/chat/channels/${channelId}/read`, { method: "POST", body: JSON.stringify({ last_message_id: lastId }) }).catch(() => undefined);
     } catch (err) {
@@ -2085,8 +2141,11 @@ function Chat({ currentUserId, initialChannelId }: { currentUserId: number; init
     api<{ people: ChatPerson[] }>("/chat/directory").then((d) => setPeople(d.people)).catch(() => undefined);
   }, []);
 
-  // Opened from the messenger dock — jump straight to that conversation.
+  // Opened from the messenger dock or a toast — jump straight to that conversation.
   useEffect(() => { if (initialChannelId) setActiveId(initialChannelId); }, [initialChannelId]);
+
+  // Tell the shell which thread is open so it stays quiet about that one only.
+  useEffect(() => { onActiveChannel?.(activeId); return () => onActiveChannel?.(null); }, [activeId]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -2104,7 +2163,7 @@ function Chat({ currentUserId, initialChannelId }: { currentUserId: number; init
       loadChannels();
     }, 3000);
     return () => clearInterval(t);
-  }, [messages]);
+  }, []);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
 

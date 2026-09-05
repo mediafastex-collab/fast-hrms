@@ -1590,25 +1590,12 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
     if (isAdmin && employeeId) search.set("employeeId", employeeId);
     const data = await api<{ attendance: AttendanceRecord[]; employees?: Employee[] }>(`/attendance?${search.toString()}`);
     setRows(data.attendance);
-    if (data.employees) {
-      setEmployees(data.employees);
-      if (isAdmin && !employeeId && data.employees[0]) setEmployeeId(String(data.employees[0].id));
-    }
+    if (data.employees) setEmployees(data.employees);
   }
 
   useEffect(() => {
     load().catch(console.error);
   }, [month, year, employeeId, reloadKey]);
-
-  async function mark(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    await api("/attendance/manual", {
-      method: "POST",
-      body: JSON.stringify(Object.fromEntries(form.entries())),
-    });
-    await load();
-  }
 
   function handleEditClick(record: AttendanceRecord) {
     setEditingAttendance(record);
@@ -1671,7 +1658,7 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
     <section className="space-y-5">
       <PageTitle
         title="Attendance"
-        description={isAdmin ? "Pick a month to review attendance, correct days, and mark records." : "Your attendance for the selected month."}
+        description={isAdmin ? "Everyone's attendance for the month — filter by employee to narrow it down." : "Your attendance for the selected month."}
         action={isAdmin ? <a className="btn btn-soft" href={`/api/attendance.csv?${new URLSearchParams({ start: monthStart, end: monthEnd, ...(employeeId ? { employeeId } : {}) }).toString()}`}><Download size={17} />CSV</a> : null}
       />
 
@@ -1680,6 +1667,7 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
         {isAdmin ? (
           <Field label="Employee">
             <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+              <option value="">All employees</option>
               {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
             </select>
           </Field>
@@ -1693,16 +1681,6 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
         <button type="button" className="btn btn-primary self-end" onClick={() => setReloadKey((k) => k + 1)}><RefreshCcw size={17} />Refresh</button>
       </div>
 
-      {isAdmin ? (
-        <form onSubmit={mark} className="card grid gap-3 p-4 md:grid-cols-6">
-          <Field label="Employee"><select name="employee_id" className="input">{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}</select></Field>
-          <Field label="Date"><input name="attendance_date" className="input" type="date" defaultValue={today} /></Field>
-          <Field label="Check in"><input name="check_in" className="input" type="time" defaultValue="09:30" /></Field>
-          <Field label="Check out"><input name="check_out" className="input" type="time" defaultValue="18:30" /></Field>
-          <Field label="Status"><select name="status" className="input"><option>Present</option><option>Absent</option><option>Half Day</option><option>Late</option><option>On Leave</option></select></Field>
-          <button className="btn btn-primary self-end">Mark</button>
-        </form>
-      ) : null}
       <DayRequests isAdmin={isAdmin} />
 
       <DataTable

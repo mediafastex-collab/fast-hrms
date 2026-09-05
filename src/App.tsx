@@ -180,7 +180,13 @@ type DashboardSummary = {
   salaryDoneCount: number;
   estimatedMonthlyPayroll: number;
   lastMonthPayable?: number;
+  lastMonthOutstanding?: number;
+  lastMonthPaid?: number;
   lastMonthLabel?: string;
+  taskTotal?: number;
+  taskDone?: number;
+  taskOngoing?: number;
+  taskPending?: number;
 };
 
 type EmployeeSummary = {
@@ -431,7 +437,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   // Collapsed rail vs. full-width nav, remembered between visits.
   const [chatTarget, setChatTarget] = useState<number | null>(null);
   // Polled once for the whole app so messages reach you on any screen.
-  const chatChannels = useChatPulse(user.id, view === "chat");
+  const { channels: chatChannels, incoming: chatIncoming } = useChatPulse(user.id, view === "chat");
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("fast_hrms_nav") !== "collapsed");
   useEffect(() => { localStorage.setItem("fast_hrms_nav", navOpen ? "open" : "collapsed"); }, [navOpen]);
   const nav = [
@@ -557,7 +563,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
 
       {/* The dock stands in for chat everywhere except the chat screen itself. */}
       {view !== "chat" ? (
-        <MessengerDock channels={chatChannels} onOpen={(id) => { setChatTarget(id); choose("chat"); }} />
+        <MessengerDock channels={chatChannels} incoming={chatIncoming} onOpen={(id) => { setChatTarget(id); choose("chat"); }} />
       ) : null}
     </div>
   );
@@ -580,11 +586,25 @@ function AdminDashboard() {
     <section className="space-y-5">
       <PageTitle title="Dashboard" description="Today's attendance and last month's payroll at a glance." />
 
-      {/* Headline: what actually needs paying */}
+      {/* Headline: what is still to go out, not what the month cost. */}
       <div className="card border-l-4 border-l-brand bg-gradient-to-r from-orange-50 to-white p-6">
-        <p className="text-xs font-semibold uppercase tracking-wider text-brand">Payable · {summary.lastMonthLabel ?? "last month"}</p>
-        <p className="mt-1 text-4xl font-extrabold text-ink">{currency.format(summary.lastMonthPayable ?? 0)}</p>
-        <p className="mt-1 text-sm text-slate-500">Actual amount after attendance deductions, across {summary.totalEmployees} active employee{summary.totalEmployees === 1 ? "" : "s"}.</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-brand">Outstanding · {summary.lastMonthLabel ?? "last month"}</p>
+        <p className="mt-1 text-4xl font-extrabold text-ink">{currency.format(summary.lastMonthOutstanding ?? summary.lastMonthPayable ?? 0)}</p>
+        <p className="mt-1 text-sm text-slate-500">
+          Still to pay after attendance deductions.
+          {summary.lastMonthPaid ? ` ${currency.format(summary.lastMonthPaid)} already paid of ${currency.format(summary.lastMonthPayable ?? 0)}.` : ` Across ${summary.totalEmployees} active employee${summary.totalEmployees === 1 ? "" : "s"}.`}
+        </p>
+      </div>
+
+      {/* Work at a glance */}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Tasks</p>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard icon={ClipboardList} label="Total tasks" value={summary.taskTotal ?? 0} />
+          <StatCard icon={CheckCircle2} label="Completed" value={summary.taskDone ?? 0} />
+          <StatCard icon={RefreshCcw} label="Ongoing" value={summary.taskOngoing ?? 0} />
+          <StatCard icon={Clock3} label="Pending" value={summary.taskPending ?? 0} />
+        </div>
       </div>
 
       {/* Today */}
@@ -1770,6 +1790,7 @@ function notifyBrowser(title: string, body: string) {
 // notification whenever someone else's message lands.
 function useChatPulse(currentUserId: number, muted: boolean) {
   const [channels, setChannels] = useState<ChatChannel[]>([]);
+  const [incoming, setIncoming] = useState<{ channelId: number; messageId: number } | null>(null);
   const mutedRef = useRef(muted);
   const seen = useRef(new Map<number, number>());
   const primed = useRef(false);
@@ -1790,6 +1811,8 @@ function useChatPulse(currentUserId: number, muted: boolean) {
           if (!primed.current || before === undefined || last <= before) continue;
           if (Number(c.last_user_id) === currentUserId) continue;
           // Reading the chat screen right now is its own notification.
+          // Pops the dock open, the way a messenger window announces itself.
+          setIncoming({ channelId: c.id, messageId: last });
           if (mutedRef.current && document.visibilityState === "visible") continue;
           notifyBrowser(channelLabel(c), `${c.last_author ?? "Someone"}: ${c.last_body || "sent an attachment"}`);
         }
@@ -1798,27 +1821,60 @@ function useChatPulse(currentUserId: number, muted: boolean) {
     }
     tick();
     const t = setInterval(tick, 5000);
-    return () => { alive = false; clearInterval(t); };
+    // Browsers throttle timers in a background tab, so catch up the moment the
+    // tab is looked at again rather than waiting for the next slow tick.
+    const onVisible = () => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      alive = false;
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
   }, [currentUserId]);
 
-  return channels;
+  return { channels, incoming };
+}
+
+// Asking for notification permission has to come from a click, so this is a
+// button rather than something the app does on load.
+function NotificationOptIn({ compact }: { compact?: boolean }) {
+  const [permission, setPermission] = useState(typeof Notification === "undefined" ? "unsupported" : Notification.permission);
+  if (permission === "granted" || permission === "unsupported") return null;
+
+  if (permission === "denied") {
+    return (
+      <p className={classNames("text-xs text-slate-500", compact && "px-4 py-2")}>
+        Desktop notifications are blocked for this site. Turn them back on in your browser's site settings (the icon beside the address bar).
+      </p>
+    );
+  }
+
+  return (
+    <button type="button" onClick={async () => setPermission(await Notification.requestPermission())}
+      className={classNames(
+        "flex items-center gap-2 text-xs font-semibold text-brand",
+        compact ? "w-full border-b border-line bg-orange-50 px-4 py-2 text-left" : "rounded-full border border-brand/40 bg-orange-50 px-3 py-1.5",
+      )}>
+      <Bell size={13} />Turn on desktop notifications
+    </button>
+  );
 }
 
 // Messenger-style dock: a bubble with the unread count that opens a preview of
 // recent conversations and drops you into the full chat screen.
-function MessengerDock({ channels, onOpen }: { channels: ChatChannel[]; onOpen: (id: number) => void }) {
+function MessengerDock({ channels, incoming, onOpen }: {
+  channels: ChatChannel[]; incoming: { channelId: number; messageId: number } | null; onOpen: (id: number) => void;
+}) {
   const [open, setOpen] = useState(false);
-  const [permission, setPermission] = useState(typeof Notification === "undefined" ? "denied" : Notification.permission);
+  // A new message pops the panel open by itself.
+  useEffect(() => { if (incoming) setOpen(true); }, [incoming?.messageId]);
   const unread = channels.reduce((n, c) => n + (c.unread || 0), 0);
   const recent = [...channels]
     .filter((c) => c.last_at)
     .sort((a, b) => String(b.last_at).localeCompare(String(a.last_at)))
     .slice(0, 6);
-
-  async function askPermission() {
-    if (typeof Notification === "undefined") return;
-    setPermission(await Notification.requestPermission());
-  }
 
   return (
     <div className="fixed bottom-6 right-6 z-40">
@@ -1828,12 +1884,7 @@ function MessengerDock({ channels, onOpen }: { channels: ChatChannel[]; onOpen: 
             <h3 className="font-bold text-ink">Messages</h3>
             <button type="button" aria-label="Close messages" className="text-slate-400 hover:text-ink" onClick={() => setOpen(false)}><X size={16} /></button>
           </div>
-          {permission === "default" ? (
-            <button type="button" onClick={askPermission}
-              className="flex w-full items-center gap-2 border-b border-line bg-orange-50 px-4 py-2 text-left text-xs font-semibold text-brand">
-              <Bell size={13} />Turn on desktop notifications
-            </button>
-          ) : null}
+          <NotificationOptIn compact />
           <div className="max-h-80 overflow-y-auto">
             {recent.length ? recent.map((c) => (
               <button key={c.id} type="button" onClick={() => { setOpen(false); onOpen(c.id); }}
@@ -2121,7 +2172,8 @@ function Chat({ currentUserId, initialChannelId }: { currentUserId: number; init
 
   return (
     <section className="space-y-4">
-      <PageTitle title="Chat" description="Talk to your team — channels for topics, direct messages for one-to-one." />
+      <PageTitle title="Chat" description="Talk to your team — channels for topics, direct messages for one-to-one."
+        action={<NotificationOptIn />} />
       {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
 
       <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
@@ -2373,6 +2425,68 @@ function dueLabel(due?: string | null) {
   return due;
 }
 
+type PickerOption = { id: number; label: string; hint?: string };
+
+// One compact control instead of a row of chips: click to open, type to search.
+function SearchSelect({ label, value, options, allLabel, placeholder, onChange, disabled, trailing }: {
+  label: string;
+  value: number;
+  options: PickerOption[];
+  allLabel: string;
+  placeholder?: string;
+  onChange: (id: number) => void;
+  disabled?: boolean;
+  trailing?: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const selected = options.find((o) => o.id === value);
+  const matches = options.filter((o) => o.label.toLowerCase().includes(query.trim().toLowerCase()));
+
+  return (
+    <div className="relative">
+      <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
+      <div className="flex items-center gap-1">
+        <button type="button" disabled={disabled} onClick={() => { setOpen((v) => !v); setQuery(""); }}
+          className={classNames(
+            "flex h-9 min-w-[9rem] items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition",
+            disabled ? "cursor-not-allowed border-line bg-stone-50 text-slate-300" : "border-line bg-white text-stone-700 hover:border-stone-300",
+          )}>
+          <span className="min-w-0 flex-1 truncate text-left">{selected ? selected.label : allLabel}</span>
+          <ChevronDown size={14} className="shrink-0 text-slate-400" />
+        </button>
+        {trailing}
+      </div>
+
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 z-30 mt-1 w-64 overflow-hidden rounded-xl border border-line bg-white shadow-lg">
+            <div className="border-b border-line p-2">
+              <input autoFocus className="input h-8 py-0 text-sm" placeholder={placeholder ?? "Search…"}
+                value={query} onChange={(e) => setQuery(e.target.value)} />
+            </div>
+            <div className="max-h-60 overflow-y-auto py-1">
+              <button type="button" onClick={() => { onChange(0); setOpen(false); }}
+                className={classNames("flex w-full px-3 py-2 text-left text-sm", !value ? "bg-orange-50 font-semibold text-brand" : "text-stone-600 hover:bg-stone-50")}>
+                {allLabel}
+              </button>
+              {matches.map((o) => (
+                <button key={o.id} type="button" onClick={() => { onChange(o.id); setOpen(false); }}
+                  className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", o.id === value ? "bg-orange-50 font-semibold text-brand" : "text-stone-600 hover:bg-stone-50")}>
+                  <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                  {o.hint ? <span className="shrink-0 text-[11px] text-slate-400">{o.hint}</span> : null}
+                </button>
+              ))}
+              {!matches.length ? <p className="px-3 py-4 text-center text-xs text-slate-400">No match.</p> : null}
+            </div>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [spaces, setSpaces] = useState<WorkSpace[]>([]);
   const [lists, setLists] = useState<WorkList[]>([]);
@@ -2382,6 +2496,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [spaceId, setSpaceId] = useState(0);
   const [listId, setListId] = useState(0);
   const [mine, setMine] = useState(!isAdmin);
+  const [assigneeId, setAssigneeId] = useState(0);
   const [message, setMessage] = useState("");
   const [openTask, setOpenTask] = useState<WorkTask | null>(null);
   const [newOpen, setNewOpen] = useState<{ status: string; listId: string } | null>(null);
@@ -2390,6 +2505,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [editing, setEditing] = useState<{ kind: "spaces" | "lists"; id: number } | null>(null);
   const [draft, setDraft] = useState("");
   const [dragId, setDragId] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState<string | null>(null);
 
   async function loadMeta() {
     const m = await api<{ spaces: WorkSpace[]; lists: WorkList[]; people: WorkPerson[] }>("/work/meta");
@@ -2401,6 +2517,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     if (listId) p.set("listId", String(listId));
     else if (spaceId) p.set("spaceId", String(spaceId));
     if (mine) p.set("mine", "1");
+    if (assigneeId) p.set("assigneeId", String(assigneeId));
     const d = await api<{ tasks: WorkTask[] }>(`/work/tasks?${p.toString()}`);
     setTasks(d.tasks);
   }
@@ -2410,7 +2527,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   }
 
   useEffect(() => { loadMeta().catch(() => undefined); }, []);
-  useEffect(() => { refresh(); }, [spaceId, listId, mine]);
+  useEffect(() => { refresh(); }, [spaceId, listId, mine, assigneeId]);
 
   // Only approved spaces/lists hold work; pending ones just wait for a decision.
   const activeSpaces = spaces.filter((s) => s.status === "Active");
@@ -2479,11 +2596,6 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const done = tasks.filter((t) => t.status === "Done").length;
   const overdue = tasks.filter((t) => t.due_date && t.status !== "Done" && Date.parse(t.due_date) < Date.parse(today)).length;
 
-  const pill = (active: boolean) => classNames(
-    "flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold transition",
-    active ? "border-brand bg-orange-50 text-brand" : "border-line bg-white text-stone-600 hover:border-stone-300",
-  );
-
   const nameInput = (
     <input autoFocus className="input h-7 w-40 py-0 text-xs" value={draft} onChange={(e) => setDraft(e.target.value)}
       onBlur={commitEdit} onKeyDown={(e) => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditing(null); }} />
@@ -2522,56 +2634,55 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
 
       {/* Everything you steer the board with sits together, right under the title. */}
       <div className="card divide-y divide-line">
-        <div className="flex flex-wrap items-center gap-2 p-3">
-          <span className="w-12 text-[10px] font-bold uppercase tracking-wider text-slate-400">Spaces</span>
-          <button type="button" className={pill(!spaceId)} onClick={() => { setSpaceId(0); setListId(0); }}>All</button>
-          {activeSpaces.map((s) => (editing?.kind === "spaces" && editing.id === s.id ? (
-            <span key={s.id}>{nameInput}</span>
-          ) : (
-            <span key={s.id} className={pill(spaceId === s.id)}>
-              <button type="button" onClick={() => { setSpaceId(s.id); setListId(0); }}>{s.name}</button>
-              {isAdmin && spaceId === s.id ? (
-                <>
-                  <button type="button" aria-label="Rename space" className="text-slate-400 hover:text-ink" onClick={() => startEdit("spaces", s.id, s.name)}><Pencil size={11} /></button>
-                  <button type="button" aria-label="Delete space" className="text-slate-400 hover:text-rose-600"
-                    onClick={() => remove("spaces", s.id, `Delete the space "${s.name}"? This also deletes ${s.list_count} list(s) and ${s.task_count} task(s).`)}>
-                    <Trash2 size={11} />
-                  </button>
-                </>
-              ) : null}
-            </span>
-          )))}
-          <button type="button" onClick={() => setNewSpaceOpen(true)}
-            className="ml-auto flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold text-slate-400 transition hover:text-brand">
-            <Plus size={13} />{isAdmin ? "Space" : "Request space"}
-          </button>
-        </div>
+        <div className="flex flex-wrap items-end gap-3 p-3">
+          <SearchSelect
+            label="Space" allLabel="All spaces" placeholder="Search spaces…"
+            value={spaceId} options={activeSpaces.map((sp) => ({ id: sp.id, label: sp.name }))}
+            onChange={(id) => { setSpaceId(id); setListId(0); }}
+            trailing={isAdmin && spaceId ? (
+              <>
+                <button type="button" aria-label="Rename space" className="rounded p-1 text-slate-400 hover:text-ink"
+                  onClick={() => { const sp = activeSpaces.find((x) => x.id === spaceId); if (sp) startEdit("spaces", sp.id, sp.name); }}><Pencil size={13} /></button>
+                <button type="button" aria-label="Delete space" className="rounded p-1 text-slate-400 hover:text-rose-600"
+                  onClick={() => { const sp = activeSpaces.find((x) => x.id === spaceId); if (sp) remove("spaces", sp.id, `Delete the space "${sp.name}"? This also deletes ${sp.list_count} list(s) and ${sp.task_count} task(s).`); }}><Trash2 size={13} /></button>
+              </>
+            ) : undefined}
+          />
 
-        <div className="flex flex-wrap items-center gap-2 p-3">
-          <span className="w-12 text-[10px] font-bold uppercase tracking-wider text-slate-400">Lists</span>
-          <button type="button" className={pill(!listId)} onClick={() => setListId(0)}>All</button>
-          {visibleLists.map((l) => (editing?.kind === "lists" && editing.id === l.id ? (
-            <span key={l.id}>{nameInput}</span>
-          ) : (
-            <span key={l.id} className={pill(listId === l.id)}>
-              <button type="button" onClick={() => { setListId(l.id); setSpaceId(l.space_id); }}>{l.name}</button>
-              {l.task_count ? <span className="text-[10px] text-slate-400">{l.task_count}</span> : null}
-              {isAdmin && listId === l.id ? (
-                <>
-                  <button type="button" aria-label="Rename list" className="text-slate-400 hover:text-ink" onClick={() => startEdit("lists", l.id, l.name)}><Pencil size={11} /></button>
-                  <button type="button" aria-label="Delete list" className="text-slate-400 hover:text-rose-600"
-                    onClick={() => remove("lists", l.id, `Delete the list "${l.name}"? This also deletes its ${l.task_count} task(s).`)}>
-                    <Trash2 size={11} />
-                  </button>
-                </>
-              ) : null}
-            </span>
-          )))}
-          {!visibleLists.length ? <span className="text-xs text-slate-400">No lists in this space yet.</span> : null}
-          <button type="button" onClick={() => setNewListFor(spaceId || activeSpaces[0]?.id || 0)}
-            className="ml-auto flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold text-slate-400 transition hover:text-brand">
-            <Plus size={13} />{isAdmin ? "List" : "Request list"}
-          </button>
+          <SearchSelect
+            label="List" allLabel="All lists" placeholder="Search lists…"
+            value={listId} options={visibleLists.map((l) => ({ id: l.id, label: l.name, hint: l.task_count ? String(l.task_count) : undefined }))}
+            onChange={(id) => { setListId(id); const l = activeLists.find((x) => x.id === id); if (l) setSpaceId(l.space_id); }}
+            trailing={isAdmin && listId ? (
+              <>
+                <button type="button" aria-label="Rename list" className="rounded p-1 text-slate-400 hover:text-ink"
+                  onClick={() => { const l = activeLists.find((x) => x.id === listId); if (l) startEdit("lists", l.id, l.name); }}><Pencil size={13} /></button>
+                <button type="button" aria-label="Delete list" className="rounded p-1 text-slate-400 hover:text-rose-600"
+                  onClick={() => { const l = activeLists.find((x) => x.id === listId); if (l) remove("lists", l.id, `Delete the list "${l.name}"? This also deletes its ${l.task_count} task(s).`); }}><Trash2 size={13} /></button>
+              </>
+            ) : undefined}
+          />
+
+          {isAdmin ? (
+            <SearchSelect
+              label="Assignee" allLabel="Everyone" placeholder="Search people…"
+              value={assigneeId} options={people.map((pp) => ({ id: pp.id, label: pp.display_name }))}
+              onChange={(id) => { setAssigneeId(id); if (id) setMine(false); }}
+            />
+          ) : null}
+
+          {editing ? <div className="self-end pb-1">{nameInput}</div> : null}
+
+          <div className="ml-auto flex items-end gap-2">
+            <button type="button" onClick={() => setNewSpaceOpen(true)}
+              className="flex items-center gap-1 rounded-full px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:text-brand">
+              <Plus size={13} />{isAdmin ? "Space" : "Request space"}
+            </button>
+            <button type="button" onClick={() => setNewListFor(spaceId || activeSpaces[0]?.id || 0)}
+              className="flex items-center gap-1 rounded-full px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:text-brand">
+              <Plus size={13} />{isAdmin ? "List" : "Request list"}
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-3 p-3">
@@ -2583,7 +2694,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
           </div>
           {isAdmin ? (
             <label className="flex cursor-pointer items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-stone-600">
-              <input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} />
+              <input type="checkbox" checked={mine} onChange={(e) => { setMine(e.target.checked); if (e.target.checked) setAssigneeId(0); }} />
               My tasks
             </label>
           ) : null}
@@ -2604,9 +2715,19 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         <div className="flex items-start gap-3 overflow-x-auto pb-2">
           {WORK_STATUSES.map((status) => (
             <div key={status}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => { const t = tasks.find((x) => x.id === dragId); if (t && t.status !== status) setStatus(t, status); setDragId(null); }}
-              className="flex w-[240px] shrink-0 grow flex-col rounded-2xl bg-stone-50/80 p-2">
+              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (dragOver !== status) setDragOver(status); }}
+              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver((d) => (d === status ? null : d)); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const id = dragId ?? Number(e.dataTransfer.getData("text/plain"));
+                const t = tasks.find((x) => x.id === id);
+                if (t && t.status !== status) setStatus(t, status);
+                setDragId(null); setDragOver(null);
+              }}
+              className={classNames(
+                "flex w-[240px] shrink-0 grow flex-col rounded-2xl p-2 transition",
+                dragOver === status ? "bg-orange-50 ring-2 ring-brand/40" : "bg-stone-50/80",
+              )}>
               <div className="flex items-center gap-2 px-1 pb-2">
                 <span className={classNames("h-1.5 w-1.5 rounded-full", statusBar[status])} />
                 <span className="text-xs font-bold uppercase tracking-wide text-stone-500">{status}</span>
@@ -2614,8 +2735,15 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
               </div>
               <div className="flex-1 space-y-2">
                 {(grouped[status] ?? []).map((t) => (
-                  <button key={t.id} type="button" draggable onDragStart={() => setDragId(t.id)} onClick={() => setOpenTask(t)}
-                    className="w-full rounded-xl border border-line bg-white p-3 text-left transition hover:border-stone-300 hover:shadow-sm">
+                  <div key={t.id} role="button" tabIndex={0} draggable
+                    onDragStart={(e) => { setDragId(t.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(t.id)); }}
+                    onDragEnd={() => { setDragId(null); setDragOver(null); }}
+                    onClick={() => setOpenTask(t)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenTask(t); } }}
+                    className={classNames(
+                      "w-full cursor-grab rounded-xl border border-line bg-white p-3 text-left transition hover:border-stone-300 hover:shadow-sm active:cursor-grabbing",
+                      dragId === t.id && "opacity-40",
+                    )}>
                     <p className="text-sm font-semibold leading-snug text-ink">{t.title}</p>
                     {!listId ? <p className="mt-1 truncate text-[11px] text-slate-400">{t.list_name}</p> : null}
                     <div className="mt-2 flex items-center gap-2">
@@ -2630,7 +2758,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                         ))}
                       </span>
                     </div>
-                  </button>
+                  </div>
                 ))}
                 <button type="button" onClick={() => setNewOpen({ status, listId: defaultListId })}
                   className="flex w-full items-center gap-1 rounded-xl px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-white hover:text-brand">
@@ -3215,6 +3343,10 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
   const [breakdownEmployees, setBreakdownEmployees] = useState<Employee[]>([]);
   const [breakdownEmployeeId, setBreakdownEmployeeId] = useState("");
 
+  const unpaidRows = rows.filter((r) => r.status !== "Done");
+  const outstandingTotal = unpaidRows.reduce((sum, r) => sum + (Number(r.net_salary) || 0), 0);
+  const paidTotal = rows.filter((r) => r.status === "Done").reduce((sum, r) => sum + (Number(r.net_salary) || 0), 0);
+
   // A month is generatable only if it's strictly before the current month.
   const curIndex = now.getFullYear() * 12 + (now.getMonth() + 1);
   const genIsPast = genYear * 12 + genMonth < curIndex;
@@ -3345,6 +3477,27 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
     <section className="space-y-5">
       <PageTitle title="Salary & Payroll" description={isAdmin ? "Generate salary for completed months, mark it paid, and issue payslips." : "Your salary history. Payslip PDF is available once your salary is marked paid."} />
       {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+
+      {/* What is still to go out for the rows on screen, and what already has. */}
+      {isAdmin && rows.length ? (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="card p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Outstanding</p>
+            <p className="mt-1 text-2xl font-bold text-rose-600">{currency.format(outstandingTotal)}</p>
+            <p className="text-xs text-slate-400">{unpaidRows.length} unpaid</p>
+          </div>
+          <div className="card p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Paid</p>
+            <p className="mt-1 text-2xl font-bold text-emerald-600">{currency.format(paidTotal)}</p>
+            <p className="text-xs text-slate-400">{rows.length - unpaidRows.length} settled</p>
+          </div>
+          <div className="card p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total</p>
+            <p className="mt-1 text-2xl font-bold text-ink">{currency.format(outstandingTotal + paidTotal)}</p>
+            <p className="text-xs text-slate-400">{rows.length} salary rows</p>
+          </div>
+        </div>
+      ) : null}
 
       {/* View controls — defaults to the last 6 months */}
       <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">

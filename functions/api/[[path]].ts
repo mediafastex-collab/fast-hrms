@@ -197,14 +197,33 @@ async function adminSummary(db: D1Database) {
   const lastMonth = curMonth === 1 ? 12 : curMonth - 1;
   const lastMonthYear = curMonth === 1 ? curYear - 1 : curYear;
   const activeEmployees = await db.prepare(employeeSelect("WHERE e.employment_status = 'Active'")).all<Record<string, unknown>>();
+  // Anyone already marked paid for that month drops out, so the figure is what
+  // still has to go out rather than what the month cost.
+  const settled = await db.prepare(
+    "SELECT employee_id, net_salary FROM salaries WHERE salary_month = ? AND salary_year = ? AND status = 'Done'",
+  ).bind(lastMonth, lastMonthYear).all<{ employee_id: number; net_salary: number }>();
+  const paidIds = new Set(settled.results.map((r) => Number(r.employee_id)));
+  const paidTotal = settled.results.reduce((sum, r) => sum + (Number(r.net_salary) || 0), 0);
+
   let lastMonthPayable = 0;
+  let lastMonthOutstanding = 0;
   for (const employee of activeEmployees.results) {
     const days = await monthDayBreakdown(db, employee, lastMonth, lastMonthYear);
     const gross = Number(employee.monthly_salary) || 0;
     const perDay = days.length ? gross / days.length : 0;
     const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
-    lastMonthPayable += gross - perDay * deductionDays;
+    const net = gross - perDay * deductionDays;
+    lastMonthPayable += net;
+    if (!paidIds.has(Number(employee.id))) lastMonthOutstanding += net;
   }
+
+  // Headline task numbers for the dashboard.
+  const [taskTotal, taskDone, taskOngoing, taskPending] = await Promise.all([
+    scalar(db, "SELECT COUNT(*) FROM work_tasks"),
+    scalar(db, "SELECT COUNT(*) FROM work_tasks WHERE status = 'Done'"),
+    scalar(db, "SELECT COUNT(*) FROM work_tasks WHERE status IN ('In Progress', 'In Review')"),
+    scalar(db, "SELECT COUNT(*) FROM work_tasks WHERE status IN ('Backlog', 'To Do')"),
+  ]);
 
   return json({
     summary: {
@@ -217,7 +236,10 @@ async function adminSummary(db: D1Database) {
       salaryDoneCount,
       estimatedMonthlyPayroll,
       lastMonthPayable: Math.round(lastMonthPayable),
+      lastMonthOutstanding: Math.round(lastMonthOutstanding),
+      lastMonthPaid: Math.round(paidTotal),
       lastMonthLabel: `${monthName(lastMonth)} ${lastMonthYear}`,
+      taskTotal, taskDone, taskOngoing, taskPending,
     },
   });
 }
@@ -912,9 +934,15 @@ async function workTasks(db: D1Database, user: AppUser, url: URL) {
   const listId = url.searchParams.get("listId");
   const spaceId = url.searchParams.get("spaceId");
   const mine = url.searchParams.get("mine");
+  const assigneeId = url.searchParams.get("assigneeId");
 
   if (listId) { conditions.push("t.list_id = ?"); params.push(listId); }
   if (spaceId) { conditions.push("l.space_id = ?"); params.push(spaceId); }
+  // Admins can single out one person's workload.
+  if (assigneeId && user.role === "Superadmin") {
+    conditions.push("EXISTS (SELECT 1 FROM work_task_assignees a2 WHERE a2.task_id = t.id AND a2.user_id = ?)");
+    params.push(assigneeId);
+  }
   // Employees only ever see work assigned to them; admins see everything.
   if (mine === "1" || user.role !== "Superadmin") {
     conditions.push("EXISTS (SELECT 1 FROM work_task_assignees a WHERE a.task_id = t.id AND a.user_id = ?)");

@@ -54,6 +54,7 @@ type User = {
   role: Role;
   employeeId?: number;
   employeeName?: string;
+  displayName?: string;
 };
 
 type Employee = {
@@ -428,6 +429,9 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   const isAdmin = user.role === "Superadmin";
   const [mobileOpen, setMobileOpen] = useState(false);
   // Collapsed rail vs. full-width nav, remembered between visits.
+  const [chatTarget, setChatTarget] = useState<number | null>(null);
+  // Polled once for the whole app so messages reach you on any screen.
+  const chatChannels = useChatPulse(user.id, view === "chat");
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("fast_hrms_nav") !== "collapsed");
   useEffect(() => { localStorage.setItem("fast_hrms_nav", navOpen ? "open" : "collapsed"); }, [navOpen]);
   const nav = [
@@ -506,7 +510,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Welcome</p>
-              <h2 className="text-lg font-bold text-ink">{user.employeeName ?? user.email}</h2>
+              <h2 className="text-lg font-bold text-ink">{user.displayName ?? user.employeeName ?? user.email}</h2>
             </div>
             <div className="flex items-center gap-2">
               <NotificationBell />
@@ -534,13 +538,13 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           </nav>
         </header>
 
-        <main className="mx-auto max-w-7xl px-4 py-6">
+        <main className={classNames("mx-auto px-4 py-6", view === "chat" ? "max-w-none" : "max-w-7xl")}>
           {view === "dashboard" ? user.role === "Superadmin" ? <AdminDashboard /> : <EmployeeDashboard /> : null}
           {view === "employees" && isAdmin ? <Employees /> : null}
           {view === "departments" && isAdmin ? <Departments /> : null}
           {view === "attendance" ? <Attendance isAdmin={isAdmin} /> : null}
           {view === "tasks" ? <Tasks isAdmin={isAdmin} /> : null}
-          {view === "chat" ? <Chat currentUserId={user.id} /> : null}
+          {view === "chat" ? <Chat currentUserId={user.id} initialChannelId={chatTarget} /> : null}
           {view === "leave" ? <Leave isAdmin={isAdmin} /> : null}
           {view === "payroll" ? <Payroll isAdmin={isAdmin} /> : null}
           {view === "holidays" ? <Holidays isAdmin={isAdmin} /> : null}
@@ -550,6 +554,11 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           {view === "profile" && !isAdmin ? <Profile /> : null}
         </main>
       </div>
+
+      {/* The dock stands in for chat everywhere except the chat screen itself. */}
+      {view !== "chat" ? (
+        <MessengerDock channels={chatChannels} onOpen={(id) => { setChatTarget(id); choose("chat"); }} />
+      ) : null}
     </div>
   );
 }
@@ -1747,14 +1756,139 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-type ChatChannel = { id: number; name: string | null; kind: "channel" | "dm"; unread: number; last_body?: string | null; last_at?: string | null; peer_name?: string | null };
+type ChatChannel = {
+  id: number; name: string | null; kind: "channel" | "dm"; unread: number;
+  last_body?: string | null; last_at?: string | null; last_author?: string | null;
+  last_user_id?: number | null; last_message_id?: number | null;
+  peer_name?: string | null; peer_id?: number | null; peer_presence?: string | null;
+};
 type ChatMessage = {
   id: number; channel_id: number; user_id: number; body: string | null;
   reply_to_id?: number | null; reply_to_author?: string | null; reply_to_body?: string | null;
   attachment?: string | null; attachment_name?: string | null; deleted_at?: string | null;
   created_at: string; author_name: string;
 };
-type ChatPerson = { id: number; email: string; role: string; display_name: string };
+type ChatPerson = { id: number; email: string; role: string; display_name: string; presence?: string | null };
+
+// Green / amber / grey, the way every chat app signals presence.
+function PresenceDot({ status, className }: { status?: string | null; className?: string }) {
+  const tone = status === "online" ? "bg-emerald-500" : status === "away" ? "bg-amber-400" : "bg-slate-300";
+  return <span title={presenceLabel(status)} className={classNames("inline-block h-2.5 w-2.5 rounded-full ring-2 ring-white", tone, className)} />;
+}
+
+function presenceLabel(status?: string | null) {
+  return status === "online" ? "Online" : status === "away" ? "Away" : "Offline";
+}
+
+// A desktop notification, when the browser has been given permission.
+function notifyBrowser(title: string, body: string) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try {
+    new Notification(title, { body: body.slice(0, 140), tag: `chat-${title}`, icon: "/favicon.svg" });
+  } catch { /* some browsers only allow this from a service worker */ }
+}
+
+// One poll for the whole app: it feeds the messenger dock and raises a desktop
+// notification whenever someone else's message lands.
+function useChatPulse(currentUserId: number, muted: boolean) {
+  const [channels, setChannels] = useState<ChatChannel[]>([]);
+  const mutedRef = useRef(muted);
+  const seen = useRef(new Map<number, number>());
+  const primed = useRef(false);
+  mutedRef.current = muted;
+
+  useEffect(() => {
+    let alive = true;
+    async function tick() {
+      try {
+        const d = await api<{ channels: ChatChannel[] }>("/chat/channels");
+        if (!alive) return;
+        setChannels(d.channels);
+        for (const c of d.channels) {
+          const last = Number(c.last_message_id ?? 0);
+          const before = seen.current.get(c.id);
+          seen.current.set(c.id, last);
+          // Never announce the backlog that was already there when the tab opened.
+          if (!primed.current || before === undefined || last <= before) continue;
+          if (Number(c.last_user_id) === currentUserId) continue;
+          // Reading the chat screen right now is its own notification.
+          if (mutedRef.current && document.visibilityState === "visible") continue;
+          notifyBrowser(channelLabel(c), `${c.last_author ?? "Someone"}: ${c.last_body || "sent an attachment"}`);
+        }
+        primed.current = true;
+      } catch { /* logged out or offline — try again next tick */ }
+    }
+    tick();
+    const t = setInterval(tick, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, [currentUserId]);
+
+  return channels;
+}
+
+// Messenger-style dock: a bubble with the unread count that opens a preview of
+// recent conversations and drops you into the full chat screen.
+function MessengerDock({ channels, onOpen }: { channels: ChatChannel[]; onOpen: (id: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const [permission, setPermission] = useState(typeof Notification === "undefined" ? "denied" : Notification.permission);
+  const unread = channels.reduce((n, c) => n + (c.unread || 0), 0);
+  const recent = [...channels]
+    .filter((c) => c.last_at)
+    .sort((a, b) => String(b.last_at).localeCompare(String(a.last_at)))
+    .slice(0, 6);
+
+  async function askPermission() {
+    if (typeof Notification === "undefined") return;
+    setPermission(await Notification.requestPermission());
+  }
+
+  return (
+    <div className="fixed bottom-6 right-6 z-40">
+      {open ? (
+        <div className="mb-3 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-line bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-line px-4 py-3">
+            <h3 className="font-bold text-ink">Messages</h3>
+            <button type="button" aria-label="Close messages" className="text-slate-400 hover:text-ink" onClick={() => setOpen(false)}><X size={16} /></button>
+          </div>
+          {permission === "default" ? (
+            <button type="button" onClick={askPermission}
+              className="flex w-full items-center gap-2 border-b border-line bg-orange-50 px-4 py-2 text-left text-xs font-semibold text-brand">
+              <Bell size={13} />Turn on desktop notifications
+            </button>
+          ) : null}
+          <div className="max-h-80 overflow-y-auto">
+            {recent.length ? recent.map((c) => (
+              <button key={c.id} type="button" onClick={() => { setOpen(false); onOpen(c.id); }}
+                className="flex w-full items-start gap-3 border-b border-line px-4 py-3 text-left last:border-0 hover:bg-stone-50">
+                <span className="relative shrink-0">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">
+                    {c.kind === "dm" ? initialsOf(c.peer_name || "?") : "#"}
+                  </span>
+                  {c.kind === "dm" ? <PresenceDot status={c.peer_presence} className="absolute -bottom-0.5 -right-0.5" /> : null}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold text-ink">{channelLabel(c)}</span>
+                    {c.unread ? <span className="ml-auto shrink-0 rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{c.unread}</span> : null}
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-slate-500">
+                    {c.last_author ? `${c.last_author}: ` : ""}{c.last_body || "Attachment"}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] text-slate-400">{c.last_at ? chatTime(c.last_at) : ""}</span>
+                </span>
+              </button>
+            )) : <p className="px-4 py-8 text-center text-sm text-slate-500">No conversations yet.</p>}
+          </div>
+        </div>
+      ) : null}
+      <button type="button" onClick={() => setOpen((v) => !v)} title="Messages"
+        className="relative flex h-14 w-14 items-center justify-center rounded-full bg-brand text-white shadow-lg transition hover:opacity-90">
+        <MessageSquare size={22} />
+        {unread ? <span className="absolute -right-0.5 -top-0.5 flex h-6 min-w-6 items-center justify-center rounded-full bg-rose-500 px-1 text-[11px] font-bold text-white ring-2 ring-white">{unread > 9 ? "9+" : unread}</span> : null}
+      </button>
+    </div>
+  );
+}
 
 function channelLabel(c: ChatChannel) {
   return c.kind === "dm" ? (c.peer_name || "Direct message") : `#${c.name}`;
@@ -1847,7 +1981,7 @@ function highlightMentions(body: string, people: ChatPerson[], onBrand = false) 
     : part));
 }
 
-function Chat({ currentUserId }: { currentUserId: number }) {
+function Chat({ currentUserId, initialChannelId }: { currentUserId: number; initialChannelId?: number | null }) {
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [people, setPeople] = useState<ChatPerson[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -1921,6 +2055,9 @@ function Chat({ currentUserId }: { currentUserId: number }) {
     loadChannels();
     api<{ people: ChatPerson[] }>("/chat/directory").then((d) => setPeople(d.people)).catch(() => undefined);
   }, []);
+
+  // Opened from the messenger dock — jump straight to that conversation.
+  useEffect(() => { if (initialChannelId) setActiveId(initialChannelId); }, [initialChannelId]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -2009,9 +2146,9 @@ function Chat({ currentUserId }: { currentUserId: number }) {
       <PageTitle title="Chat" description="Talk to your team — channels for topics, direct messages for one-to-one." />
       {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
 
-      <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
         {/* Channel + DM list */}
-        <div className="card flex max-h-[70vh] flex-col overflow-hidden">
+        <div className="card flex h-[calc(100vh-13rem)] min-h-[420px] flex-col overflow-hidden">
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Channels</h3>
             <button type="button" className="text-brand hover:opacity-70" title="New channel" onClick={() => setNewChannelOpen(true)}><Plus size={16} /></button>
@@ -2034,7 +2171,10 @@ function Chat({ currentUserId }: { currentUserId: number }) {
                 className={classNames("mt-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition",
                   c.id === activeId ? "bg-orange-50 text-brand" : "text-stone-600 hover:bg-stone-50")}>
                 <span className="flex min-w-0 items-center gap-2">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-stone-200 text-[10px] font-bold text-stone-600">{initialsOf(c.peer_name || "?")}</span>
+                  <span className="relative shrink-0">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-stone-200 text-[10px] font-bold text-stone-600">{initialsOf(c.peer_name || "?")}</span>
+                    <PresenceDot status={c.peer_presence} className="absolute -bottom-0.5 -right-0.5" />
+                  </span>
                   <span className="truncate">{c.peer_name}</span>
                 </span>
                 {c.unread > 0 ? <span className="badge bg-rose-500 text-white">{c.unread}</span> : null}
@@ -2045,10 +2185,19 @@ function Chat({ currentUserId }: { currentUserId: number }) {
         </div>
 
         {/* Message pane */}
-        <div className="card flex max-h-[70vh] flex-col overflow-hidden">
-          <div className="border-b border-line px-4 py-3">
-            <h3 className="font-bold text-ink">{active ? channelLabel(active) : "Select a conversation"}</h3>
-            {active?.kind === "channel" ? <p className="text-xs text-slate-500">Everyone in the team can see this channel. Use @name to notify someone.</p> : null}
+        <div className="card flex h-[calc(100vh-13rem)] min-h-[420px] flex-col overflow-hidden">
+          <div className="flex items-center gap-3 border-b border-line px-4 py-3">
+            {active?.kind === "dm" ? (
+              <span className="relative shrink-0">
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(active.peer_name || "?")}</span>
+                <PresenceDot status={active.peer_presence} className="absolute -bottom-0.5 -right-0.5" />
+              </span>
+            ) : null}
+            <div className="min-w-0">
+              <h3 className="truncate font-bold text-ink">{active ? channelLabel(active) : "Select a conversation"}</h3>
+              {active?.kind === "channel" ? <p className="text-xs text-slate-500">Everyone in the team can see this channel. Use @name to notify someone.</p> : null}
+              {active?.kind === "dm" ? <p className="text-xs text-slate-500">{presenceLabel(active.peer_presence)}</p> : null}
+            </div>
           </div>
 
           <div className="flex-1 space-y-3 overflow-y-auto p-4">
@@ -2173,8 +2322,11 @@ function Chat({ currentUserId }: { currentUserId: number }) {
             <div className="max-h-72 space-y-1 overflow-y-auto">
               {people.map((p) => (
                 <button key={p.id} type="button" onClick={() => startDm(p.id)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-stone-50">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
-                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{p.display_name}</span><span className="block truncate text-xs text-slate-500">{p.role}</span></span>
+                  <span className="relative shrink-0">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
+                    <PresenceDot status={p.presence} className="absolute -bottom-0.5 -right-0.5" />
+                  </span>
+                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{p.display_name}</span><span className="block truncate text-xs text-slate-500">{p.role} · {presenceLabel(p.presence)}</span></span>
                 </button>
               ))}
               {!people.length ? <p className="py-4 text-center text-sm text-slate-400">No other team members yet.</p> : null}

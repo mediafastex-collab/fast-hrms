@@ -36,7 +36,7 @@ async function route(context: Context) {
 
   if (method === "POST" && path === "/login") return login(context);
   if (method === "POST" && path === "/logout") return logout(context);
-  if (method === "GET" && path === "/me") return user ? json({ user }) : json({ error: "Not authenticated" }, 401);
+  if (method === "GET" && path === "/me") return user ? json({ user: { ...user, displayName: displayNameOf(user) } }) : json({ error: "Not authenticated" }, 401);
 
   if (!user) return json({ error: "Please login first" }, 401);
 
@@ -65,9 +65,9 @@ async function route(context: Context) {
   if (method === "PUT" && path.match(/^\/work\/tasks\/\d+$/)) return updateWorkTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "GET" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return workComments(db, user, Number(path.split("/")[3]));
   if (method === "POST" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return addWorkComment(db, user, Number(path.split("/")[3]), await readBody(context.request));
-  if (method === "GET" && path === "/notifications") return notificationsList(db, user);
+  if (method === "GET" && path === "/notifications") { await touchPresence(db, user.id); return notificationsList(db, user); }
   if (method === "POST" && path === "/notifications/read-all") return markNotificationsRead(db, user);
-  if (method === "GET" && path === "/chat/channels") return chatChannels(db, user);
+  if (method === "GET" && path === "/chat/channels") { await touchPresence(db, user.id); return chatChannels(db, user); }
   if (method === "POST" && path === "/chat/channels") return createChatChannel(db, user, await readBody(context.request));
   if (method === "GET" && path === "/chat/directory") return chatDirectory(db, user);
   if (method === "GET" && path.match(/^\/chat\/channels\/\d+\/mentionable$/)) return chatMentionable(db, user, Number(path.split("/")[3]));
@@ -139,7 +139,7 @@ async function login(context: Context) {
   const token = await signSession(user, context.env.SESSION_SECRET);
   const secure = new URL(context.request.url).protocol === "https:" ? "; Secure" : "";
   return json(
-    { user },
+    { user: { ...user, displayName: displayNameOf(user) } },
     200,
     { "Set-Cookie": `${sessionCookie}=${token}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax${secure}` },
   );
@@ -794,7 +794,7 @@ async function saveSpace(db: D1Database, user: AppUser, body: Record<string, unk
   if (existing) return json({ error: `A space called "${name}" already exists${existing.status === "Pending" ? " and is awaiting approval" : ""}.` }, 400);
   const res = await db.prepare("INSERT INTO spaces (name, color, status, requested_by) VALUES (?, ?, ?, ?)")
     .bind(name, text(body.color) || "orange", isAdmin ? "Active" : "Pending", user.id).run();
-  if (!isAdmin) await notifyAdmins(db, "Space requested", `${user.employeeName ?? user.email} requested a new space "${name}".`);
+  if (!isAdmin) await notifyAdmins(db, "Space requested", `${displayNameOf(user)} requested a new space "${name}".`);
   else await audit(db, user, "Space created", "spaces", Number(res.meta.last_row_id), name);
   return json({ ok: true, id: Number(res.meta.last_row_id), pending: !isAdmin });
 }
@@ -812,7 +812,7 @@ async function saveList(db: D1Database, user: AppUser, body: Record<string, unkn
   if (existing) return json({ error: `"${name}" already exists in this space${existing.status === "Pending" ? " and is awaiting approval" : ""}.` }, 400);
   const res = await db.prepare("INSERT INTO lists (space_id, name, status, requested_by) VALUES (?, ?, ?, ?)")
     .bind(spaceId, name, isAdmin ? "Active" : "Pending", user.id).run();
-  if (!isAdmin) await notifyAdmins(db, "List requested", `${user.employeeName ?? user.email} requested a new list "${name}".`);
+  if (!isAdmin) await notifyAdmins(db, "List requested", `${displayNameOf(user)} requested a new list "${name}".`);
   else await audit(db, user, "List created", "lists", Number(res.meta.last_row_id), name);
   return json({ ok: true, id: Number(res.meta.last_row_id), pending: !isAdmin });
 }
@@ -886,7 +886,7 @@ async function decorateWorkTasks(db: D1Database, rows: Array<Record<string, unkn
     const marks = chunk.map(() => "?").join(",");
     const [assignees, comments] = await Promise.all([
       db.prepare(
-        `SELECT a.task_id, a.user_id, COALESCE(e.full_name, u.email) AS display_name
+        `SELECT a.task_id, a.user_id, ${nameSql()} AS display_name
          FROM work_task_assignees a JOIN users u ON u.id = a.user_id
          LEFT JOIN employees e ON e.user_id = u.id WHERE a.task_id IN (${marks})`,
       ).bind(...chunk).all<Record<string, unknown>>(),
@@ -1018,7 +1018,7 @@ async function deleteWorkTask(db: D1Database, actor: AppUser, id: number) {
 
 async function workComments(db: D1Database, user: AppUser, taskId: number) {
   const rows = await db.prepare(
-    `SELECT wc.id, wc.body, wc.created_at, wc.user_id, COALESCE(e.full_name, u.email) AS author_name
+    `SELECT wc.id, wc.body, wc.created_at, wc.user_id, ${nameSql()} AS author_name
      FROM work_task_comments wc JOIN users u ON u.id = wc.user_id
      LEFT JOIN employees e ON e.user_id = u.id
      WHERE wc.task_id = ? ORDER BY wc.id ASC`,
@@ -1034,7 +1034,7 @@ async function addWorkComment(db: D1Database, user: AppUser, taskId: number, bod
   await db.prepare("INSERT INTO work_task_comments (task_id, user_id, body) VALUES (?, ?, ?)").bind(taskId, user.id, message).run();
   // Ping everyone else on the task.
   const others = await db.prepare("SELECT user_id FROM work_task_assignees WHERE task_id = ? AND user_id != ?").bind(taskId, user.id).all<{ user_id: number }>();
-  const who = user.employeeName ?? user.email;
+  const who = displayNameOf(user);
   for (const o of others.results) await notify(db, o.user_id, `Comment on "${task.title}"`, `${who}: ${message.slice(0, 120)}`);
   return json({ ok: true });
 }
@@ -1043,7 +1043,32 @@ async function addWorkComment(db: D1Database, user: AppUser, taskId: number, bod
 // Public channels are open to everyone in the org; DMs are private to their two
 // members. Membership rows double as the read cursor for unread counts.
 
-const chatUserSelect = `SELECT u.id, u.email, u.role, COALESCE(e.full_name, u.email) AS display_name
+// Someone without an employee record used to show up as their whole email
+// address. Fall back to a capitalised handle instead: "Aagam", not
+// "aagam@fastexmedia.com".
+function nameSql(userAlias = "u", employeeAlias = "e") {
+  return `COALESCE(${employeeAlias}.full_name, UPPER(SUBSTR(${userAlias}.email, 1, 1)) || SUBSTR(${userAlias}.email, 2, INSTR(${userAlias}.email, '@') - 2))`;
+}
+
+// Presence is read off the heartbeat the polling endpoints leave behind.
+function presenceSql(userAlias = "u") {
+  return `CASE
+    WHEN ${userAlias}.last_seen_at IS NULL THEN 'offline'
+    WHEN (julianday('now') - julianday(${userAlias}.last_seen_at)) * 86400 < 90 THEN 'online'
+    WHEN (julianday('now') - julianday(${userAlias}.last_seen_at)) * 86400 < 600 THEN 'away'
+    ELSE 'offline' END`;
+}
+
+// Clients poll every few seconds; stamping the clock that often would be a lot
+// of writes for no extra accuracy, so only refresh a stamp older than a minute.
+async function touchPresence(db: D1Database, userId: number) {
+  await db.prepare(
+    `UPDATE users SET last_seen_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND (last_seen_at IS NULL OR (julianday('now') - julianday(last_seen_at)) * 86400 > 60)`,
+  ).bind(userId).run();
+}
+
+const chatUserSelect = `SELECT u.id, u.email, u.role, ${nameSql()} AS display_name, ${presenceSql()} AS presence
   FROM users u LEFT JOIN employees e ON e.user_id = u.id`;
 
 async function chatDirectory(db: D1Database, user: AppUser) {
@@ -1061,14 +1086,24 @@ async function chatChannels(db: D1Database, user: AppUser) {
            AND msg.id > COALESCE(m.last_read_message_id, 0) AND msg.user_id != ?) AS unread,
        (SELECT msg.body FROM chat_messages msg WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_body,
        (SELECT msg.created_at FROM chat_messages msg WHERE msg.channel_id = c.id ORDER BY msg.id DESC LIMIT 1) AS last_at,
-       (SELECT COALESCE(e2.full_name, u2.email) FROM chat_members cm2
+       -- "Peer" only means something in a DM; a public channel has no single other side.
+       CASE WHEN c.kind = 'dm' THEN (SELECT ${nameSql("u2", "e2")} FROM chat_members cm2
           JOIN users u2 ON u2.id = cm2.user_id LEFT JOIN employees e2 ON e2.user_id = u2.id
-          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) AS peer_name
+          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_name,
+       CASE WHEN c.kind = 'dm' THEN (SELECT u2.id FROM chat_members cm2 JOIN users u2 ON u2.id = cm2.user_id
+          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_id,
+       CASE WHEN c.kind = 'dm' THEN (SELECT ${presenceSql("u2")} FROM chat_members cm2 JOIN users u2 ON u2.id = cm2.user_id
+          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_presence,
+       (SELECT msg.user_id FROM chat_messages msg WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_user_id,
+       (SELECT msg.id FROM chat_messages msg WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_message_id,
+       (SELECT ${nameSql("u3", "e3")} FROM chat_messages msg
+          JOIN users u3 ON u3.id = msg.user_id LEFT JOIN employees e3 ON e3.user_id = u3.id
+          WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_author
      FROM chat_channels c
      LEFT JOIN chat_members m ON m.channel_id = c.id AND m.user_id = ?
      WHERE c.kind = 'channel' OR m.id IS NOT NULL
      ORDER BY c.kind ASC, last_at DESC NULLS LAST, c.name ASC`,
-  ).bind(user.id, user.id, user.id).all();
+  ).bind(user.id, user.id, user.id, user.id, user.id).all();
   return json({ channels: rows.results });
 }
 
@@ -1113,8 +1148,8 @@ async function chatMessages(db: D1Database, user: AppUser, channelId: number, ur
   const after = Number(url.searchParams.get("after")) || 0;
   const rows = await db.prepare(
     `SELECT m.id, m.channel_id, m.user_id, m.body, m.reply_to_id, m.attachment, m.attachment_name, m.deleted_at, m.created_at,
-       COALESCE(e.full_name, u.email) AS author_name,
-       (SELECT COALESCE(e2.full_name, u2.email) FROM chat_messages p
+       ${nameSql()} AS author_name,
+       (SELECT ${nameSql("u2", "e2")} FROM chat_messages p
           JOIN users u2 ON u2.id = p.user_id LEFT JOIN employees e2 ON e2.user_id = u2.id
           WHERE p.id = m.reply_to_id) AS reply_to_author,
        (SELECT p.body FROM chat_messages p WHERE p.id = m.reply_to_id) AS reply_to_body
@@ -1144,7 +1179,7 @@ async function sendChatMessage(db: D1Database, user: AppUser, channelId: number,
      ON CONFLICT(channel_id, user_id) DO UPDATE SET last_read_message_id = excluded.last_read_message_id`,
   ).bind(channelId, user.id, messageId).run();
 
-  const senderName = user.employeeName ?? user.email;
+  const senderName = displayNameOf(user);
 
   // Who did this message call out? Ids picked from the composer's @ menu are
   // authoritative; the text scan still catches names typed out by hand.
@@ -1776,6 +1811,13 @@ function html(body: string) {
 function cookie(request: Request, name: string) {
   const header = request.headers.get("Cookie") ?? "";
   return header.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
+}
+
+// The name to show for a signed-in user when there is no employee record.
+function displayNameOf(user: AppUser) {
+  if (user.employeeName) return user.employeeName;
+  const handle = user.email.split("@")[0];
+  return handle.charAt(0).toUpperCase() + handle.slice(1);
 }
 
 function compactUser(row: Record<string, string | number>): AppUser {

@@ -442,6 +442,10 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   const { channels: chatChannels, incoming: chatIncoming } = useChatPulse(user.id, view === "chat" ? activeChatId : null);
   const [toast, setToast] = useState<{ channelId: number; title: string; body: string } | null>(null);
 
+  // The browser tab itself carries the count, the way Gmail and WhatsApp Web do.
+  const unreadTotal = chatChannels.reduce((n, c) => n + (c.unread || 0), 0);
+  useEffect(() => { document.title = unreadTotal ? `(${unreadTotal}) Fast HRMS` : "Fast HRMS"; }, [unreadTotal]);
+
   // On the chat screen the dock is hidden, so the preview shows as a toast.
   useEffect(() => {
     if (!chatIncoming) return;
@@ -1809,6 +1813,32 @@ function presenceLabel(status?: string | null) {
   return status === "online" ? "Online" : status === "away" ? "Away" : "Offline";
 }
 
+// A short two-tone ping, synthesised so there is no audio file to ship. Browsers
+// only allow audio after the user has interacted with the page, which by the
+// time a message arrives they have.
+let audioContext: AudioContext | null = null;
+function soundEnabled() {
+  return localStorage.getItem("fast_hrms_sound") !== "off";
+}
+function playPing() {
+  if (!soundEnabled()) return;
+  try {
+    audioContext ??= new (window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    if (audioContext.state === "suspended") void audioContext.resume();
+    const now = audioContext.currentTime;
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    osc.connect(gain); gain.connect(audioContext.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, now);
+    osc.frequency.setValueAtTime(1170, now + 0.08);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
+    osc.start(now); osc.stop(now + 0.32);
+  } catch { /* no audio device, or blocked — the toast still shows */ }
+}
+
 // Registered once, on load. Notifications posted through the registration reach
 // macOS Notification Center reliably; `new Notification()` from the page often
 // does not, which is why alerts appeared to vanish even with permission granted.
@@ -1833,7 +1863,13 @@ async function notifyBrowser(title: string, body: string, tag: string, channelId
   };
   try {
     const reg = swRegistration ?? (await navigator.serviceWorker?.ready);
-    if (reg) { await reg.showNotification(title, options); return "service worker"; }
+    if (reg) {
+      await reg.showNotification(title, options);
+      // If Chrome accepted it, it is listed as displayed. An empty list means
+      // something below the browser refused it — almost always macOS.
+      const shown = await reg.getNotifications({ tag: options.tag });
+      return shown.length ? "service worker" : "service worker, but macOS did not display it";
+    }
   } catch { /* fall through to the page-level constructor */ }
   try {
     const n = new Notification(title, options);
@@ -1920,6 +1956,7 @@ function useChatPulse(currentUserId: number, mutedChannelId: number | null) {
           // on top means you are not reading it.
           if (mutedRef.current === c.id && document.visibilityState === "visible" && document.hasFocus()) continue;
           setIncoming({ channelId: c.id, messageId: last });
+          playPing();
           notifyBrowser(channelLabel(c), `${c.last_author ?? "Someone"}: ${c.last_body || "sent an attachment"}`, `${c.id}-${last}`, c.id);
         }
         primed.current = true;
@@ -1945,6 +1982,17 @@ function useChatPulse(currentUserId: number, mutedChannelId: number | null) {
 
 // Asking for notification permission has to come from a click, so this is a
 // button rather than something the app does on load.
+function SoundToggle() {
+  const [on, setOn] = useState(soundEnabled());
+  return (
+    <button type="button"
+      onClick={() => { const next = !on; localStorage.setItem("fast_hrms_sound", next ? "on" : "off"); setOn(next); if (next) playPing(); }}
+      className="text-xs font-semibold text-slate-500 hover:text-brand">
+      Sound {on ? "on" : "off"}
+    </button>
+  );
+}
+
 function NotificationOptIn({ compact }: { compact?: boolean }) {
   const [permission, setPermission] = useState(typeof Notification === "undefined" ? "unsupported" : Notification.permission);
   const [tested, setTested] = useState("");
@@ -1957,7 +2005,9 @@ function NotificationOptIn({ compact }: { compact?: boolean }) {
       <button type="button"
         onClick={async () => {
           const via = await notifyBrowser("Fast HRMS", "Test notification — desktop alerts are working.", `test-${Date.now()}`);
-          setTested(via === "failed" ? "Could not post a notification from this browser." : `Sent via ${via}. No banner? Allow Chrome in System Settings → Notifications, and check Focus is off.`);
+          setTested(via === "failed"
+            ? "Could not post a notification from this browser."
+            : `Sent via ${via}. If no banner appeared, open macOS Notification Center — if it is listed there, set Chrome's alert style to Banners in System Settings → Notifications → Google Chrome.`);
         }}
         className={classNames("max-w-md text-left text-xs font-semibold text-slate-500 hover:text-brand", compact && "w-full px-4 py-2")}>
         {tested || "Send a test notification"}
@@ -2311,7 +2361,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
   return (
     <section className="space-y-4">
       <PageTitle title="Chat" description="Talk to your team — channels for topics, direct messages for one-to-one."
-        action={<NotificationOptIn />} />
+        action={<div className="flex flex-wrap items-center justify-end gap-3"><SoundToggle /><NotificationOptIn /></div>} />
       {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
 
       <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">

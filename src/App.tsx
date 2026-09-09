@@ -29,8 +29,9 @@ import {
   Pencil,
   ChevronDown,
   ChevronRight,
+  ChevronLeft,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 type Role = "Superadmin" | "Employee";
 type View =
@@ -1794,6 +1795,7 @@ type ChatChannel = {
   last_body?: string | null; last_at?: string | null; last_author?: string | null;
   last_user_id?: number | null; last_message_id?: number | null;
   peer_name?: string | null; peer_id?: number | null; peer_presence?: string | null;
+  peer_last_seen?: string | null;
 };
 type ChatMessage = {
   id: number; channel_id: number; user_id: number; body: string | null;
@@ -1801,7 +1803,7 @@ type ChatMessage = {
   attachment?: string | null; attachment_name?: string | null; deleted_at?: string | null;
   created_at: string; author_name: string;
 };
-type ChatPerson = { id: number; email: string; role: string; display_name: string; presence?: string | null };
+type ChatPerson = { id: number; email: string; role: string; display_name: string; presence?: string | null; last_seen_at?: string | null };
 
 // Green / amber / grey, the way every chat app signals presence.
 function PresenceDot({ status, className }: { status?: string | null; className?: string }) {
@@ -2095,6 +2097,53 @@ function channelLabel(c: ChatChannel) {
   return c.kind === "dm" ? (c.peer_name || "Direct message") : `#${c.name}`;
 }
 
+// Stored as UTC "YYYY-MM-DD HH:MM:SS".
+function parseTs(ts: string) {
+  const d = new Date(ts.replace(" ", "T") + "Z");
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function clockTime(ts: string) {
+  return parseTs(ts)?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) ?? ts.slice(11, 16);
+}
+
+// Which day a message belongs to, in the reader's own timezone.
+function dayKey(ts: string) {
+  return parseTs(ts)?.toDateString() ?? ts.slice(0, 10);
+}
+
+function dayLabel(ts: string) {
+  const d = parseTs(ts);
+  if (!d) return ts.slice(0, 10);
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 86400000);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+}
+
+// "just now" / "12m ago" / "3h ago" / "yesterday 4:30 PM" / "3 Sep 4:30 PM"
+function sinceLabel(ts?: string | null) {
+  const d = ts ? parseTs(ts) : null;
+  if (!d) return "a while ago";
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 86400000);
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === today.toDateString()) return `${Math.floor(mins / 60)}h ago`;
+  if (d.toDateString() === yesterday.toDateString()) return `yesterday ${time}`;
+  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
+}
+
+// Online while the heartbeat is fresh; otherwise say when they were last around.
+function lastSeenLabel(presence?: string | null, lastSeenAt?: string | null) {
+  if (presence === "online") return "Online";
+  if (!lastSeenAt) return "Offline";
+  return `Last seen ${sinceLabel(lastSeenAt)}`;
+}
+
 function chatTime(ts: string) {
   // Stored as UTC "YYYY-MM-DD HH:MM:SS"; render in the viewer's local time.
   const d = new Date(ts.replace(" ", "T") + "Z");
@@ -2204,7 +2253,16 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
   const [mentionIdx, setMentionIdx] = useState(0);
   const [mentionIds, setMentionIds] = useState<number[]>([]);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
+  // Opening a thread should land at the live end of it, not scroll there from
+  // the top; and a new message should not yank you down while you read history.
+  const jumpOnNextRender = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
+  const atBottomRef = useRef(true);
+  const [unseenBelow, setUnseenBelow] = useState(false);
+  const [search, setSearch] = useState("");
+  const [mobilePane, setMobilePane] = useState<"list" | "thread">("list");
   const activeIdRef = useRef<number | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   activeIdRef.current = activeId;
@@ -2280,6 +2338,8 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
     if (!activeId) return;
     setMessages([]);
     setMentionIds([]); setMentionQuery(null);
+    jumpOnNextRender.current = true;
+    setUnseenBelow(false);
     loadMessages(activeId);
     api<{ people: ChatPerson[] }>(`/chat/channels/${activeId}/mentionable`)
       .then((d) => setMentionable(d.people)).catch(() => setMentionable([]));
@@ -2294,7 +2354,46 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
     return () => clearInterval(t);
   }, []);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+  function scrollToEnd(smooth: boolean) {
+    const box = scrollRef.current;
+    if (!box) return;
+    box.scrollTo({ top: box.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+    if (!smooth) return;
+    // Smooth scrolling is a no-op in some browsers and whenever the reader has
+    // asked for reduced motion, so make sure we land at the bottom regardless.
+    window.setTimeout(() => {
+      // Don't fight the reader: if they scrolled away in the meantime, leave them be.
+      if (!atBottomRef.current) return;
+      if (box.scrollHeight - box.scrollTop - box.clientHeight > 8) box.scrollTo({ top: box.scrollHeight, behavior: "auto" });
+    }, 400);
+  }
+
+  // Layout effect, not a plain one: the jump has to happen after the DOM is
+  // laid out but before the browser paints, or you see it travel from the top.
+  useLayoutEffect(() => {
+    if (!messages.length) return;
+    if (jumpOnNextRender.current) {
+      jumpOnNextRender.current = false;
+      atBottomRef.current = true;
+      scrollToEnd(false);
+      // Images and fonts can settle a frame later and change the height.
+      requestAnimationFrame(() => scrollToEnd(false));
+      setUnseenBelow(false);
+      return;
+    }
+    const mine = messages[messages.length - 1]?.user_id === currentUserId;
+    if (mine || atBottom) { scrollToEnd(true); setUnseenBelow(false); }
+    else setUnseenBelow(true);
+  }, [messages.length]);
+
+  function onScroll() {
+    const box = scrollRef.current;
+    if (!box) return;
+    const near = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+    atBottomRef.current = near;
+    setAtBottom(near);
+    if (near) setUnseenBelow(false);
+  }
 
   async function send(e: FormEvent) {
     e.preventDefault();
@@ -2358,53 +2457,106 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
   const groupChannels = channels.filter((c) => c.kind === "channel");
   const dms = channels.filter((c) => c.kind === "dm");
 
+  // Slack groups a run of messages from one person under a single heading.
+  const rows = useMemo(() => {
+    const out: Array<{ kind: "day"; key: string; label: string } | { kind: "msg"; key: string; message: ChatMessage; grouped: boolean }> = [];
+    let previous: ChatMessage | null = null;
+    for (const m of messages) {
+      if (!previous || dayKey(previous.created_at) !== dayKey(m.created_at)) {
+        out.push({ kind: "day", key: `day-${m.id}`, label: dayLabel(m.created_at) });
+        previous = null;
+      }
+      const gap = previous ? (parseTs(m.created_at)?.getTime() ?? 0) - (parseTs(previous.created_at)?.getTime() ?? 0) : Infinity;
+      const grouped = !!previous && previous.user_id === m.user_id && gap < 5 * 60 * 1000 && !m.reply_to_id;
+      out.push({ kind: "msg", key: `m-${m.id}`, message: m, grouped });
+      previous = m;
+    }
+    return out;
+  }, [messages]);
+
+  const filtered = (list: ChatChannel[]) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((c) => (c.kind === "dm" ? c.peer_name ?? "" : c.name ?? "").toLowerCase().includes(q));
+  };
+
+  function openChannel(id: number) {
+    setActiveId(id);
+    setMobilePane("thread");
+  }
+
   return (
     <section className="space-y-4">
-      <PageTitle title="Chat" description="Talk to your team — channels for topics, direct messages for one-to-one."
-        action={<div className="flex flex-wrap items-center justify-end gap-3"><SoundToggle /><NotificationOptIn /></div>} />
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-ink">Chat</h1>
+          <p className="mt-1 hidden text-sm text-slate-500 sm:block">Talk to your team — channels for topics, direct messages for one-to-one.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 sm:justify-end"><SoundToggle /><NotificationOptIn /></div>
+      </div>
       {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
 
-      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        {/* Channel + DM list */}
-        <div className="card flex h-[calc(100vh-13rem)] min-h-[420px] flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-line px-4 py-3">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Channels</h3>
-            <button type="button" className="text-brand hover:opacity-70" title="New channel" onClick={() => setNewChannelOpen(true)}><Plus size={16} /></button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2">
-            {groupChannels.map((c) => (
-              <button key={c.id} type="button" onClick={() => setActiveId(c.id)}
-                className={classNames("flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition",
-                  c.id === activeId ? "bg-orange-50 text-brand" : "text-stone-600 hover:bg-stone-50")}>
-                <span className="truncate">#{c.name}</span>
-                {c.unread > 0 ? <span className="badge bg-rose-500 text-white">{c.unread}</span> : null}
-              </button>
-            ))}
-            <div className="mt-3 flex items-center justify-between px-3">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Direct messages</h3>
-              <button type="button" className="text-brand hover:opacity-70" title="New message" onClick={() => setDmOpen(true)}><Plus size={16} /></button>
+      <div className="grid gap-4 lg:grid-cols-[290px_minmax(0,1fr)]">
+        {/* Conversations. On a phone this is the whole screen until you pick one. */}
+        <div className={classNames(
+          "card h-[calc(100dvh-15rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-13rem)]",
+          mobilePane === "thread" ? "hidden lg:flex" : "flex",
+        )}>
+          <div className="border-b border-line p-3">
+            <div className="relative">
+              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input className="input h-9 py-0 pl-8 text-sm" placeholder="Search conversations" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
-            {dms.map((c) => (
-              <button key={c.id} type="button" onClick={() => setActiveId(c.id)}
-                className={classNames("mt-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition",
-                  c.id === activeId ? "bg-orange-50 text-brand" : "text-stone-600 hover:bg-stone-50")}>
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="relative shrink-0">
-                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-stone-200 text-[10px] font-bold text-stone-600">{initialsOf(c.peer_name || "?")}</span>
-                    <PresenceDot status={c.peer_presence} className="absolute -bottom-0.5 -right-0.5" />
-                  </span>
-                  <span className="truncate">{c.peer_name}</span>
-                </span>
-                {c.unread > 0 ? <span className="badge bg-rose-500 text-white">{c.unread}</span> : null}
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-2 py-2">
+            <div className="flex items-center justify-between px-2 py-1">
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Channels</h3>
+              <button type="button" className="rounded p-0.5 text-slate-400 hover:text-brand" title="New channel" onClick={() => setNewChannelOpen(true)}><Plus size={14} /></button>
+            </div>
+            {filtered(groupChannels).map((c) => (
+              <button key={c.id} type="button" onClick={() => openChannel(c.id)}
+                className={classNames("flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition",
+                  c.id === activeId ? "bg-orange-50 font-bold text-brand" : "font-semibold text-stone-600 hover:bg-stone-50")}>
+                <span className="text-slate-400">#</span>
+                <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                {c.unread > 0 ? <span className="shrink-0 rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{c.unread}</span> : null}
               </button>
             ))}
-            {!dms.length ? <p className="px-3 py-2 text-xs text-slate-400">No conversations yet.</p> : null}
+
+            <div className="mt-4 flex items-center justify-between px-2 py-1">
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Direct messages</h3>
+              <button type="button" className="rounded p-0.5 text-slate-400 hover:text-brand" title="New message" onClick={() => setDmOpen(true)}><Plus size={14} /></button>
+            </div>
+            {filtered(dms).map((c) => (
+              <button key={c.id} type="button" onClick={() => openChannel(c.id)}
+                className={classNames("flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition",
+                  c.id === activeId ? "bg-orange-50 font-bold text-brand" : "font-semibold text-stone-600 hover:bg-stone-50")}>
+                <span className="relative shrink-0">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-stone-200 text-[10px] font-bold text-stone-600">{initialsOf(c.peer_name || "?")}</span>
+                  <PresenceDot status={c.peer_presence} className="absolute -bottom-0.5 -right-0.5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{c.peer_name}</span>
+                  <span className="block truncate text-[10px] font-medium text-slate-400">{lastSeenLabel(c.peer_presence, c.peer_last_seen)}</span>
+                </span>
+                {c.unread > 0 ? <span className="shrink-0 rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{c.unread}</span> : null}
+              </button>
+            ))}
+            {!dms.length ? <p className="px-2 py-2 text-xs text-slate-400">No conversations yet.</p> : null}
           </div>
         </div>
 
-        {/* Message pane */}
-        <div className="card flex h-[calc(100vh-13rem)] min-h-[420px] flex-col overflow-hidden">
+        {/* The thread */}
+        <div className={classNames(
+          "card relative h-[calc(100dvh-15rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-13rem)]",
+          mobilePane === "list" ? "hidden lg:flex" : "flex",
+        )}>
           <div className="flex items-center gap-3 border-b border-line px-4 py-3">
+            <button type="button" onClick={() => setMobilePane("list")}
+              className="rounded-lg p-1 text-slate-400 hover:bg-stone-100 lg:hidden" aria-label="Back to conversations">
+              <ChevronLeft size={18} />
+            </button>
             {active?.kind === "dm" ? (
               <span className="relative shrink-0">
                 <span className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(active.peer_name || "?")}</span>
@@ -2414,50 +2566,82 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
             <div className="min-w-0">
               <h3 className="truncate font-bold text-ink">{active ? channelLabel(active) : "Select a conversation"}</h3>
               {active?.kind === "channel" ? <p className="text-xs text-slate-500">Everyone in the team can see this channel. Use @name to notify someone.</p> : null}
-              {active?.kind === "dm" ? <p className="text-xs text-slate-500">{presenceLabel(active.peer_presence)}</p> : null}
+              {active?.kind === "dm" ? <p className="text-xs text-slate-500">{lastSeenLabel(active.peer_presence, active.peer_last_seen)}</p> : null}
             </div>
           </div>
 
-          <div className="flex-1 space-y-3 overflow-y-auto p-4">
-            {messages.length ? messages.map((m) => {
+          <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-2 py-3 sm:px-4">
+            {rows.length ? rows.map((row) => {
+              if (row.kind === "day") {
+                return (
+                  <div key={row.key} className="my-3 flex items-center gap-3">
+                    <span className="h-px flex-1 bg-line" />
+                    <span className="rounded-full border border-line bg-white px-3 py-0.5 text-[11px] font-bold text-slate-500">{row.label}</span>
+                    <span className="h-px flex-1 bg-line" />
+                  </div>
+                );
+              }
+              const m = row.message;
               const mine = m.user_id === currentUserId;
               return (
-                <div key={m.id} className={classNames("group flex gap-3", mine && "flex-row-reverse")}>
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(m.author_name)}</span>
-                  <div className={classNames("max-w-[75%] min-w-0", mine && "text-right")}>
-                    <p className="text-[11px] text-slate-400">
-                      <span className="font-semibold text-slate-600">{mine ? "You" : m.author_name}</span> · {chatTime(m.created_at)}
-                    </p>
+                <div key={row.key} className={classNames("group relative flex gap-3 rounded-lg px-2 hover:bg-stone-50/70", row.grouped ? "py-0.5" : "mt-2 py-1")}>
+                  {row.grouped ? (
+                    <span className="w-9 shrink-0 pt-0.5 text-right text-[10px] text-transparent group-hover:text-slate-400">{clockTime(m.created_at)}</span>
+                  ) : (
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(m.author_name)}</span>
+                  )}
+
+                  <div className="min-w-0 flex-1">
+                    {!row.grouped ? (
+                      <p className="flex items-baseline gap-2">
+                        <span className="text-sm font-bold text-ink">{mine ? "You" : m.author_name}</span>
+                        <span className="text-[11px] text-slate-400">{clockTime(m.created_at)}</span>
+                      </p>
+                    ) : null}
+
                     {m.reply_to_id && !m.deleted_at ? (
-                      <div className="mt-1 rounded-lg border-l-2 border-brand/40 bg-stone-50 px-2 py-1 text-left text-[11px] text-slate-500">
-                        <span className="font-semibold">{m.reply_to_author}</span>: {(m.reply_to_body || "attachment").slice(0, 80)}
+                      <div className="mb-1 rounded-r-lg border-l-2 border-brand/50 bg-stone-50 px-2 py-1 text-[11px] text-slate-500">
+                        <span className="font-semibold text-slate-600">{m.reply_to_author}</span>: {(m.reply_to_body || "attachment").slice(0, 90)}
                       </div>
                     ) : null}
-                    <div className={classNames("mt-1 inline-block rounded-2xl px-3 py-2 text-left text-sm",
-                      m.deleted_at ? "bg-stone-100 italic text-slate-400" : mine ? "bg-brand text-white" : "bg-stone-100 text-ink")}>
-                      {m.deleted_at ? "Message deleted" : (
-                        <>
-                          {m.body ? <p className="whitespace-pre-wrap break-words">{highlightMentions(m.body, people, mine)}</p> : null}
-                          {m.attachment ? (
-                            m.attachment.startsWith("data:image")
-                              ? <img src={m.attachment} alt={m.attachment_name ?? "attachment"} className="mt-1 max-h-56 rounded-lg" />
-                              : <a href={m.attachment} download={m.attachment_name ?? "file"} className="mt-1 flex items-center gap-1 underline"><Download size={14} />{m.attachment_name}</a>
-                          ) : null}
-                        </>
-                      )}
-                    </div>
-                    {!m.deleted_at ? (
-                      <div className={classNames("mt-1 flex gap-2 text-[11px] text-slate-400 opacity-0 transition group-hover:opacity-100", mine && "justify-end")}>
-                        <button type="button" className="hover:text-brand" onClick={() => setReplyTo(m)}>Reply</button>
-                        {mine ? <button type="button" className="hover:text-rose-600" onClick={() => removeMessage(m.id)}>Delete</button> : null}
-                      </div>
-                    ) : null}
+
+                    {m.deleted_at ? (
+                      <p className="text-sm italic text-slate-400">Message deleted</p>
+                    ) : (
+                      <>
+                        {m.body ? <p className="whitespace-pre-wrap break-words text-sm text-ink">{highlightMentions(m.body, people)}</p> : null}
+                        {m.attachment ? (
+                          m.attachment.startsWith("data:image")
+                            ? <img src={m.attachment} alt={m.attachment_name ?? "attachment"} className="mt-1 max-h-64 rounded-xl border border-line" />
+                            : <a href={m.attachment} download={m.attachment_name ?? "file"} className="mt-1 inline-flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-xs font-semibold text-brand hover:bg-orange-50"><Download size={13} />{m.attachment_name}</a>
+                        ) : null}
+                      </>
+                    )}
                   </div>
+
+                  {!m.deleted_at ? (
+                    <div className="absolute right-2 top-0 hidden gap-1 rounded-lg border border-line bg-white p-0.5 shadow-sm group-hover:flex">
+                      <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-slate-500 hover:text-brand" onClick={() => setReplyTo(m)}>Reply</button>
+                      {mine ? <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-slate-500 hover:text-rose-600" onClick={() => removeMessage(m.id)}>Delete</button> : null}
+                    </div>
+                  ) : null}
                 </div>
               );
-            }) : <p className="py-10 text-center text-sm text-slate-400">No messages yet — say hello.</p>}
+            }) : (
+              <p className="py-10 text-center text-sm text-slate-400">
+                {active ? "No messages yet — say hello." : "Pick a conversation to start."}
+              </p>
+            )}
             <div ref={endRef} />
           </div>
+
+          {/* Reading history when something lands below — say so instead of jumping. */}
+          {unseenBelow ? (
+            <button type="button" onClick={() => { atBottomRef.current = true; setAtBottom(true); scrollToEnd(false); setUnseenBelow(false); }}
+              className="absolute bottom-24 left-1/2 z-10 -translate-x-1/2 rounded-full bg-brand px-4 py-1.5 text-xs font-bold text-white shadow-lg">
+              New messages ↓
+            </button>
+          ) : null}
 
           {active ? (
             <form onSubmit={send} className="border-t border-line p-3">
@@ -2473,46 +2657,49 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                   <button type="button" onClick={() => setFile(null)}><X size={14} /></button>
                 </div>
               ) : null}
-              <div className="flex items-end gap-2">
-                <label className="btn btn-soft cursor-pointer px-3" title="Attach a file">
-                  <Plus size={16} />
-                  <input type="file" className="hidden" accept="image/*,application/pdf" onChange={(e) => pickFile(e.target.files?.[0])} />
-                </label>
-                <div className="relative flex-1">
-                  {/* Type "@" to pick someone — the menu inserts the exact name and
-                      remembers who to notify, so a typo can't swallow the ping. */}
-                  {mentionMatches.length ? (
-                    <div className="absolute bottom-full left-0 z-20 mb-2 w-64 overflow-hidden rounded-xl border border-line bg-white shadow-lg">
-                      {mentionMatches.map((p, i) => (
-                        <button key={p.id} type="button" onMouseDown={(e) => { e.preventDefault(); insertMention(p); }}
-                          onMouseEnter={() => setMentionIdx(i)}
-                          className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", i === mentionIdx ? "bg-orange-50 text-brand" : "text-stone-600")}>
-                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
-                          <span className="truncate font-semibold">{p.display_name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                  <textarea
-                    ref={draftRef}
-                    className="input min-h-[44px] w-full resize-none py-2"
-                    rows={1}
-                    placeholder={active.kind === "dm" ? `Message ${active.peer_name} — @ to notify` : `Message #${active.name} — @ to notify`}
-                    value={draft}
-                    onChange={(e) => onDraftChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
-                    onBlur={() => setMentionQuery(null)}
-                    onKeyDown={(e) => {
-                      if (mentionMatches.length) {
-                        if (e.key === "ArrowDown") { e.preventDefault(); setMentionIdx((i) => (i + 1) % mentionMatches.length); return; }
-                        if (e.key === "ArrowUp") { e.preventDefault(); setMentionIdx((i) => (i - 1 + mentionMatches.length) % mentionMatches.length); return; }
-                        if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); insertMention(mentionMatches[mentionIdx]); return; }
-                        if (e.key === "Escape") { e.preventDefault(); setMentionQuery(null); return; }
-                      }
-                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as unknown as FormEvent); }
-                    }}
-                  />
+
+              {/* One bordered composer, the way Slack frames its input. */}
+              <div className="relative rounded-2xl border border-line focus-within:border-brand">
+                {mentionMatches.length ? (
+                  <div className="absolute bottom-full left-2 z-20 mb-2 w-64 overflow-hidden rounded-xl border border-line bg-white shadow-lg">
+                    {mentionMatches.map((p, i) => (
+                      <button key={p.id} type="button" onMouseDown={(e) => { e.preventDefault(); insertMention(p); }}
+                        onMouseEnter={() => setMentionIdx(i)}
+                        className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", i === mentionIdx ? "bg-orange-50 text-brand" : "text-stone-600")}>
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
+                        <span className="truncate font-semibold">{p.display_name}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
+                <textarea
+                  ref={draftRef}
+                  className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-3 pt-3 text-sm text-ink outline-none placeholder:text-slate-400"
+                  rows={2}
+                  placeholder={active.kind === "dm" ? `Message ${active.peer_name} — @ to notify` : `Message #${active.name} — @ to notify`}
+                  value={draft}
+                  onChange={(e) => onDraftChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+                  onBlur={() => setMentionQuery(null)}
+                  onKeyDown={(e) => {
+                    if (mentionMatches.length) {
+                      if (e.key === "ArrowDown") { e.preventDefault(); setMentionIdx((i) => (i + 1) % mentionMatches.length); return; }
+                      if (e.key === "ArrowUp") { e.preventDefault(); setMentionIdx((i) => (i - 1 + mentionMatches.length) % mentionMatches.length); return; }
+                      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); insertMention(mentionMatches[mentionIdx]); return; }
+                      if (e.key === "Escape") { e.preventDefault(); setMentionQuery(null); return; }
+                    }
+                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as unknown as FormEvent); }
+                  }}
+                />
+
+                <div className="flex items-center gap-2 px-2 pb-2">
+                  <label className="cursor-pointer rounded-lg p-1.5 text-slate-400 transition hover:bg-stone-100 hover:text-brand" title="Attach a file">
+                    <Plus size={16} />
+                    <input type="file" className="hidden" accept="image/*,application/pdf" onChange={(e) => pickFile(e.target.files?.[0])} />
+                  </label>
+                  <span className="hidden text-[11px] text-slate-400 sm:inline">Enter to send · Shift+Enter for a new line</span>
+                  <button type="submit" className="btn btn-primary ml-auto px-4 py-1.5" disabled={sending || (!draft.trim() && !file)}>Send</button>
                 </div>
-                <button type="submit" className="btn btn-primary" disabled={sending || (!draft.trim() && !file)}>Send</button>
               </div>
             </form>
           ) : null}
@@ -2544,7 +2731,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                     <span className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
                     <PresenceDot status={p.presence} className="absolute -bottom-0.5 -right-0.5" />
                   </span>
-                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{p.display_name}</span><span className="block truncate text-xs text-slate-500">{p.role} · {presenceLabel(p.presence)}</span></span>
+                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{p.display_name}</span><span className="block truncate text-xs text-slate-500">{p.role} · {lastSeenLabel(p.presence, p.last_seen_at)}</span></span>
                 </button>
               ))}
               {!people.length ? <p className="py-4 text-center text-sm text-slate-400">No other team members yet.</p> : null}

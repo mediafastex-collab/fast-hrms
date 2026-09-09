@@ -1096,7 +1096,8 @@ async function touchPresence(db: D1Database, userId: number) {
   ).bind(userId).run();
 }
 
-const chatUserSelect = `SELECT u.id, u.email, u.role, ${nameSql()} AS display_name, ${presenceSql()} AS presence
+const chatUserSelect = `SELECT u.id, u.email, u.role, ${nameSql()} AS display_name, ${presenceSql()} AS presence,
+    u.last_seen_at
   FROM users u LEFT JOIN employees e ON e.user_id = u.id`;
 
 async function chatDirectory(db: D1Database, user: AppUser) {
@@ -1122,6 +1123,8 @@ async function chatChannels(db: D1Database, user: AppUser) {
           WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_id,
        CASE WHEN c.kind = 'dm' THEN (SELECT ${presenceSql("u2")} FROM chat_members cm2 JOIN users u2 ON u2.id = cm2.user_id
           WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_presence,
+       CASE WHEN c.kind = 'dm' THEN (SELECT u2.last_seen_at FROM chat_members cm2 JOIN users u2 ON u2.id = cm2.user_id
+          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_last_seen,
        (SELECT msg.user_id FROM chat_messages msg WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_user_id,
        (SELECT msg.id FROM chat_messages msg WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_message_id,
        (SELECT ${nameSql("u3", "e3")} FROM chat_messages msg
@@ -1131,7 +1134,7 @@ async function chatChannels(db: D1Database, user: AppUser) {
      LEFT JOIN chat_members m ON m.channel_id = c.id AND m.user_id = ?
      WHERE c.kind = 'channel' OR m.id IS NOT NULL
      ORDER BY c.kind ASC, last_at DESC NULLS LAST, c.name ASC`,
-  ).bind(user.id, user.id, user.id, user.id, user.id).all();
+  ).bind(user.id, user.id, user.id, user.id, user.id, user.id).all();
   return json({ channels: rows.results });
 }
 

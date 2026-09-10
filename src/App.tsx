@@ -1040,7 +1040,7 @@ function Employees() {
         title="Employees"
         rows={filtered}
         columns={[
-          ["Employee", (row) => <div className="font-semibold text-ink">{row.full_name}<div className="text-xs font-normal text-slate-500">{row.employee_code}</div></div>],
+          ["Employee", (row) => <div className="font-semibold text-ink">{row.full_name}<div className="tnum text-xs font-normal text-slate-500">{row.employee_code}</div></div>],
           ["Email", (row) => row.email],
           ["Department", (row) => row.department_name ?? "-"],
           ["Designation", (row) => row.designation_name ?? "-"],
@@ -1683,21 +1683,21 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
 
   const columns: Array<[string, (row: AttendanceRecord) => React.ReactNode]> = [
     ["Employee", (row) => row.employee_name ?? row.employee_code ?? "You"],
-    ["Date", (row) => row.attendance_date],
+    ["Date", (row) => <span className="tnum">{row.attendance_date}</span>],
     ["Check in", (row) => (
        <div>
-         <div>{row.check_in ?? "-"}</div>
+         <div className="tnum">{row.check_in ?? "-"}</div>
          {row.late_checkin_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.late_checkin_reason}</div>}
        </div>
     )],
     ["Check out", (row) => (
        <div>
-         <div>{row.check_out ?? "-"}</div>
+         <div className="tnum">{row.check_out ?? "-"}</div>
          {row.early_checkout_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.early_checkout_reason}</div>}
        </div>
     )],
     ["Breaks", (row) => <BreaksCell row={row} />],
-    ["Worked", (row) => <span className="font-semibold text-ink">{workedHMS(row)}</span>],
+    ["Worked", (row) => <span className="tnum font-semibold text-ink">{workedHMS(row)}</span>],
     ["Status", (row) => <Badge value={row.status} />],
   ];
 

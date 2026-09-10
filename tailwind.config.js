@@ -4,11 +4,9 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        // Inter carries the interface: it was drawn for screens and its digits
-        // line up, which matters on every payroll and attendance table here.
-        sans: ['"Inter Variable"', "Inter", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
-        // Plus Jakarta Sans gives headings a little warmth against the orange.
-        display: ['"Plus Jakarta Sans Variable"', '"Plus Jakarta Sans"', '"Inter Variable"', "ui-sans-serif", "system-ui", "sans-serif"],
+        sans: ['"IBM Plex Sans Variable"', '"IBM Plex Sans"', "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+        display: ['"IBM Plex Sans Variable"', '"IBM Plex Sans"', "ui-sans-serif", "system-ui", "sans-serif"],
+        mono: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       colors: {
         ink: "#1c1917",

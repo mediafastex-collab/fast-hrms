@@ -1801,8 +1801,48 @@ type ChatMessage = {
   id: number; channel_id: number; user_id: number; body: string | null;
   reply_to_id?: number | null; reply_to_author?: string | null; reply_to_body?: string | null;
   attachment?: string | null; attachment_name?: string | null; deleted_at?: string | null;
-  created_at: string; author_name: string;
+  edited_at?: string | null; created_at: string; author_name: string;
 };
+type ChatReaction = { message_id: number; emoji: string; count: number; mine: number; who?: string | null };
+type TypingPerson = { user_id: number; display_name: string };
+
+const REACTION_CHOICES = ["👍", "❤️", "🎉", "😄", "✅", "👀"];
+
+// A stable colour per person, so several people in a channel stay apart at a
+// glance rather than all sharing one tint.
+const AVATAR_TONES = [
+  "bg-orange-100 text-orange-700",
+  "bg-sky-100 text-sky-700",
+  "bg-emerald-100 text-emerald-700",
+  "bg-violet-100 text-violet-700",
+  "bg-rose-100 text-rose-700",
+  "bg-amber-100 text-amber-800",
+  "bg-teal-100 text-teal-700",
+  "bg-fuchsia-100 text-fuchsia-700",
+];
+const NAME_TONES = [
+  "text-orange-700", "text-sky-700", "text-emerald-700", "text-violet-700",
+  "text-rose-700", "text-amber-800", "text-teal-700", "text-fuchsia-700",
+];
+
+function toneIndex(key: string | number) {
+  const text = String(key);
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  return hash % AVATAR_TONES.length;
+}
+
+// Turn bare URLs into links; everything else stays plain text.
+function linkify(nodes: React.ReactNode[]): React.ReactNode[] {
+  return nodes.flatMap((node, outer) => {
+    if (typeof node !== "string") return [node];
+    return node.split(/(https?:\/\/[^\s<]+)/g).map((part, i) => (
+      /^https?:\/\//.test(part)
+        ? <a key={`l${outer}-${i}`} href={part} target="_blank" rel="noreferrer noopener" className="underline decoration-slate-300 underline-offset-2 hover:text-brand">{part}</a>
+        : part
+    ));
+  });
+}
 type ChatPerson = { id: number; email: string; role: string; display_name: string; presence?: string | null; last_seen_at?: string | null };
 
 // Green / amber / grey, the way every chat app signals presence.
@@ -2222,13 +2262,15 @@ function mentionToken(displayName: string) {
 // Tint any "@Name" that matches a real teammate, so a mention is obvious in the
 // thread and a mistyped one visibly isn't one.
 function highlightMentions(body: string, people: ChatPerson[], onBrand = false) {
-  const names = people.flatMap((p) => [p.display_name, mentionToken(p.display_name), p.display_name.split(" ")[0]]).filter(Boolean);
-  if (!names.length) return body;
+  const names = [
+    "everyone", "channel", "here",
+    ...people.flatMap((p) => [p.display_name, mentionToken(p.display_name), p.display_name.split(" ")[0]]),
+  ].filter(Boolean);
   const unique = [...new Set(names)].sort((a, b) => b.length - a.length).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const parts = body.split(new RegExp(`(@(?:${unique.join("|")})(?![\\w.\\-]))`, "gi"));
-  return parts.map((part, i) => (part.startsWith("@")
+  return linkify(parts.map((part, i) => (part.startsWith("@")
     ? <span key={i} className={classNames("rounded px-1 font-semibold", onBrand ? "bg-white/25 text-white" : "bg-orange-100 text-orange-700")}>{part}</span>
-    : part));
+    : part)));
 }
 
 function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
@@ -2249,6 +2291,12 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
   // @mention state: who can be named here, what's being typed after the "@",
   // and the ids picked from the menu so the server never has to guess.
   const [mentionable, setMentionable] = useState<ChatPerson[]>([]);
+  const [canMentionEveryone, setCanMentionEveryone] = useState(0);
+  const [reactions, setReactions] = useState<ChatReaction[]>([]);
+  const [typing, setTyping] = useState<TypingPerson[]>([]);
+  const [editing, setEditing] = useState<{ id: number; body: string } | null>(null);
+  const [pickerFor, setPickerFor] = useState<number | null>(null);
+  const lastTypingPing = useRef(0);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIdx, setMentionIdx] = useState(0);
   const [mentionIds, setMentionIds] = useState<number[]>([]);
@@ -2268,14 +2316,53 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
   activeIdRef.current = activeId;
   messagesRef.current = messages;
 
+  // The @ menu: everyone-at-once first in a channel, then the people in it.
   const mentionMatches = useMemo(() => {
     if (mentionQuery === null) return [];
     const q = mentionQuery.toLowerCase();
-    return mentionable.filter((p) => p.display_name.toLowerCase().includes(q)).slice(0, 6);
-  }, [mentionQuery, mentionable]);
+    const everyone = canMentionEveryone && "everyone".startsWith(q)
+      ? [{ id: -1, display_name: "everyone", email: "", role: "", hint: `Notify all ${canMentionEveryone} members` }]
+      : [];
+    const people = mentionable
+      .filter((p) => p.display_name.toLowerCase().includes(q))
+      .map((p) => ({ ...p, hint: undefined as string | undefined }));
+    return [...everyone, ...people].slice(0, 6);
+  }, [mentionQuery, mentionable, canMentionEveryone]);
+
+  // Tell the server we are composing, at most once every couple of seconds.
+  function pingTyping() {
+    const now = Date.now();
+    if (!activeId || now - lastTypingPing.current < 2500) return;
+    lastTypingPing.current = now;
+    api(`/chat/channels/${activeId}/typing`, { method: "POST" }).catch(() => undefined);
+  }
+
+  async function toggleReaction(messageId: number, emoji: string) {
+    setPickerFor(null);
+    // Show it straight away; the next poll confirms it.
+    setReactions((prev) => {
+      const found = prev.find((r) => r.message_id === messageId && r.emoji === emoji);
+      if (!found) return [...prev, { message_id: messageId, emoji, count: 1, mine: 1 }];
+      const count = found.count + (found.mine ? -1 : 1);
+      return count <= 0
+        ? prev.filter((r) => r !== found)
+        : prev.map((r) => (r === found ? { ...r, count, mine: found.mine ? 0 : 1 } : r));
+    });
+    await api(`/chat/messages/${messageId}/reactions`, { method: "POST", body: JSON.stringify({ emoji }) }).catch(() => undefined);
+    if (activeId) await loadMessages(activeId, true);
+  }
+
+  async function saveEdit() {
+    if (!editing?.body.trim()) { setEditing(null); return; }
+    const { id, body } = editing;
+    setEditing(null);
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, body, edited_at: new Date().toISOString() } : m)));
+    await api(`/chat/messages/${id}`, { method: "PUT", body: JSON.stringify({ body }) }).catch(() => undefined);
+  }
 
   function onDraftChange(value: string, caret: number) {
     setDraft(value);
+    if (value.trim()) pingTyping();
     const token = value.slice(0, caret).match(/@([\w.\-]*)$/);
     setMentionQuery(token ? token[1] : null);
     setMentionIdx(0);
@@ -2286,7 +2373,8 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
     const caret = area?.selectionStart ?? draft.length;
     const before = draft.slice(0, caret).replace(/@([\w.\-]*)$/, `@${mentionToken(person.display_name)} `);
     setDraft(before + draft.slice(caret));
-    setMentionIds((ids) => (ids.includes(person.id) ? ids : [...ids, person.id]));
+    // "@everyone" is resolved from the text on the server, not from an id.
+    if (person.id > 0) setMentionIds((ids) => (ids.includes(person.id) ? ids : [...ids, person.id]));
     setMentionQuery(null);
     requestAnimationFrame(() => { area?.focus(); area?.setSelectionRange(before.length, before.length); });
   }
@@ -2308,7 +2396,21 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
       // each append the same row, which is why a sent message appeared twice.
       const current = messagesRef.current;
       const after = incremental && current.length ? current[current.length - 1].id : 0;
-      const d = await api<{ messages: ChatMessage[] }>(`/chat/channels/${channelId}/messages?after=${after}`);
+      const d = await api<{ messages: ChatMessage[]; reactions?: ChatReaction[]; typing?: TypingPerson[]; edited?: ChatMessage[] }>(
+        `/chat/channels/${channelId}/messages?after=${after}`,
+      );
+      setReactions(d.reactions ?? []);
+      setTyping(d.typing ?? []);
+      // Edits and deletions land on messages the cursor has already passed.
+      if (d.edited?.length) {
+        const patches = new Map(d.edited.map((m) => [m.id, m]));
+        setMessages((prev) => prev.map((m) => {
+          const patch = patches.get(m.id);
+          return patch && (patch.body !== m.body || patch.edited_at !== m.edited_at || patch.deleted_at !== m.deleted_at)
+            ? { ...m, body: patch.body, edited_at: patch.edited_at, deleted_at: patch.deleted_at }
+            : m;
+        }));
+      }
       if (!d.messages.length) return;
       setMessages((prev) => {
         if (!incremental) return d.messages;
@@ -2341,8 +2443,10 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
     jumpOnNextRender.current = true;
     setUnseenBelow(false);
     loadMessages(activeId);
-    api<{ people: ChatPerson[] }>(`/chat/channels/${activeId}/mentionable`)
-      .then((d) => setMentionable(d.people)).catch(() => setMentionable([]));
+    setReactions([]); setTyping([]); setEditing(null); setPickerFor(null);
+    api<{ people: ChatPerson[]; everyone?: number }>(`/chat/channels/${activeId}/mentionable`)
+      .then((d) => { setMentionable(d.people); setCanMentionEveryone(d.everyone ?? 0); })
+      .catch(() => { setMentionable([]); setCanMentionEveryone(0); });
   }, [activeId]);
 
   // Polling: new messages for the open channel, plus unread badges elsewhere.
@@ -2533,7 +2637,9 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                 className={classNames("flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition",
                   c.id === activeId ? "bg-orange-50 font-bold text-brand" : "font-semibold text-stone-600 hover:bg-stone-50")}>
                 <span className="relative shrink-0">
-                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-stone-200 text-[10px] font-bold text-stone-600">{initialsOf(c.peer_name || "?")}</span>
+                  <span className={classNames("flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold", AVATAR_TONES[toneIndex(c.peer_id ?? c.peer_name ?? "?")])}>
+                    {initialsOf(c.peer_name || "?")}
+                  </span>
                   <PresenceDot status={c.peer_presence} className="absolute -bottom-0.5 -right-0.5" />
                 </span>
                 <span className="min-w-0 flex-1">
@@ -2559,7 +2665,9 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
             </button>
             {active?.kind === "dm" ? (
               <span className="relative shrink-0">
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(active.peer_name || "?")}</span>
+                <span className={classNames("flex h-9 w-9 items-center justify-center rounded-full text-[11px] font-bold", AVATAR_TONES[toneIndex(active.peer_id ?? active.peer_name ?? "?")])}>
+                  {initialsOf(active.peer_name || "?")}
+                </span>
                 <PresenceDot status={active.peer_presence} className="absolute -bottom-0.5 -right-0.5" />
               </span>
             ) : null}
@@ -2583,18 +2691,29 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
               }
               const m = row.message;
               const mine = m.user_id === currentUserId;
+              const tone = toneIndex(m.user_id);
+              const mineEdit = editing?.id === m.id;
+              const mine_reactions = reactions.filter((r) => r.message_id === m.id);
               return (
-                <div key={row.key} className={classNames("group relative flex gap-3 rounded-lg px-2 hover:bg-stone-50/70", row.grouped ? "py-0.5" : "mt-2 py-1")}>
+                <div key={row.key} className={classNames(
+                  "group relative flex gap-3 rounded-lg px-2 transition",
+                  row.grouped ? "py-0.5" : "mt-2 py-1",
+                  // Your own lines carry a faint brand rail so the two sides of a
+                  // conversation are never mistaken for one another.
+                  mine ? "border-l-2 border-brand/60 bg-orange-50/40 hover:bg-orange-50/70" : "border-l-2 border-transparent hover:bg-stone-50/70",
+                )}>
                   {row.grouped ? (
                     <span className="w-9 shrink-0 pt-0.5 text-right text-[10px] text-transparent group-hover:text-slate-400">{clockTime(m.created_at)}</span>
                   ) : (
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(m.author_name)}</span>
+                    <span className={classNames("flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[11px] font-bold", AVATAR_TONES[tone])}>
+                      {initialsOf(m.author_name)}
+                    </span>
                   )}
 
                   <div className="min-w-0 flex-1">
                     {!row.grouped ? (
-                      <p className="flex items-baseline gap-2">
-                        <span className="text-sm font-bold text-ink">{mine ? "You" : m.author_name}</span>
+                      <p className="flex flex-wrap items-baseline gap-2">
+                        <span className={classNames("text-sm font-bold", mine ? "text-brand" : NAME_TONES[tone])}>{mine ? "You" : m.author_name}</span>
                         <span className="text-[11px] text-slate-400">{clockTime(m.created_at)}</span>
                       </p>
                     ) : null}
@@ -2607,9 +2726,28 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
 
                     {m.deleted_at ? (
                       <p className="text-sm italic text-slate-400">Message deleted</p>
+                    ) : mineEdit ? (
+                      <div className="mt-1">
+                        <textarea autoFocus className="input min-h-[60px] w-full resize-none text-sm"
+                          value={editing.body}
+                          onChange={(e) => setEditing({ id: m.id, body: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEdit(); }
+                            if (e.key === "Escape") { e.preventDefault(); setEditing(null); }
+                          }} />
+                        <div className="mt-1 flex gap-2">
+                          <button type="button" className="btn btn-primary px-3 py-1 text-xs" onClick={saveEdit}>Save</button>
+                          <button type="button" className="btn btn-soft px-3 py-1 text-xs" onClick={() => setEditing(null)}>Cancel</button>
+                        </div>
+                      </div>
                     ) : (
                       <>
-                        {m.body ? <p className="whitespace-pre-wrap break-words text-sm text-ink">{highlightMentions(m.body, people)}</p> : null}
+                        {m.body ? (
+                          <p className="whitespace-pre-wrap break-words text-sm text-ink">
+                            {highlightMentions(m.body, people)}
+                            {m.edited_at ? <span className="ml-1 text-[10px] text-slate-400">(edited)</span> : null}
+                          </p>
+                        ) : null}
                         {m.attachment ? (
                           m.attachment.startsWith("data:image")
                             ? <img src={m.attachment} alt={m.attachment_name ?? "attachment"} className="mt-1 max-h-64 rounded-xl border border-line" />
@@ -2617,13 +2755,42 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                         ) : null}
                       </>
                     )}
+
+                    {/* Reactions people have already left */}
+                    {mine_reactions.length ? (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {mine_reactions.map((r) => (
+                          <button key={r.emoji} type="button" title={r.who ?? undefined}
+                            onClick={() => toggleReaction(m.id, r.emoji)}
+                            className={classNames("flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition",
+                              r.mine ? "border-brand bg-orange-50 text-brand" : "border-line bg-white text-stone-600 hover:border-stone-300")}>
+                            <span>{r.emoji}</span><span className="font-semibold">{r.count}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
 
-                  {!m.deleted_at ? (
-                    <div className="absolute right-2 top-0 hidden gap-1 rounded-lg border border-line bg-white p-0.5 shadow-sm group-hover:flex">
+                  {!m.deleted_at && !mineEdit ? (
+                    <div className="absolute right-2 top-0 hidden items-center gap-0.5 rounded-lg border border-line bg-white p-0.5 shadow-sm group-hover:flex">
+                      <button type="button" aria-label="Add reaction" className="rounded px-1.5 py-0.5 text-sm hover:bg-stone-100"
+                        onClick={() => setPickerFor(pickerFor === m.id ? null : m.id)}>🙂</button>
                       <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-slate-500 hover:text-brand" onClick={() => setReplyTo(m)}>Reply</button>
+                      {mine ? <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-slate-500 hover:text-brand" onClick={() => setEditing({ id: m.id, body: m.body ?? "" })}>Edit</button> : null}
                       {mine ? <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-slate-500 hover:text-rose-600" onClick={() => removeMessage(m.id)}>Delete</button> : null}
                     </div>
+                  ) : null}
+
+                  {pickerFor === m.id ? (
+                    <>
+                      <div className="fixed inset-0 z-20" onClick={() => setPickerFor(null)} />
+                      <div className="absolute right-2 top-7 z-30 flex gap-1 rounded-xl border border-line bg-white p-1 shadow-lg">
+                        {REACTION_CHOICES.map((emoji) => (
+                          <button key={emoji} type="button" className="rounded-lg px-1.5 py-1 text-lg hover:bg-stone-100"
+                            onClick={() => toggleReaction(m.id, emoji)}>{emoji}</button>
+                        ))}
+                      </div>
+                    </>
                   ) : null}
                 </div>
               );
@@ -2643,8 +2810,23 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
             </button>
           ) : null}
 
+          {typing.length ? (
+            <div className="flex items-center gap-2 border-t border-line px-4 py-1.5 text-xs text-slate-500">
+              <span className="flex gap-0.5">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
+              </span>
+              {typing.length === 1
+                ? `${typing[0].display_name} is typing…`
+                : typing.length === 2
+                  ? `${typing[0].display_name} and ${typing[1].display_name} are typing…`
+                  : `${typing.length} people are typing…`}
+            </div>
+          ) : null}
+
           {active ? (
-            <form onSubmit={send} className="border-t border-line p-3">
+            <form onSubmit={send} className={classNames("border-line p-3", typing.length ? "" : "border-t")}>
               {replyTo ? (
                 <div className="mb-2 flex items-center justify-between rounded-lg bg-stone-50 px-3 py-2 text-xs">
                   <span className="truncate text-slate-500">Replying to <b>{replyTo.author_name}</b>: {(replyTo.body || "attachment").slice(0, 60)}</span>
@@ -2666,8 +2848,14 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                       <button key={p.id} type="button" onMouseDown={(e) => { e.preventDefault(); insertMention(p); }}
                         onMouseEnter={() => setMentionIdx(i)}
                         className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", i === mentionIdx ? "bg-orange-50 text-brand" : "text-stone-600")}>
-                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
-                        <span className="truncate font-semibold">{p.display_name}</span>
+                        <span className={classNames("flex h-6 w-6 items-center justify-center rounded-full text-[9px] font-bold",
+                          p.id === -1 ? "bg-brand text-white" : AVATAR_TONES[toneIndex(p.id)])}>
+                          {p.id === -1 ? "@" : initialsOf(p.display_name)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-semibold">{p.display_name}</span>
+                          {p.hint ? <span className="block truncate text-[10px] font-medium text-slate-400">{p.hint}</span> : null}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -2728,7 +2916,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
               {people.map((p) => (
                 <button key={p.id} type="button" onClick={() => startDm(p.id)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-stone-50">
                   <span className="relative shrink-0">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
+                    <span className={classNames("flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-bold", AVATAR_TONES[toneIndex(p.id)])}>{initialsOf(p.display_name)}</span>
                     <PresenceDot status={p.presence} className="absolute -bottom-0.5 -right-0.5" />
                   </span>
                   <span className="min-w-0"><span className="block truncate font-semibold text-ink">{p.display_name}</span><span className="block truncate text-xs text-slate-500">{p.role} · {lastSeenLabel(p.presence, p.last_seen_at)}</span></span>

@@ -324,7 +324,7 @@ function StatCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="mt-2 text-2xl font-bold text-ink">{value}</p>
+          <p className="tnum mt-2 text-2xl font-bold text-ink">{value}</p>
           {sub ? <p className="mt-1 text-xs text-slate-500">{sub}</p> : null}
         </div>
         <div className="rounded-md bg-sky-50 p-2 text-brand">
@@ -625,7 +625,7 @@ function AdminDashboard() {
       {/* Headline: what is still to go out, not what the month cost. */}
       <div className="card border-l-4 border-l-brand bg-gradient-to-r from-orange-50 to-white p-6">
         <p className="text-xs font-semibold uppercase tracking-wider text-brand">Outstanding · {summary.lastMonthLabel ?? "last month"}</p>
-        <p className="mt-1 text-4xl font-extrabold text-ink">{currency.format(summary.lastMonthOutstanding ?? summary.lastMonthPayable ?? 0)}</p>
+        <p className="tnum mt-1 text-4xl font-extrabold text-ink">{currency.format(summary.lastMonthOutstanding ?? summary.lastMonthPayable ?? 0)}</p>
         <p className="mt-1 text-sm text-slate-500">
           Still to pay after attendance deductions.
           {summary.lastMonthPaid ? ` ${currency.format(summary.lastMonthPaid)} already paid of ${currency.format(summary.lastMonthPayable ?? 0)}.` : ` Across ${summary.totalEmployees} active employee${summary.totalEmployees === 1 ? "" : "s"}.`}
@@ -1414,11 +1414,11 @@ function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloa
           {showSalary ? (
             <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Per day</p><p className="text-lg font-bold text-ink">{currency.format(data.summary.perDay ?? 0)}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Per day</p><p className="tnum text-lg font-bold text-ink">{currency.format(data.summary.perDay ?? 0)}</p></div>
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Paid days</p><p className="text-lg font-bold text-emerald-600">{data.summary.paidDays}</p></div>
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deduction days</p><p className="text-lg font-bold text-rose-600">{data.summary.deductionDays}</p></div>
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deductions</p><p className="text-lg font-bold text-rose-600">-{currency.format(data.summary.deductions ?? 0)}</p></div>
-              <div className="rounded-xl border-2 border-brand/30 bg-orange-50 p-3"><p className="text-[11px] font-semibold uppercase text-brand">Net payable</p><p className="text-lg font-extrabold text-brand">{currency.format(data.summary.net ?? 0)}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deductions</p><p className="tnum text-lg font-bold text-rose-600">-{currency.format(data.summary.deductions ?? 0)}</p></div>
+              <div className="rounded-xl border-2 border-brand/30 bg-orange-50 p-3"><p className="text-[11px] font-semibold uppercase text-brand">Net payable</p><p className="tnum text-lg font-extrabold text-brand">{currency.format(data.summary.net ?? 0)}</p></div>
             </div>
           ) : (
             <div className="mt-4 grid gap-3 sm:grid-cols-4">
@@ -1446,7 +1446,7 @@ function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloa
                 <p className="mt-1 truncate text-[11px] font-semibold">{d.status}</p>
                 {d.check_in ? <p className="text-[10px] opacity-80">{d.check_in.slice(0, 5)}{d.check_out ? `–${d.check_out.slice(0, 5)}` : ""}</p> : null}
                 {showSalary
-                  ? (d.factor > 0 ? <p className="text-[10px] font-bold">-{currency.format((data.summary.perDay ?? 0) * d.factor)}</p> : <p className="text-[10px] opacity-70">Paid</p>)
+                  ? (d.factor > 0 ? <p className="tnum text-[10px] font-bold">-{currency.format((data.summary.perDay ?? 0) * d.factor)}</p> : <p className="text-[10px] opacity-70">Paid</p>)
                   : (d.hours > 0 ? <p className="text-[10px] opacity-70">{d.hours.toFixed(1)}h</p> : null)}
               </button>
             ))}
@@ -4046,17 +4046,17 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="card p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Outstanding</p>
-            <p className="mt-1 text-2xl font-bold text-rose-600">{currency.format(outstandingTotal)}</p>
+            <p className="tnum mt-1 text-2xl font-bold text-rose-600">{currency.format(outstandingTotal)}</p>
             <p className="text-xs text-slate-400">{unpaidRows.length} unpaid</p>
           </div>
           <div className="card p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Paid</p>
-            <p className="mt-1 text-2xl font-bold text-emerald-600">{currency.format(paidTotal)}</p>
+            <p className="tnum mt-1 text-2xl font-bold text-emerald-600">{currency.format(paidTotal)}</p>
             <p className="text-xs text-slate-400">{rows.length - unpaidRows.length} settled</p>
           </div>
           <div className="card p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total</p>
-            <p className="mt-1 text-2xl font-bold text-ink">{currency.format(outstandingTotal + paidTotal)}</p>
+            <p className="tnum mt-1 text-2xl font-bold text-ink">{currency.format(outstandingTotal + paidTotal)}</p>
             <p className="text-xs text-slate-400">{rows.length} salary rows</p>
           </div>
         </div>

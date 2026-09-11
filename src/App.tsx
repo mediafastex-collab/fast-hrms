@@ -1040,7 +1040,7 @@ function Employees() {
         title="Employees"
         rows={filtered}
         columns={[
-          ["Employee", (row) => <div className="font-semibold text-ink">{row.full_name}<div className="tnum text-xs font-normal text-slate-500">{row.employee_code}</div></div>],
+          ["Employee", (row) => <div className="font-semibold text-ink">{row.full_name}<div className="code text-xs font-normal text-slate-500">{row.employee_code}</div></div>],
           ["Email", (row) => row.email],
           ["Department", (row) => row.department_name ?? "-"],
           ["Designation", (row) => row.designation_name ?? "-"],

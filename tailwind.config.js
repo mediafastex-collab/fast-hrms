@@ -4,9 +4,9 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"IBM Plex Sans Variable"', '"IBM Plex Sans"', "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
-        display: ['"IBM Plex Sans Variable"', '"IBM Plex Sans"', "ui-sans-serif", "system-ui", "sans-serif"],
-        mono: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        sans: ['"Geist Variable"', "Geist", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+        display: ['"Geist Variable"', "Geist", "ui-sans-serif", "system-ui", "sans-serif"],
+        mono: ['"Geist Mono Variable"', '"Geist Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       colors: {
         ink: "#1c1917",

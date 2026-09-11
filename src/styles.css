@@ -5,7 +5,7 @@
 :root {
   color: #1c1917;
   background: #faf7f2;
-  font-family: "IBM Plex Sans Variable", "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Geist Variable", Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis-weight: none;
   text-rendering: optimizeLegibility;
 }
@@ -14,27 +14,37 @@ body {
   margin: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  letter-spacing: -0.003em;
+  letter-spacing: -0.011em;
+  line-height: 1.55;
 }
 
-/* Plex is already fairly tight; headings just need the line closed up a little. */
+/* Large type carries its own weight — the bigger it gets, the tighter it wants
+   to be set. Loose headings are the usual tell of an unconsidered interface. */
 h1, h2, h3, h4, h5, h6 {
-  letter-spacing: -0.018em;
-  line-height: 1.22;
+  letter-spacing: -0.032em;
+  line-height: 1.15;
 }
 
-/* Anything the eye scans down a column goes monospaced: amounts, employee
-   codes, clock times, ids. Every glyph occupies the same cell, so the figures
-   line up on their own and the data reads like a terminal rather than prose. */
+/* Figures stay in the sans, set with tabular numerals: every digit takes the
+   same width, so amounts and times still line up in a column — but without the
+   slashed zeros and code-editor air a monospace brings to a money column.
+   That is how Stripe, Linear and the rest set their numbers. */
 .tnum,
 time,
-td:has(> .tnum),
 input[type="number"],
 input[type="date"],
 input[type="time"] {
-  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+  font-feature-settings: "ss03";
+  letter-spacing: -0.014em;
+}
+
+/* The monospace is kept for what is genuinely a machine identifier. */
+.mono,
+.code {
+  font-family: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
 }
 
 /* Tables keep the sans face for names and labels, but never let digits drift. */
@@ -42,10 +52,7 @@ table {
   font-variant-numeric: tabular-nums;
 }
 
-/* Small uppercase labels: Plex needs a touch more air than Inter did. */
-.mono {
-  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-}
+
 
 button,
 input,

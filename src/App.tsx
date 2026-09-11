@@ -2273,6 +2273,33 @@ function highlightMentions(body: string, people: ChatPerson[], onBrand = false) 
     : part)));
 }
 
+// Resize to something a chat bubble can actually use and re-encode as JPEG.
+// Screenshots come off the clipboard several megabytes large; this brings a
+// typical one to a couple of hundred KB without a visible loss at display size.
+function shrinkImage(file: File, maxEdge = 1600, quality = 0.85): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { reject(new Error("no canvas")); return; }
+      // JPEG has no alpha, so paint a white ground first — otherwise anything
+      // transparent comes out black.
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("unreadable image")); };
+    img.src = url;
+  });
+}
+
 function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
   currentUserId: number; initialChannelId?: number | null; onActiveChannel?: (id: number | null) => void;
 }) {
@@ -2522,13 +2549,62 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
     setSending(false);
   }
 
-  function pickFile(f?: File) {
+  // A screenshot off the clipboard is routinely 2-5MB of PNG, which the old
+  // flat size check simply rejected. Images are resized and re-encoded instead,
+  // so pasting one just works; anything that is not an image still has to fit.
+  async function pickFile(f?: File | null) {
     setMessage("");
     if (!f) return;
-    if (f.size > 1.5 * 1024 * 1024) { setMessage("Attachments must be under 1.5MB."); return; }
-    const reader = new FileReader();
-    reader.onload = () => setFile({ data: String(reader.result), name: f.name });
-    reader.readAsDataURL(f);
+    if (!f.type.startsWith("image/")) {
+      if (f.size > 1.5 * 1024 * 1024) { setMessage("Files must be under 1.5MB. Images are compressed automatically."); return; }
+      const reader = new FileReader();
+      reader.onload = () => setFile({ data: String(reader.result), name: f.name });
+      reader.readAsDataURL(f);
+      return;
+    }
+    try {
+      setFile({ data: await shrinkImage(f), name: f.name || "image.jpg" });
+    } catch {
+      setMessage("That image could not be read.");
+    }
+  }
+
+  // Drag anywhere over the thread to attach; the counter guards against the
+  // dragleave that fires when the cursor crosses a child element.
+  const dragDepth = useRef(0);
+  const [dragActive, setDragActive] = useState(false);
+
+  function onDragEnter(e: React.DragEvent) {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setDragActive(true);
+  }
+  function onDragLeave(e: React.DragEvent) {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    dragDepth.current -= 1;
+    if (dragDepth.current <= 0) { dragDepth.current = 0; setDragActive(false); }
+  }
+  function onDrop(e: React.DragEvent) {
+    if (!e.dataTransfer.files?.length) return;
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragActive(false);
+    pickFile(e.dataTransfer.files[0]);
+  }
+
+  // Cmd+V of a screenshot, or of an image copied from anywhere else.
+  function onPaste(e: React.ClipboardEvent) {
+    const item = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === "file" && i.type.startsWith("image/"));
+    if (!item) return;
+    const blob = item.getAsFile();
+    if (!blob) return;
+    e.preventDefault();
+    // A clipboard bitmap arrives unnamed or as a generic "image.png"; give it a
+    // dated name so the thread is readable, but keep a real filename if there is one.
+    const generic = !blob.name || /^image\.\w+$/i.test(blob.name);
+    const name = generic ? `screenshot-${new Date().toISOString().slice(0, 16).replace("T", " ")}.jpg` : blob.name;
+    pickFile(new File([blob], name, { type: blob.type }));
   }
 
   async function startDm(userId: number) {
@@ -2654,10 +2730,22 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
         </div>
 
         {/* The thread */}
-        <div className={classNames(
-          "card relative h-[calc(100dvh-15rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-13rem)]",
-          mobilePane === "list" ? "hidden lg:flex" : "flex",
-        )}>
+        <div
+          onDragEnter={onDragEnter}
+          onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          className={classNames(
+            "card relative h-[calc(100dvh-15rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-13rem)]",
+            mobilePane === "list" ? "hidden lg:flex" : "flex",
+          )}>
+          {dragActive && active ? (
+            <div className="pointer-events-none absolute inset-2 z-40 flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-brand bg-orange-50/90">
+              <ImageIcon size={28} className="text-brand" />
+              <p className="text-sm font-bold text-brand">Drop to attach</p>
+              <p className="text-xs text-slate-500">Images are resized automatically</p>
+            </div>
+          ) : null}
           <div className="flex items-center gap-3 border-b border-line px-4 py-3">
             <button type="button" onClick={() => setMobilePane("list")}
               className="rounded-lg p-1 text-slate-400 hover:bg-stone-100 lg:hidden" aria-label="Back to conversations">
@@ -2834,9 +2922,17 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                 </div>
               ) : null}
               {file ? (
-                <div className="mb-2 flex items-center justify-between rounded-lg bg-orange-50 px-3 py-2 text-xs">
-                  <span className="truncate text-brand">📎 {file.name}</span>
-                  <button type="button" onClick={() => setFile(null)}><X size={14} /></button>
+                <div className="mb-2 flex items-center gap-3 rounded-xl border border-line bg-stone-50 p-2">
+                  {file.data.startsWith("data:image") ? (
+                    <img src={file.data} alt="" className="h-14 w-14 shrink-0 rounded-lg border border-line object-cover" />
+                  ) : (
+                    <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg border border-line bg-white text-xl">📎</span>
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-semibold text-ink">{file.name}</span>
+                    <span className="tnum block text-[11px] text-slate-400">{Math.round((file.data.length * 0.75) / 1024)} KB · ready to send</span>
+                  </span>
+                  <button type="button" aria-label="Remove attachment" className="shrink-0 rounded-lg p-1 text-slate-400 hover:bg-stone-200 hover:text-ink" onClick={() => setFile(null)}><X size={15} /></button>
                 </div>
               ) : null}
 
@@ -2868,6 +2964,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                   placeholder={active.kind === "dm" ? `Message ${active.peer_name} — @ to notify` : `Message #${active.name} — @ to notify`}
                   value={draft}
                   onChange={(e) => onDraftChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+                  onPaste={onPaste}
                   onBlur={() => setMentionQuery(null)}
                   onKeyDown={(e) => {
                     if (mentionMatches.length) {
@@ -2885,7 +2982,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                     <Plus size={16} />
                     <input type="file" className="hidden" accept="image/*,application/pdf" onChange={(e) => pickFile(e.target.files?.[0])} />
                   </label>
-                  <span className="hidden text-[11px] text-slate-400 sm:inline">Enter to send · Shift+Enter for a new line</span>
+                  <span className="hidden text-[11px] text-slate-400 sm:inline">Enter to send · paste or drop an image to attach</span>
                   <button type="submit" className="btn btn-primary ml-auto px-4 py-1.5" disabled={sending || (!draft.trim() && !file)}>Send</button>
                 </div>
               </div>

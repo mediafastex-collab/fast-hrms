@@ -3104,6 +3104,35 @@ function byPriorityThenDue(a: WorkTask, b: WorkTask) {
   return a.due_date.localeCompare(b.due_date) || b.id - a.id;
 }
 
+// Due date first, priority as the tie-break — the mirror of the default sort,
+// for when a deadline matters more than how urgent something was marked.
+function byDueThenPriority(a: WorkTask, b: WorkTask) {
+  if (!a.due_date && !b.due_date) return byPriorityThenDue(a, b);
+  if (!a.due_date) return 1;
+  if (!b.due_date) return -1;
+  return a.due_date.localeCompare(b.due_date) || byPriorityThenDue(a, b);
+}
+
+// A filter set someone bothered to name, kept per browser.
+type SavedFilterValues = {
+  query?: string; statusFilter?: string; dueFilter?: string; priorityFilter?: string;
+  sortBy?: "priority" | "due" | "recent"; view?: "board" | "list" | "calendar";
+};
+type SavedFilter = { name: string; values: SavedFilterValues };
+
+const SAVED_FILTERS_KEY = "fast_hrms_task_filters";
+
+function loadSavedFilters(): SavedFilter[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SAVED_FILTERS_KEY) ?? "[]");
+    return Array.isArray(raw) ? raw.filter((f) => f && typeof f.name === "string" && f.values) : [];
+  } catch { return []; }
+}
+
+function storeSavedFilters(filters: SavedFilter[]) {
+  try { localStorage.setItem(SAVED_FILTERS_KEY, JSON.stringify(filters)); } catch { /* private mode */ }
+}
+
 // A small labelled flag, so priority is readable in every view rather than a
 // coloured dot you have to hover to decode.
 function PriorityTag({ priority, compact }: { priority: string; compact?: boolean }) {
@@ -3194,6 +3223,12 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [dueFilter, setDueFilter] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState("");
+  const [sortBy, setSortBy] = useState<"priority" | "due" | "recent">("priority");
+  const [savedFilters, setSavedFilters] = useState<SavedFilter[]>(() => loadSavedFilters());
+  const [savingFilter, setSavingFilter] = useState(false);
+  const [filterName, setFilterName] = useState("");
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const [spaceId, setSpaceId] = useState(0);
   const [listId, setListId] = useState(0);
   const [mine, setMine] = useState(!isAdmin);
@@ -3207,6 +3242,11 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [draft, setDraft] = useState("");
   const [dragId, setDragId] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
+  // Adding a task should not always cost a modal: type a title into the column
+  // and press Enter. The full form stays on the header button for detail.
+  const [quickAddIn, setQuickAddIn] = useState<string | null>(null);
+  const [quickTitle, setQuickTitle] = useState("");
+  const [quickBusy, setQuickBusy] = useState(false);
 
   async function loadMeta() {
     const m = await api<{ spaces: WorkSpace[]; lists: WorkList[]; people: WorkPerson[] }>("/work/meta");
@@ -3228,6 +3268,17 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   }
 
   useEffect(() => { localStorage.setItem("fast_hrms_task_view", view); }, [view]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const el = e.target as HTMLElement | null;
+      const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (e.key === "/" && !typing) { e.preventDefault(); searchRef.current?.focus(); }
+      if (e.key === "Escape" && el === searchRef.current) { setQuery(""); searchRef.current?.blur(); }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   useEffect(() => { loadMeta().catch(() => undefined); }, []);
   useEffect(() => { refresh(); }, [spaceId, listId, mine, assigneeId]);
 
@@ -3245,8 +3296,11 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     ? (() => { const l = activeLists.find((x) => x.id === listId); return l ? `${l.space_name} › ${l.name}` : "All work"; })()
     : spaceId ? (activeSpaces.find((s) => s.id === spaceId)?.name ?? "All work") : "All work";
 
+  // Which list a quick-add lands in. Only guess when there is nothing to guess
+  // between — otherwise the full form asks, since the list is compulsory.
   const defaultListId = listId ? String(listId)
     : spaceId ? String(activeLists.find((l) => l.space_id === spaceId)?.id ?? "")
+    : activeLists.length === 1 ? String(activeLists[0].id)
     : "";
 
   async function decide(kind: "spaces" | "lists", id: number, status: "Active" | "Rejected") {
@@ -3280,6 +3334,21 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     } catch (err) { setMessage(err instanceof Error ? err.message : "Could not delete"); }
   }
 
+  async function quickAdd(status: string) {
+    const title = quickTitle.trim();
+    if (!title || !defaultListId) return;
+    setQuickBusy(true);
+    try {
+      await api("/work/tasks", { method: "POST", body: JSON.stringify({ list_id: Number(defaultListId), title, status }) });
+      setQuickTitle("");
+      await refresh();
+      await loadMeta();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not add that task");
+    }
+    setQuickBusy(false);
+  }
+
   async function setStatus(task: WorkTask, status: string) {
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status } : t)));
     try {
@@ -3295,6 +3364,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
       .filter((t) => {
         if (needle && !`${t.title} ${t.description ?? ""} ${t.list_name}`.toLowerCase().includes(needle)) return false;
         if (statusFilter && t.status !== statusFilter) return false;
+        if (priorityFilter && t.priority !== priorityFilter) return false;
         if (dueFilter) {
           const due = t.due_date ? Date.parse(t.due_date) : null;
           if (dueFilter === "overdue" && !isOverdue(t)) return false;
@@ -3304,8 +3374,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         }
         return true;
       })
-      .sort(byPriorityThenDue);
-  }, [tasks, query, statusFilter, dueFilter]);
+      .sort(sortBy === "recent" ? (a2, b2) => b2.id - a2.id : sortBy === "due" ? byDueThenPriority : byPriorityThenDue);
+  }, [tasks, query, statusFilter, dueFilter, priorityFilter, sortBy]);
 
   const grouped = useMemo(() => {
     const map: Record<string, WorkTask[]> = {};
@@ -3314,7 +3384,38 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     return map;
   }, [visibleTasks]);
 
-  const filtersOn = !!(query.trim() || statusFilter || dueFilter);
+  const filtersOn = !!(query.trim() || statusFilter || dueFilter || priorityFilter);
+
+  const currentFilter: SavedFilterValues = { query, statusFilter, dueFilter, priorityFilter, sortBy, view };
+
+  function applyFilter(f: SavedFilter) {
+    setQuery(f.values.query ?? "");
+    setStatusFilter(f.values.statusFilter ?? "");
+    setDueFilter(f.values.dueFilter ?? "");
+    setPriorityFilter(f.values.priorityFilter ?? "");
+    setSortBy(f.values.sortBy ?? "priority");
+    if (f.values.view) setView(f.values.view);
+  }
+
+  function saveCurrentFilter() {
+    const name = filterName.trim();
+    if (!name) return;
+    const next = [...savedFilters.filter((f) => f.name.toLowerCase() !== name.toLowerCase()), { name, values: currentFilter }];
+    setSavedFilters(next);
+    storeSavedFilters(next);
+    setFilterName("");
+    setSavingFilter(false);
+  }
+
+  function removeSavedFilter(name: string) {
+    const next = savedFilters.filter((f) => f.name !== name);
+    setSavedFilters(next);
+    storeSavedFilters(next);
+  }
+
+  function clearFilters() {
+    setQuery(""); setStatusFilter(""); setDueFilter(""); setPriorityFilter("");
+  }
 
   const done = visibleTasks.filter((t) => t.status === "Done").length;
   const overdue = visibleTasks.filter(isOverdue).length;
@@ -3412,12 +3513,16 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         <div className="flex flex-wrap items-center gap-2 p-3">
           <div className="relative min-w-[12rem] flex-1">
             <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input className="input h-9 py-0 pl-8 text-sm" placeholder="Search tasks by name…"
+            <input ref={searchRef} className="input h-9 py-0 pl-8 text-sm" placeholder="Search tasks by name…   /"
               value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
           <select className="input h-9 w-auto py-0 text-sm" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
             <option value="">Any status</option>
             {WORK_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
+          </select>
+          <select className="input h-9 w-auto py-0 text-sm" value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)}>
+            <option value="">Any priority</option>
+            {["Urgent", "High", "Normal", "Low"].map((p2) => <option key={p2} value={p2}>{p2}</option>)}
           </select>
           <select className="input h-9 w-auto py-0 text-sm" value={dueFilter} onChange={(e) => setDueFilter(e.target.value)}>
             <option value="">Any due date</option>
@@ -3426,12 +3531,46 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
             <option value="week">Due this week</option>
             <option value="none">No due date</option>
           </select>
+          <select className="input h-9 w-auto py-0 text-sm" value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
+            <option value="priority">Sort: priority</option>
+            <option value="due">Sort: due date</option>
+            <option value="recent">Sort: newest</option>
+          </select>
           {filtersOn ? (
-            <button type="button" className="rounded-full px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand"
-              onClick={() => { setQuery(""); setStatusFilter(""); setDueFilter(""); }}>
+            <button type="button" className="rounded-full px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand" onClick={clearFilters}>
               Clear
             </button>
           ) : null}
+        </div>
+
+        {/* Saved filters: name the set you keep coming back to, then reapply it
+            in one click. Kept in this browser, like the default view. */}
+        <div className="flex flex-wrap items-center gap-2 p-3">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Saved</span>
+          {savedFilters.length ? savedFilters.map((f) => (
+            <span key={f.name} className="flex items-center gap-1 rounded-full border border-line bg-white px-3 py-1 text-xs font-semibold text-stone-600 transition hover:border-stone-300">
+              <button type="button" onClick={() => applyFilter(f)}>{f.name}</button>
+              <button type="button" aria-label={`Delete saved filter ${f.name}`} className="text-slate-300 hover:text-rose-600"
+                onClick={() => removeSavedFilter(f.name)}><X size={11} /></button>
+            </span>
+          )) : <span className="text-xs text-slate-400">No saved filters yet.</span>}
+
+          {savingFilter ? (
+            <span className="flex items-center gap-1">
+              <input autoFocus className="input h-8 w-40 py-0 text-xs" placeholder="Name this view" value={filterName}
+                onChange={(e) => setFilterName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveCurrentFilter(); } if (e.key === "Escape") setSavingFilter(false); }} />
+              <button type="button" className="btn btn-primary px-3 py-1 text-xs" onClick={saveCurrentFilter}>Save</button>
+              <button type="button" className="btn btn-soft px-3 py-1 text-xs" onClick={() => { setSavingFilter(false); setFilterName(""); }}>Cancel</button>
+            </span>
+          ) : (
+            <button type="button" onClick={() => setSavingFilter(true)} disabled={!filtersOn}
+              className={classNames("ml-auto flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold transition",
+                filtersOn ? "text-brand hover:bg-orange-50" : "cursor-not-allowed text-slate-300")}
+              title={filtersOn ? "Save this filter set" : "Set a filter first"}>
+              <Plus size={12} />Save current filters
+            </button>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-3 p-3">
@@ -3513,10 +3652,34 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     </div>
                   </div>
                 ))}
-                <button type="button" onClick={() => setNewOpen({ status, listId: defaultListId })}
-                  className="flex w-full items-center gap-1 rounded-xl px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-white hover:text-brand">
-                  <Plus size={13} />Task
-                </button>
+                {quickAddIn === status ? (
+                  <div className="rounded-xl border border-brand bg-white p-2">
+                    <textarea autoFocus rows={2} value={quickTitle} disabled={quickBusy}
+                      onChange={(e) => setQuickTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); quickAdd(status); }
+                        if (e.key === "Escape") { setQuickAddIn(null); setQuickTitle(""); }
+                      }}
+                      placeholder="What needs doing?"
+                      className="w-full resize-none border-0 bg-transparent text-sm text-ink outline-none placeholder:text-slate-400" />
+                    <div className="mt-1 flex items-center gap-2">
+                      <button type="button" className="btn btn-primary px-3 py-1 text-xs" disabled={quickBusy || !quickTitle.trim()} onClick={() => quickAdd(status)}>
+                        {quickBusy ? "Adding…" : "Add"}
+                      </button>
+                      <button type="button" className="text-xs font-semibold text-slate-400 hover:text-ink" onClick={() => { setQuickAddIn(null); setQuickTitle(""); }}>Cancel</button>
+                      <button type="button" className="ml-auto text-[11px] font-semibold text-slate-400 hover:text-brand"
+                        onClick={() => { setNewOpen({ status, listId: defaultListId }); setQuickAddIn(null); setQuickTitle(""); }}>
+                        More options
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button"
+                    onClick={() => (defaultListId ? (setQuickAddIn(status), setQuickTitle("")) : setNewOpen({ status, listId: defaultListId }))}
+                    className="flex w-full items-center gap-1 rounded-xl px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-white hover:text-brand">
+                    <Plus size={13} />Task
+                  </button>
+                )}
               </div>
             </div>
           ))}

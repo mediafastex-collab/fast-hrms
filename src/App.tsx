@@ -3076,13 +3076,47 @@ function dueTone(due?: string | null, status?: string) {
   return "text-slate-500";
 }
 
-function dueLabel(due?: string | null) {
+// A finished task is never late, however long it sat there — saying "5d overdue"
+// on something already done is just wrong.
+function dueLabel(due?: string | null, status?: string) {
+  if (status === "Done") return due ? `Completed · due ${due}` : "Completed";
   if (!due) return "No due date";
   const diff = Math.round((Date.parse(due) - Date.parse(today)) / 86400000);
   if (diff === 0) return "Due today";
   if (diff === 1) return "Due tomorrow";
-  if (diff < 0) return `${Math.abs(diff)}d overdue`;
+  if (diff === -1) return "1 day overdue";
+  if (diff < 0) return `${Math.abs(diff)} days overdue`;
   return due;
+}
+
+function isOverdue(task: { due_date?: string | null; status: string }) {
+  return !!task.due_date && task.status !== "Done" && Date.parse(task.due_date) < Date.parse(today);
+}
+
+// Urgent first, then whatever is due soonest — undated work sinks to the bottom.
+const PRIORITY_RANK: Record<string, number> = { Urgent: 0, High: 1, Normal: 2, Low: 3 };
+function byPriorityThenDue(a: WorkTask, b: WorkTask) {
+  const rank = (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9);
+  if (rank !== 0) return rank;
+  if (!a.due_date && !b.due_date) return b.id - a.id;
+  if (!a.due_date) return 1;
+  if (!b.due_date) return -1;
+  return a.due_date.localeCompare(b.due_date) || b.id - a.id;
+}
+
+// A small labelled flag, so priority is readable in every view rather than a
+// coloured dot you have to hover to decode.
+function PriorityTag({ priority, compact }: { priority: string; compact?: boolean }) {
+  return (
+    <span className={classNames(
+      "inline-flex shrink-0 items-center gap-1 rounded-full font-bold uppercase tracking-wide",
+      compact ? "px-1.5 py-0 text-[9px]" : "px-2 py-0.5 text-[10px]",
+      priorityStyle[priority]?.chip,
+    )}>
+      <span className={classNames("h-1.5 w-1.5 rounded-full", priorityStyle[priority]?.bar)} />
+      {priority}
+    </span>
+  );
 }
 
 type PickerOption = { id: number; label: string; hint?: string };
@@ -3152,7 +3186,14 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [lists, setLists] = useState<WorkList[]>([]);
   const [people, setPeople] = useState<WorkPerson[]>([]);
   const [tasks, setTasks] = useState<WorkTask[]>([]);
-  const [view, setView] = useState<"board" | "list" | "calendar">("board");
+  // The view you last chose is the one you get next time.
+  const [view, setView] = useState<"board" | "list" | "calendar">(() => {
+    const saved = localStorage.getItem("fast_hrms_task_view");
+    return saved === "list" || saved === "calendar" || saved === "board" ? saved : "board";
+  });
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [dueFilter, setDueFilter] = useState("");
   const [spaceId, setSpaceId] = useState(0);
   const [listId, setListId] = useState(0);
   const [mine, setMine] = useState(!isAdmin);
@@ -3186,6 +3227,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     try { await loadTasks(); } catch (err) { setMessage(err instanceof Error ? err.message : "Failed to load tasks"); }
   }
 
+  useEffect(() => { localStorage.setItem("fast_hrms_task_view", view); }, [view]);
   useEffect(() => { loadMeta().catch(() => undefined); }, []);
   useEffect(() => { refresh(); }, [spaceId, listId, mine, assigneeId]);
 
@@ -3246,15 +3288,36 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     await refresh();
   }
 
+  const visibleTasks = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const startOfWeek = Date.parse(today);
+    return tasks
+      .filter((t) => {
+        if (needle && !`${t.title} ${t.description ?? ""} ${t.list_name}`.toLowerCase().includes(needle)) return false;
+        if (statusFilter && t.status !== statusFilter) return false;
+        if (dueFilter) {
+          const due = t.due_date ? Date.parse(t.due_date) : null;
+          if (dueFilter === "overdue" && !isOverdue(t)) return false;
+          if (dueFilter === "today" && (!due || due !== startOfWeek)) return false;
+          if (dueFilter === "week" && (!due || due < startOfWeek || due > startOfWeek + 7 * 86400000)) return false;
+          if (dueFilter === "none" && t.due_date) return false;
+        }
+        return true;
+      })
+      .sort(byPriorityThenDue);
+  }, [tasks, query, statusFilter, dueFilter]);
+
   const grouped = useMemo(() => {
     const map: Record<string, WorkTask[]> = {};
     for (const s of WORK_STATUSES) map[s] = [];
-    for (const t of tasks) (map[t.status] ??= []).push(t);
+    for (const t of visibleTasks) (map[t.status] ??= []).push(t);
     return map;
-  }, [tasks]);
+  }, [visibleTasks]);
 
-  const done = tasks.filter((t) => t.status === "Done").length;
-  const overdue = tasks.filter((t) => t.due_date && t.status !== "Done" && Date.parse(t.due_date) < Date.parse(today)).length;
+  const filtersOn = !!(query.trim() || statusFilter || dueFilter);
+
+  const done = visibleTasks.filter((t) => t.status === "Done").length;
+  const overdue = visibleTasks.filter(isOverdue).length;
 
   const nameInput = (
     <input autoFocus className="input h-7 w-40 py-0 text-xs" value={draft} onChange={(e) => setDraft(e.target.value)}
@@ -3345,11 +3408,38 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </div>
 
+        {/* Find a task by name, or narrow by where it stands and when it is due. */}
+        <div className="flex flex-wrap items-center gap-2 p-3">
+          <div className="relative min-w-[12rem] flex-1">
+            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input className="input h-9 py-0 pl-8 text-sm" placeholder="Search tasks by name…"
+              value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
+          <select className="input h-9 w-auto py-0 text-sm" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <option value="">Any status</option>
+            {WORK_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
+          </select>
+          <select className="input h-9 w-auto py-0 text-sm" value={dueFilter} onChange={(e) => setDueFilter(e.target.value)}>
+            <option value="">Any due date</option>
+            <option value="overdue">Overdue</option>
+            <option value="today">Due today</option>
+            <option value="week">Due this week</option>
+            <option value="none">No due date</option>
+          </select>
+          {filtersOn ? (
+            <button type="button" className="rounded-full px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand"
+              onClick={() => { setQuery(""); setStatusFilter(""); setDueFilter(""); }}>
+              Clear
+            </button>
+          ) : null}
+        </div>
+
         <div className="flex flex-wrap items-center gap-3 p-3">
           <div className="min-w-0">
             <p className="truncate text-sm font-bold text-ink">{scopeLabel}</p>
             <p className="text-xs text-slate-400">
-              {tasks.length - done} open{done ? ` · ${done} done` : ""}{overdue ? ` · ${overdue} overdue` : ""}
+              {visibleTasks.length - done} open{done ? ` · ${done} done` : ""}{overdue ? ` · ${overdue} overdue` : ""}
+              {filtersOn ? ` · filtered from ${tasks.length}` : ""}
             </p>
           </div>
           {isAdmin ? (
@@ -3380,7 +3470,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
               onDrop={(e) => {
                 e.preventDefault();
                 const id = dragId ?? Number(e.dataTransfer.getData("text/plain"));
-                const t = tasks.find((x) => x.id === id);
+                const t = visibleTasks.find((x) => x.id === id) ?? tasks.find((x) => x.id === id);
                 if (t && t.status !== status) setStatus(t, status);
                 setDragId(null); setDragOver(null);
               }}
@@ -3404,11 +3494,14 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                       "w-full cursor-grab rounded-xl border border-line bg-white p-3 text-left transition hover:border-stone-300 hover:shadow-sm active:cursor-grabbing",
                       dragId === t.id && "opacity-40",
                     )}>
+                    <div className="mb-1 flex items-center gap-1.5">
+                      <PriorityTag priority={t.priority} compact />
+                      {isOverdue(t) ? <span className="rounded-full bg-rose-100 px-1.5 text-[9px] font-bold uppercase text-rose-700">Late</span> : null}
+                    </div>
                     <p className="text-sm font-semibold leading-snug text-ink">{t.title}</p>
                     {!listId ? <p className="mt-1 truncate text-[11px] text-slate-400">{t.list_name}</p> : null}
                     <div className="mt-2 flex items-center gap-2">
-                      <span className={classNames("h-1.5 w-1.5 shrink-0 rounded-full", priorityStyle[t.priority]?.bar)} title={t.priority} />
-                      <span className={classNames("truncate text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date)}</span>
+                      <span className={classNames("truncate text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date, t.status)}</span>
                       {t.comment_count ? <span className="text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
                       <span className="ml-auto flex -space-x-1">
                         {t.assignees.slice(0, 3).map((a) => (
@@ -3437,6 +3530,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
               <thead className="bg-stone-50 text-[11px] uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-4 py-3 font-bold">Task</th>
+                  <th className="px-4 py-3 font-bold">Priority</th>
                   <th className="px-4 py-3 font-bold">List</th>
                   <th className="px-4 py-3 font-bold">Assignees</th>
                   <th className="px-4 py-3 font-bold">Due</th>
@@ -3444,15 +3538,15 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {tasks.length ? tasks.map((t) => (
+                {visibleTasks.length ? visibleTasks.map((t) => (
                   <tr key={t.id} className="cursor-pointer bg-white hover:bg-stone-50" onClick={() => setOpenTask(t)}>
                     <td className="px-4 py-3">
                       <span className="flex items-center gap-2">
-                        <span className={classNames("h-1.5 w-1.5 shrink-0 rounded-full", priorityStyle[t.priority]?.bar)} title={t.priority} />
                         <span className="font-semibold text-ink">{t.title}</span>
                         {t.comment_count ? <span className="text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
                       </span>
                     </td>
+                    <td className="px-4 py-3"><PriorityTag priority={t.priority} /></td>
                     <td className="px-4 py-3 text-xs text-slate-500">{t.list_name}</td>
                     <td className="px-4 py-3">
                       <span className="flex -space-x-1">
@@ -3462,7 +3556,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                         {!t.assignees.length ? <span className="text-xs text-slate-400">—</span> : null}
                       </span>
                     </td>
-                    <td className={classNames("px-4 py-3 text-xs", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date)}</td>
+                    <td className={classNames("px-4 py-3 text-xs", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date, t.status)}</td>
                     <td className="px-4 py-3">
                       <select className={classNames("input h-8 w-auto py-0 text-xs font-semibold", statusStyle[t.status])}
                         value={t.status} onClick={(e) => e.stopPropagation()} onChange={(e) => setStatus(t, e.target.value)}>
@@ -3470,14 +3564,14 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                       </select>
                     </td>
                   </tr>
-                )) : <tr><td className="px-4 py-10 text-center text-slate-500" colSpan={5}>Nothing here yet.</td></tr>}
+                )) : <tr><td className="px-4 py-10 text-center text-slate-500" colSpan={6}>{filtersOn ? "No task matches those filters." : "Nothing here yet."}</td></tr>}
               </tbody>
             </table>
           </div>
         </div>
       ) : null}
 
-      {view === "calendar" ? <WorkCalendar tasks={tasks} onOpen={setOpenTask} /> : null}
+      {view === "calendar" ? <WorkCalendar tasks={visibleTasks} onOpen={setOpenTask} /> : null}
 
       {openTask ? (
         <WorkTaskModal task={openTask} isAdmin={isAdmin} people={people} spaces={activeSpaces} lists={activeLists}
@@ -3511,6 +3605,8 @@ function WorkCalendar({ tasks, onOpen }: { tasks: WorkTask[]; onOpen: (t: WorkTa
   const byDay = useMemo(() => {
     const m: Record<string, WorkTask[]> = {};
     for (const t of tasks) if (t.due_date) (m[t.due_date] ??= []).push(t);
+    // Within a day, the most urgent work sits at the top of the cell.
+    for (const day of Object.keys(m)) m[day].sort(byPriorityThenDue);
     return m;
   }, [tasks]);
 
@@ -3538,8 +3634,11 @@ function WorkCalendar({ tasks, onOpen }: { tasks: WorkTask[]; onOpen: (t: WorkTa
               <div className="space-y-1">
                 {list.slice(0, 3).map((t) => (
                   <button key={t.id} type="button" onClick={() => onOpen(t)}
-                    className={classNames("block w-full truncate rounded px-1 py-0.5 text-left text-[10px] font-semibold", statusStyle[t.status])}>
-                    {t.title}
+                    title={`${t.priority} · ${t.title}`}
+                    className={classNames("flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-[10px] font-semibold", statusStyle[t.status])}>
+                    {/* The priority stripe carries into the calendar too. */}
+                    <span className={classNames("h-2.5 w-1 shrink-0 rounded-full", priorityStyle[t.priority]?.bar)} />
+                    <span className="min-w-0 flex-1 truncate">{t.title}</span>
                   </button>
                 ))}
                 {list.length > 3 ? <p className="px-1 text-[10px] text-slate-400">+{list.length - 3} more</p> : null}

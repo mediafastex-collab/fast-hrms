@@ -1081,9 +1081,27 @@ function nameSql(userAlias = "u", employeeAlias = "e") {
   return `COALESCE(${employeeAlias}.full_name, UPPER(SUBSTR(${userAlias}.email, 1, 1)) || SUBSTR(${userAlias}.email, 2, INSTR(${userAlias}.email, '@') - 2))`;
 }
 
-// Presence is read off the heartbeat the polling endpoints leave behind.
+// Presence is read off the heartbeat the polling endpoints leave behind, except
+// for a break: that is something the person deliberately started, so it beats
+// whatever the heartbeat says. Scoped to today so a break nobody ended cannot
+// follow them into tomorrow.
+//
+// Attendance dates are kept in IST while SQLite's now() is UTC, so the day has
+// to be shifted before comparing.
+function onBreakSql(userAlias = "u") {
+  return `EXISTS (
+    SELECT 1 FROM attendance_breaks ab
+    JOIN attendance att ON att.id = ab.attendance_id
+    JOIN employees emp ON emp.id = att.employee_id
+    WHERE emp.user_id = ${userAlias}.id
+      AND ab.break_end IS NULL
+      AND att.attendance_date = date('now', '+5 hours', '+30 minutes')
+  )`;
+}
+
 function presenceSql(userAlias = "u") {
   return `CASE
+    WHEN ${onBreakSql(userAlias)} THEN 'break'
     WHEN ${userAlias}.last_seen_at IS NULL THEN 'offline'
     WHEN (julianday('now') - julianday(${userAlias}.last_seen_at)) * 86400 < 90 THEN 'online'
     WHEN (julianday('now') - julianday(${userAlias}.last_seen_at)) * 86400 < 600 THEN 'away'

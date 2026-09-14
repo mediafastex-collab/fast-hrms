@@ -1845,13 +1845,23 @@ function linkify(nodes: React.ReactNode[]): React.ReactNode[] {
 }
 type ChatPerson = { id: number; email: string; role: string; display_name: string; presence?: string | null; last_seen_at?: string | null };
 
-// Green / amber / grey, the way every chat app signals presence.
+// Green / amber / grey, the way every chat app signals presence — plus a cup
+// for someone on a break, which is a different thing from merely being idle.
 function PresenceDot({ status, className }: { status?: string | null; className?: string }) {
+  if (status === "break") {
+    return (
+      <span title={presenceLabel(status)}
+        className={classNames("inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-sky-500 ring-2 ring-white", className)}>
+        <Coffee size={8} className="text-white" strokeWidth={3} />
+      </span>
+    );
+  }
   const tone = status === "online" ? "bg-emerald-500" : status === "away" ? "bg-amber-400" : "bg-slate-300";
   return <span title={presenceLabel(status)} className={classNames("inline-block h-2.5 w-2.5 rounded-full ring-2 ring-white", tone, className)} />;
 }
 
 function presenceLabel(status?: string | null) {
+  if (status === "break") return "On break";
   return status === "online" ? "Online" : status === "away" ? "Away" : "Offline";
 }
 
@@ -2179,6 +2189,7 @@ function sinceLabel(ts?: string | null) {
 
 // Online while the heartbeat is fresh; otherwise say when they were last around.
 function lastSeenLabel(presence?: string | null, lastSeenAt?: string | null) {
+  if (presence === "break") return "On break";
   if (presence === "online") return "Online";
   if (!lastSeenAt) return "Offline";
   return `Last seen ${sinceLabel(lastSeenAt)}`;

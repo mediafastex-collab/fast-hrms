@@ -31,7 +31,7 @@ import {
   ChevronRight,
   ChevronLeft,
 } from "lucide-react";
-import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 type Role = "Superadmin" | "Employee";
 type View =
@@ -3106,7 +3106,15 @@ function isOverdue(task: { due_date?: string | null; status: string }) {
 
 // Urgent first, then whatever is due soonest — undated work sinks to the bottom.
 const PRIORITY_RANK: Record<string, number> = { Urgent: 0, High: 1, Normal: 2, Low: 3 };
+// Whatever else is true, something already finished belongs below work that
+// still needs doing — it should drop the moment you mark it Done.
+function doneLast(a: WorkTask, b: WorkTask) {
+  return Number(a.status === "Done") - Number(b.status === "Done");
+}
+
 function byPriorityThenDue(a: WorkTask, b: WorkTask) {
+  const finished = doneLast(a, b);
+  if (finished !== 0) return finished;
   const rank = (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9);
   if (rank !== 0) return rank;
   if (!a.due_date && !b.due_date) return b.id - a.id;
@@ -3118,6 +3126,8 @@ function byPriorityThenDue(a: WorkTask, b: WorkTask) {
 // Due date first, priority as the tie-break — the mirror of the default sort,
 // for when a deadline matters more than how urgent something was marked.
 function byDueThenPriority(a: WorkTask, b: WorkTask) {
+  const finished = doneLast(a, b);
+  if (finished !== 0) return finished;
   if (!a.due_date && !b.due_date) return byPriorityThenDue(a, b);
   if (!a.due_date) return 1;
   if (!b.due_date) return -1;
@@ -3127,7 +3137,7 @@ function byDueThenPriority(a: WorkTask, b: WorkTask) {
 // A filter set someone bothered to name, kept per browser.
 type SavedFilterValues = {
   query?: string; statusFilter?: string; dueFilter?: string; priorityFilter?: string;
-  sortBy?: "priority" | "due" | "recent"; view?: "board" | "list" | "calendar";
+  sortBy?: "priority" | "due" | "recent"; view?: "board" | "list" | "calendar"; hideDone?: boolean;
 };
 type SavedFilter = { name: string; values: SavedFilterValues };
 
@@ -3235,6 +3245,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [statusFilter, setStatusFilter] = useState("");
   const [dueFilter, setDueFilter] = useState("");
   const [priorityFilter, setPriorityFilter] = useState("");
+  const [hideDone, setHideDone] = useState(false);
   const [sortBy, setSortBy] = useState<"priority" | "due" | "recent">("priority");
   const [savedFilters, setSavedFilters] = useState<SavedFilter[]>(() => loadSavedFilters());
   const [savingFilter, setSavingFilter] = useState(false);
@@ -3376,6 +3387,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         if (needle && !`${t.title} ${t.description ?? ""} ${t.list_name}`.toLowerCase().includes(needle)) return false;
         if (statusFilter && t.status !== statusFilter) return false;
         if (priorityFilter && t.priority !== priorityFilter) return false;
+        if (hideDone && t.status === "Done") return false;
         if (dueFilter) {
           const due = t.due_date ? Date.parse(t.due_date) : null;
           if (dueFilter === "overdue" && !isOverdue(t)) return false;
@@ -3385,8 +3397,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         }
         return true;
       })
-      .sort(sortBy === "recent" ? (a2, b2) => b2.id - a2.id : sortBy === "due" ? byDueThenPriority : byPriorityThenDue);
-  }, [tasks, query, statusFilter, dueFilter, priorityFilter, sortBy]);
+      .sort(sortBy === "recent" ? (a2, b2) => doneLast(a2, b2) || b2.id - a2.id : sortBy === "due" ? byDueThenPriority : byPriorityThenDue);
+  }, [tasks, query, statusFilter, dueFilter, priorityFilter, sortBy, hideDone]);
 
   const grouped = useMemo(() => {
     const map: Record<string, WorkTask[]> = {};
@@ -3395,9 +3407,9 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     return map;
   }, [visibleTasks]);
 
-  const filtersOn = !!(query.trim() || statusFilter || dueFilter || priorityFilter);
+  const filtersOn = !!(query.trim() || statusFilter || dueFilter || priorityFilter || hideDone);
 
-  const currentFilter: SavedFilterValues = { query, statusFilter, dueFilter, priorityFilter, sortBy, view };
+  const currentFilter: SavedFilterValues = { query, statusFilter, dueFilter, priorityFilter, sortBy, view, hideDone };
 
   function applyFilter(f: SavedFilter) {
     setQuery(f.values.query ?? "");
@@ -3405,6 +3417,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     setDueFilter(f.values.dueFilter ?? "");
     setPriorityFilter(f.values.priorityFilter ?? "");
     setSortBy(f.values.sortBy ?? "priority");
+    setHideDone(!!f.values.hideDone);
     if (f.values.view) setView(f.values.view);
   }
 
@@ -3425,7 +3438,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   }
 
   function clearFilters() {
-    setQuery(""); setStatusFilter(""); setDueFilter(""); setPriorityFilter("");
+    setQuery(""); setStatusFilter(""); setDueFilter(""); setPriorityFilter(""); setHideDone(false);
   }
 
   const done = visibleTasks.filter((t) => t.status === "Done").length;
@@ -3598,6 +3611,10 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
               My tasks
             </label>
           ) : null}
+          <label className="flex cursor-pointer items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-stone-600">
+            <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} />
+            Hide done
+          </label>
           <div className="ml-auto flex gap-1 rounded-full bg-stone-100 p-1">
             {(["board", "list", "calendar"] as const).map((v) => (
               <button key={v} type="button" onClick={() => setView(v)}
@@ -3641,14 +3658,15 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     onClick={() => setOpenTask(t)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenTask(t); } }}
                     className={classNames(
-                      "w-full cursor-grab rounded-xl border border-line bg-white p-3 text-left transition hover:border-stone-300 hover:shadow-sm active:cursor-grabbing",
+                      "w-full cursor-grab rounded-xl border border-line p-3 text-left transition hover:border-stone-300 hover:shadow-sm active:cursor-grabbing",
+                      t.status === "Done" ? "bg-stone-50" : "bg-white",
                       dragId === t.id && "opacity-40",
                     )}>
                     <div className="mb-1 flex items-center gap-1.5">
                       <PriorityTag priority={t.priority} compact />
                       {isOverdue(t) ? <span className="rounded-full bg-rose-100 px-1.5 text-[9px] font-bold uppercase text-rose-700">Late</span> : null}
                     </div>
-                    <p className="text-sm font-semibold leading-snug text-ink">{t.title}</p>
+                    <p className={classNames("text-sm font-semibold leading-snug", t.status === "Done" ? "text-slate-400 line-through decoration-slate-300" : "text-ink")}>{t.title}</p>
                     {!listId ? <p className="mt-1 truncate text-[11px] text-slate-400">{t.list_name}</p> : null}
                     <div className="mt-2 flex items-center gap-2">
                       <span className={classNames("truncate text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date, t.status)}</span>
@@ -3712,15 +3730,25 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {visibleTasks.length ? visibleTasks.map((t) => (
-                  <tr key={t.id} className="cursor-pointer bg-white hover:bg-stone-50" onClick={() => setOpenTask(t)}>
+                {visibleTasks.length ? visibleTasks.map((t, i) => (
+                  <Fragment key={t.id}>
+                    {/* Where the finished work starts, say so rather than leaving
+                        the reader to notice the statuses changed. */}
+                    {t.status === "Done" && visibleTasks[i - 1]?.status !== "Done" ? (
+                      <tr className="bg-stone-50/70">
+                        <td colSpan={6} className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          Completed · {visibleTasks.filter((x) => x.status === "Done").length}
+                        </td>
+                      </tr>
+                    ) : null}
+                  <tr className={classNames("cursor-pointer hover:bg-stone-50", t.status === "Done" ? "bg-stone-50/40" : "bg-white")} onClick={() => setOpenTask(t)}>
                     <td className="px-4 py-3">
                       <span className="flex items-center gap-2">
-                        <span className="font-semibold text-ink">{t.title}</span>
+                        <span className={classNames("font-semibold", t.status === "Done" ? "text-slate-400 line-through decoration-slate-300" : "text-ink")}>{t.title}</span>
                         {t.comment_count ? <span className="text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
                       </span>
                     </td>
-                    <td className="px-4 py-3"><PriorityTag priority={t.priority} /></td>
+                    <td className={classNames("px-4 py-3", t.status === "Done" && "opacity-50")}><PriorityTag priority={t.priority} /></td>
                     <td className="px-4 py-3 text-xs text-slate-500">{t.list_name}</td>
                     <td className="px-4 py-3">
                       <span className="flex -space-x-1">
@@ -3738,6 +3766,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                       </select>
                     </td>
                   </tr>
+                  </Fragment>
                 )) : <tr><td className="px-4 py-10 text-center text-slate-500" colSpan={6}>{filtersOn ? "No task matches those filters." : "Nothing here yet."}</td></tr>}
               </tbody>
             </table>

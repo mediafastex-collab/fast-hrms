@@ -956,7 +956,10 @@ async function workTasks(db: D1Database, user: AppUser, url: URL) {
     `SELECT t.*, l.name AS list_name, s.name AS space_name, s.id AS space_id
      FROM work_tasks t JOIN lists l ON l.id = t.list_id JOIN spaces s ON s.id = l.space_id
      ${where}
-     ORDER BY CASE t.priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END,
+     -- Finished work sinks to the bottom; live work rises by priority then by
+     -- whatever is due soonest.
+     ORDER BY CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END,
+              CASE t.priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END,
               t.due_date IS NULL, t.due_date ASC, t.position ASC, t.id DESC`,
   ).bind(...params).all<Record<string, unknown>>();
   return json({ tasks: await decorateWorkTasks(db, rows.results) });

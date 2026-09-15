@@ -1137,10 +1137,7 @@ async function chatChannels(db: D1Database, user: AppUser) {
   // correlated subqueries per channel, and the four about the other side of a
   // DM another four; both are now a single join.
   const rows = await db.prepare(
-    `WITH latest AS (
-       SELECT channel_id, MAX(id) AS id FROM chat_messages WHERE deleted_at IS NULL GROUP BY channel_id
-     )
-     SELECT c.id, c.name, c.kind,
+    `SELECT c.id, c.name, c.kind,
        COALESCE(m.last_read_message_id, 0) AS last_read_message_id,
        (SELECT COUNT(*) FROM chat_messages msg
          WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL
@@ -1157,8 +1154,11 @@ async function chatChannels(db: D1Database, user: AppUser) {
        CASE WHEN c.kind = 'dm' THEN pu.last_seen_at END AS peer_last_seen
      FROM chat_channels c
      LEFT JOIN chat_members m ON m.channel_id = c.id AND m.user_id = ?
-     LEFT JOIN latest l ON l.channel_id = c.id
-     LEFT JOIN chat_messages lm ON lm.id = l.id
+     -- MAX over the (channel_id, deleted_at, id) index is a seek, so this reads
+     -- a couple of rows per channel. Grouping the whole table instead would
+     -- scan every message in it on every poll, and grow with the history.
+     LEFT JOIN chat_messages lm ON lm.id =
+       (SELECT MAX(x.id) FROM chat_messages x WHERE x.channel_id = c.id AND x.deleted_at IS NULL)
      LEFT JOIN users lu ON lu.id = lm.user_id
      LEFT JOIN employees le ON le.user_id = lu.id
      LEFT JOIN chat_members pm ON pm.channel_id = c.id AND pm.user_id != ? AND c.kind = 'dm'

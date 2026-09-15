@@ -1131,34 +1131,42 @@ async function chatDirectory(db: D1Database, user: AppUser) {
 
 async function chatChannels(db: D1Database, user: AppUser) {
   // Public channels (everyone) + DMs this user belongs to.
+  //
+  // This runs on a timer for every open tab, so it is written to touch as few
+  // rows as it can. The five facts about the newest message used to be five
+  // correlated subqueries per channel, and the four about the other side of a
+  // DM another four; both are now a single join.
   const rows = await db.prepare(
-    `SELECT c.id, c.name, c.kind,
+    `WITH latest AS (
+       SELECT channel_id, MAX(id) AS id FROM chat_messages WHERE deleted_at IS NULL GROUP BY channel_id
+     )
+     SELECT c.id, c.name, c.kind,
        COALESCE(m.last_read_message_id, 0) AS last_read_message_id,
        (SELECT COUNT(*) FROM chat_messages msg
          WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL
            AND msg.id > COALESCE(m.last_read_message_id, 0) AND msg.user_id != ?) AS unread,
-       (SELECT msg.body FROM chat_messages msg WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_body,
-       (SELECT msg.created_at FROM chat_messages msg WHERE msg.channel_id = c.id ORDER BY msg.id DESC LIMIT 1) AS last_at,
+       lm.body AS last_body,
+       lm.created_at AS last_at,
+       lm.user_id AS last_user_id,
+       lm.id AS last_message_id,
+       CASE WHEN lm.id IS NULL THEN NULL ELSE ${nameSql("lu", "le")} END AS last_author,
        -- "Peer" only means something in a DM; a public channel has no single other side.
-       CASE WHEN c.kind = 'dm' THEN (SELECT ${nameSql("u2", "e2")} FROM chat_members cm2
-          JOIN users u2 ON u2.id = cm2.user_id LEFT JOIN employees e2 ON e2.user_id = u2.id
-          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_name,
-       CASE WHEN c.kind = 'dm' THEN (SELECT u2.id FROM chat_members cm2 JOIN users u2 ON u2.id = cm2.user_id
-          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_id,
-       CASE WHEN c.kind = 'dm' THEN (SELECT ${presenceSql("u2")} FROM chat_members cm2 JOIN users u2 ON u2.id = cm2.user_id
-          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_presence,
-       CASE WHEN c.kind = 'dm' THEN (SELECT u2.last_seen_at FROM chat_members cm2 JOIN users u2 ON u2.id = cm2.user_id
-          WHERE cm2.channel_id = c.id AND cm2.user_id != ? LIMIT 1) END AS peer_last_seen,
-       (SELECT msg.user_id FROM chat_messages msg WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_user_id,
-       (SELECT msg.id FROM chat_messages msg WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_message_id,
-       (SELECT ${nameSql("u3", "e3")} FROM chat_messages msg
-          JOIN users u3 ON u3.id = msg.user_id LEFT JOIN employees e3 ON e3.user_id = u3.id
-          WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL ORDER BY msg.id DESC LIMIT 1) AS last_author
+       CASE WHEN c.kind = 'dm' THEN ${nameSql("pu", "pe")} END AS peer_name,
+       CASE WHEN c.kind = 'dm' THEN pu.id END AS peer_id,
+       CASE WHEN c.kind = 'dm' THEN ${presenceSql("pu")} END AS peer_presence,
+       CASE WHEN c.kind = 'dm' THEN pu.last_seen_at END AS peer_last_seen
      FROM chat_channels c
      LEFT JOIN chat_members m ON m.channel_id = c.id AND m.user_id = ?
+     LEFT JOIN latest l ON l.channel_id = c.id
+     LEFT JOIN chat_messages lm ON lm.id = l.id
+     LEFT JOIN users lu ON lu.id = lm.user_id
+     LEFT JOIN employees le ON le.user_id = lu.id
+     LEFT JOIN chat_members pm ON pm.channel_id = c.id AND pm.user_id != ? AND c.kind = 'dm'
+     LEFT JOIN users pu ON pu.id = pm.user_id
+     LEFT JOIN employees pe ON pe.user_id = pu.id
      WHERE c.kind = 'channel' OR m.id IS NOT NULL
      ORDER BY c.kind ASC, last_at DESC NULLS LAST, c.name ASC`,
-  ).bind(user.id, user.id, user.id, user.id, user.id, user.id).all();
+  ).bind(user.id, user.id, user.id).all();
   return json({ channels: rows.results });
 }
 

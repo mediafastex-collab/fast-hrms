@@ -1891,6 +1891,43 @@ function playPing() {
   } catch { /* no audio device, or blocked — the toast still shows */ }
 }
 
+// Every poll in this app costs database reads, and they run for as long as a tab
+// stays open. These are deliberately slower than "feels instant" would suggest:
+// chat still updates within a few seconds, while a tab left open on a second
+// monitor all day costs a fraction of what it used to.
+const POLL = {
+  messages: 4000,      // the open conversation
+  chatRail: 20000,     // unread badges in the conversation list
+  pulseVisible: 10000, // app-wide chat check: drives the dock and the alerts
+  pulseHidden: 60000,  // slower, but still running — that is what raises alerts
+  notifications: 60000,
+};
+
+// Runs `fn` on a timer, at a slower cadence once the tab is out of sight, and
+// catches up the moment it comes back. A hiddenMs of 0 means "stop while hidden".
+function usePolling(fn: () => void, visibleMs: number, hiddenMs = 0) {
+  const saved = useRef(fn);
+  saved.current = fn;
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+    const start = () => {
+      stop();
+      const hidden = document.visibilityState !== "visible";
+      if (hidden && !hiddenMs) return;
+      timer = setInterval(() => saved.current(), hidden ? hiddenMs : visibleMs);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") saved.current();
+      start();
+    };
+    saved.current();
+    start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
+  }, [visibleMs, hiddenMs]);
+}
+
 // Registered once, on load. Notifications posted through the registration reach
 // macOS Notification Center reliably; `new Notification()` from the page often
 // does not, which is why alerts appeared to vanish even with permission granted.
@@ -2015,15 +2052,21 @@ function useChatPulse(currentUserId: number, mutedChannelId: number | null) {
       } catch { /* logged out or offline — try again next tick */ }
     }
     tick();
-    const t = setInterval(tick, 5000);
-    // Browsers throttle timers in a background tab, so catch up the moment the
-    // tab is looked at again rather than waiting for the next slow tick.
-    const onVisible = () => { if (document.visibilityState === "visible") tick(); };
+    // Keeps running while hidden — that is how a message reaches you when you
+    // are not looking — but a minute apart rather than every few seconds.
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const schedule = () => {
+      if (timer) clearInterval(timer);
+      const hidden = document.visibilityState !== "visible";
+      timer = setInterval(tick, hidden ? POLL.pulseHidden : POLL.pulseVisible);
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") tick(); schedule(); };
+    schedule();
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
     return () => {
       alive = false;
-      clearInterval(t);
+      if (timer) clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
@@ -2224,11 +2267,7 @@ function NotificationBell() {
     } catch { /* keep last known list if a poll fails */ }
   }
 
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 20000);
-    return () => clearInterval(t);
-  }, []);
+  usePolling(load, POLL.notifications);
 
   async function markAllRead() {
     await api("/notifications/read-all", { method: "POST" }).catch(() => undefined);
@@ -2487,14 +2526,11 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
       .catch(() => { setMentionable([]); setCanMentionEveryone(0); });
   }, [activeId]);
 
-  // Polling: new messages for the open channel, plus unread badges elsewhere.
-  useEffect(() => {
-    const t = setInterval(() => {
-      if (activeIdRef.current) loadMessages(activeIdRef.current, true);
-      loadChannels();
-    }, 3000);
-    return () => clearInterval(t);
-  }, []);
+  // The open conversation is what has to feel live. The rail only carries unread
+  // badges, and the shell's own pulse already watches for new messages, so it
+  // can tick far less often — it was the single most expensive poll in the app.
+  usePolling(() => { if (activeIdRef.current) loadMessages(activeIdRef.current, true); }, POLL.messages);
+  usePolling(loadChannels, POLL.chatRail);
 
   function scrollToEnd(smooth: boolean) {
     const box = scrollRef.current;

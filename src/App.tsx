@@ -262,7 +262,7 @@ function BreaksCell({ row }: { row: AttendanceRecord }) {
           {b.break_start} - {b.break_end ?? <span className="font-semibold text-amber-600">on break</span>}
         </div>
       ))}
-      {totalSec > 0 && <div className="text-[10px] text-slate-500">{breaks.length} break{breaks.length > 1 ? "s" : ""} · {Math.floor(totalMin / 60) ? `${Math.floor(totalMin / 60)}h ` : ""}{totalMin % 60}m</div>}
+      {totalSec > 0 && <div className="text-[10px] text-ink-3">{breaks.length} break{breaks.length > 1 ? "s" : ""} · {Math.floor(totalMin / 60) ? `${Math.floor(totalMin / 60)}h ` : ""}{totalMin % 60}m</div>}
     </div>
   );
 }
@@ -287,10 +287,10 @@ function classNames(...items: Array<string | false | null | undefined>) {
 }
 
 function statusTone(status: string) {
-  if (["Done", "Approved", "Present"].includes(status)) return "bg-emerald-50 text-emerald-700";
-  if (["Pending", "Late", "Half Day"].includes(status)) return "bg-amber-50 text-amber-700";
-  if (["Rejected", "Absent", "Inactive"].includes(status)) return "bg-rose-50 text-rose-700";
-  return "bg-slate-100 text-slate-700";
+  if (["Done", "Approved", "Present"].includes(status)) return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/15";
+  if (["Pending", "Late", "Half Day"].includes(status)) return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/15";
+  if (["Rejected", "Absent", "Inactive"].includes(status)) return "bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-600/15";
+  return "bg-[var(--surface-sunk)] text-ink-2 ring-1 ring-inset ring-[var(--line-strong)]";
 }
 
 function Field({
@@ -320,15 +320,15 @@ function StatCard({
   sub?: string;
 }) {
   return (
-    <div className="card p-4">
+    <div className="card card-hover p-4">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="tnum mt-2 text-2xl font-bold text-ink">{value}</p>
-          {sub ? <p className="mt-1 text-xs text-slate-500">{sub}</p> : null}
+        <div className="min-w-0">
+          <p className="text-[12.5px] font-medium text-ink-3">{label}</p>
+          <p className="tnum mt-1.5 text-[26px] font-bold leading-none tracking-[-0.03em] text-ink">{value}</p>
+          {sub ? <p className="mt-2 text-[11.5px] text-ink-3">{sub}</p> : null}
         </div>
-        <div className="rounded-md bg-sky-50 p-2 text-brand">
-          <Icon size={20} />
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-sunk)] text-ink-3">
+          <Icon size={16} strokeWidth={1.9} />
         </div>
       </div>
     </div>
@@ -337,9 +337,9 @@ function StatCard({
 
 function EmptyState({ title, action }: { title: string; action?: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-dashed border-line bg-white p-8 text-center">
-      <p className="font-semibold text-ink">{title}</p>
-      {action ? <div className="mt-4">{action}</div> : null}
+    <div className="rounded-xl border border-dashed bg-white px-8 py-12 text-center" style={{ borderColor: "var(--line-strong)" }}>
+      <p className="text-sm font-semibold text-ink-2">{title}</p>
+      {action ? <div className="mt-4 flex justify-center">{action}</div> : null}
     </div>
   );
 }
@@ -401,32 +401,41 @@ function LoginScreen({ error, onLogin }: { error: string; onLogin: (email: strin
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-orange-50 via-white to-amber-50 px-4 py-10">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 flex flex-col items-center text-center">
-          <div className="rounded-2xl bg-gradient-to-br from-orange-500 to-orange-600 p-4 text-white shadow-lg shadow-orange-500/30">
-            <BriefcaseBusiness size={34} />
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10" style={{ background: "var(--canvas)" }}>
+      {/* A single soft wash of brand colour behind the card — enough to feel
+          considered, far short of the three-colour gradient it replaces. */}
+      <div aria-hidden className="pointer-events-none absolute left-1/2 top-[-18rem] h-[36rem] w-[36rem] -translate-x-1/2 rounded-full opacity-[0.07]"
+        style={{ background: "radial-gradient(circle, var(--brand) 0%, transparent 65%)" }} />
+
+      <div className="animate-rise relative w-full max-w-[22rem]">
+        <div className="mb-7 flex flex-col items-center text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand text-white" style={{ boxShadow: "0 8px 24px rgba(234,88,12,0.28)" }}>
+            <BriefcaseBusiness size={26} strokeWidth={2.1} />
           </div>
-          <h1 className="mt-5 text-4xl font-extrabold tracking-tight text-ink">
+          <h1 className="mt-5 text-[32px] font-bold leading-none tracking-[-0.04em] text-ink">
             Fastex <span className="text-brand">HRMS</span>
           </h1>
-          <p className="mt-2 text-sm text-slate-500">Sign in to your workspace</p>
+          <p className="mt-2.5 text-[13.5px] text-ink-3">Sign in to your workspace</p>
         </div>
 
-        <form onSubmit={submit} className="card p-6 sm:p-7 space-y-4">
-          {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
+        <form onSubmit={submit} className="card space-y-4 p-6" style={{ boxShadow: "var(--shadow-lg)" }}>
+          {error ? (
+            <div className="animate-pop rounded-lg bg-rose-50 px-3 py-2.5 text-[13px] font-medium text-rose-700 ring-1 ring-inset ring-rose-600/15">
+              {error}
+            </div>
+          ) : null}
           <Field label="Email">
             <input required autoFocus className="input" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@fastexmedia.com" />
           </Field>
           <Field label="Password">
             <input required className="input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" />
           </Field>
-          <button className="btn btn-primary w-full" disabled={busy}>
-            {busy ? "Signing in..." : "Login"}
+          <button className="btn btn-primary min-h-[42px] w-full" disabled={busy}>
+            {busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
 
-        <p className="mt-6 text-center text-xs text-slate-400">© {new Date().getFullYear()} Fastex Media</p>
+        <p className="mt-6 text-center text-[11.5px] text-ink-4">© {new Date().getFullYear()} Fastex Media</p>
       </div>
     </main>
   );
@@ -486,54 +495,60 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   return (
     <div className="min-h-screen bg-cloud">
       <aside className={classNames(
-        "fixed inset-y-0 left-0 z-20 hidden border-r border-line bg-white p-4 transition-all lg:block",
-        navOpen ? "w-64" : "w-20",
-      )}>
-        <div className={classNames("flex items-center gap-3 py-3", navOpen ? "px-2" : "justify-center px-0")}>
-          <div className="rounded-md bg-brand p-2 text-white">
-            <BriefcaseBusiness size={20} />
+        "fixed inset-y-0 left-0 z-20 hidden border-r bg-white px-3 pb-4 pt-3 lg:flex lg:flex-col",
+        "transition-[width] duration-200 ease-premium",
+        navOpen ? "w-[248px]" : "w-[72px]",
+      )} style={{ borderColor: "var(--line)" }}>
+        <div className={classNames("flex items-center gap-2.5 px-1 py-2", !navOpen && "justify-center px-0")}>
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-brand text-white shadow-xs">
+            <BriefcaseBusiness size={18} strokeWidth={2.2} />
           </div>
           {navOpen ? (
-            <div className="min-w-0">
-              <p className="truncate font-bold text-ink">Fast HRMS</p>
-              <p className="text-xs text-slate-500">{user.role}</p>
+            <div className="min-w-0 leading-tight">
+              <p className="truncate text-[15px] font-bold tracking-[-0.02em] text-ink">Fast HRMS</p>
+              <p className="truncate text-[11px] text-ink-3">{user.role}</p>
             </div>
           ) : null}
         </div>
+
+        <nav className="mt-5 flex-1 space-y-0.5 overflow-y-auto">
+          {nav.map((item) => {
+            const active = view === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => choose(item.id)}
+                title={navOpen ? undefined : item.label}
+                className={classNames(
+                  "group relative flex w-full items-center rounded-lg py-2 text-[13.5px] font-medium transition-colors duration-150 ease-premium",
+                  navOpen ? "gap-3 px-2.5" : "justify-center px-0",
+                  active ? "bg-brand-tint font-semibold text-brand" : "text-ink-2 hover:bg-[var(--surface-hover)] hover:text-ink",
+                )}
+              >
+                {/* A 2px edge marks the current screen without shouting. */}
+                {active ? <span className="absolute left-0 top-1/2 h-4 w-[2.5px] -translate-y-1/2 rounded-r-full bg-brand" /> : null}
+                <item.icon size={17} strokeWidth={active ? 2.3 : 1.9} className="shrink-0" />
+                {navOpen ? <span className="truncate">{item.label}</span> : null}
+              </button>
+            );
+          })}
+        </nav>
 
         <button
           type="button"
           onClick={() => setNavOpen((open) => !open)}
           title={navOpen ? "Collapse menu" : "Expand menu"}
           className={classNames(
-            "mt-2 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-slate-50 hover:text-ink",
+            "mt-2 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[12px] font-medium text-ink-3 transition-colors duration-150 ease-premium hover:bg-[var(--surface-hover)] hover:text-ink",
             !navOpen && "justify-center px-0",
           )}
         >
-          <Menu size={16} />
+          <Menu size={16} className="shrink-0" />
           {navOpen ? "Collapse" : null}
         </button>
-
-        <nav className="mt-3 space-y-1">
-          {nav.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => choose(item.id)}
-              title={navOpen ? undefined : item.label}
-              className={classNames(
-                "flex w-full items-center rounded-md py-2 text-sm font-semibold transition",
-                navOpen ? "gap-3 px-3" : "justify-center px-0",
-                view === item.id ? "bg-sky-50 text-brand" : "text-slate-600 hover:bg-slate-50 hover:text-ink",
-              )}
-            >
-              <item.icon size={18} />
-              {navOpen ? item.label : null}
-            </button>
-          ))}
-        </nav>
       </aside>
 
-      <div className={navOpen ? "lg:pl-64" : "lg:pl-20"}>
+      <div className={navOpen ? "lg:pl-[248px]" : "lg:pl-[72px]"}>
         {newVersion ? (
           <div className="flex flex-wrap items-center justify-center gap-3 bg-brand px-4 py-2 text-sm font-semibold text-white">
             A newer version of Fast HRMS is ready.
@@ -542,21 +557,23 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
             </button>
           </div>
         ) : null}
-        <header className="sticky top-0 z-10 border-b border-line bg-white/95 backdrop-blur">
-          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Welcome</p>
-              <h2 className="text-lg font-bold text-ink">{user.displayName ?? user.employeeName ?? user.email}</h2>
+        <header className="sticky top-0 z-10 border-b bg-white/80 backdrop-blur-xl" style={{ borderColor: "var(--line)" }}>
+          <div className={classNames("mx-auto flex items-center justify-between gap-3 px-5 py-3", view === "chat" ? "max-w-none" : "max-w-7xl")}>
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-3">Welcome back</p>
+              <h2 className="truncate text-[17px] font-bold tracking-[-0.025em] text-ink">{user.displayName ?? user.employeeName ?? user.email}</h2>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <NotificationBell />
-              <button className="btn btn-soft lg:hidden" onClick={() => setMobileOpen((open) => !open)} title="Menu">
+              <button className="btn btn-ghost px-2.5 lg:hidden" onClick={() => setMobileOpen((open) => !open)} title="Menu">
                 <Menu size={17} />
               </button>
-              <span className="hidden rounded-md bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 sm:inline-flex">{user.role}</span>
-              <button className="btn btn-soft" onClick={onLogout} title="Logout">
-                <LogOut size={17} />
-                <span className="hidden sm:inline">Logout</span>
+              <span className="hidden rounded-md border px-2.5 py-1 text-[11px] font-semibold text-ink-3 sm:inline-flex" style={{ borderColor: "var(--line)" }}>
+                {user.role}
+              </span>
+              <button className="btn btn-ghost px-2.5" onClick={onLogout} title="Logout">
+                <LogOut size={16} />
+                <span className="hidden text-[13px] sm:inline">Logout</span>
               </button>
             </div>
           </div>
@@ -574,7 +591,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           </nav>
         </header>
 
-        <main className={classNames("mx-auto px-4 py-6", view === "chat" ? "max-w-none" : "max-w-7xl")}>
+        <main key={view} className={classNames("view-enter mx-auto px-5 py-7", view === "chat" ? "max-w-none" : "max-w-7xl")}>
           {view === "dashboard" ? user.role === "Superadmin" ? <AdminDashboard /> : <EmployeeDashboard /> : null}
           {view === "employees" && isAdmin ? <Employees /> : null}
           {view === "departments" && isAdmin ? <Departments /> : null}
@@ -623,10 +640,10 @@ function AdminDashboard() {
       <PageTitle title="Dashboard" description="Today's attendance and last month's payroll at a glance." />
 
       {/* Headline: what is still to go out, not what the month cost. */}
-      <div className="card border-l-4 border-l-brand bg-gradient-to-r from-orange-50 to-white p-6">
+      <div className="card overflow-hidden border-l-[3px] border-l-brand p-6" style={{ background: "var(--brand-tint)" }}>
         <p className="text-xs font-semibold uppercase tracking-wider text-brand">Outstanding · {summary.lastMonthLabel ?? "last month"}</p>
         <p className="tnum mt-1 text-4xl font-extrabold text-ink">{currency.format(summary.lastMonthOutstanding ?? summary.lastMonthPayable ?? 0)}</p>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="mt-1 text-sm text-ink-3">
           Still to pay after attendance deductions.
           {summary.lastMonthPaid ? ` ${currency.format(summary.lastMonthPaid)} already paid of ${currency.format(summary.lastMonthPayable ?? 0)}.` : ` Across ${summary.totalEmployees} active employee${summary.totalEmployees === 1 ? "" : "s"}.`}
         </p>
@@ -634,7 +651,7 @@ function AdminDashboard() {
 
       {/* Work at a glance */}
       <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Tasks</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-4">Tasks</p>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard icon={ClipboardList} label="Total tasks" value={summary.taskTotal ?? 0} />
           <StatCard icon={CheckCircle2} label="Completed" value={summary.taskDone ?? 0} />
@@ -645,7 +662,7 @@ function AdminDashboard() {
 
       {/* Today */}
       <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Today</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-4">Today</p>
         <div className="grid gap-4 sm:grid-cols-3">
           <StatCard icon={UsersRound} label="Employees" value={summary.totalEmployees} />
           <StatCard icon={CalendarCheck} label="Present" value={summary.presentToday} />
@@ -655,7 +672,7 @@ function AdminDashboard() {
 
       {/* Needs attention */}
       <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Needs attention</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-4">Needs attention</p>
         <div className="grid gap-4 sm:grid-cols-3">
           <StatCard icon={FileText} label="Leave requests pending" value={summary.pendingLeaveRequests} />
           <StatCard icon={Banknote} label="Salaries unpaid" value={summary.pendingSalaries} />
@@ -785,7 +802,7 @@ function EmployeeDashboard() {
 
   return (
     <section className="space-y-5 animate-fade-in">
-      <div className="card overflow-hidden border-l-4 border-l-brand bg-gradient-to-r from-orange-50 via-amber-50 to-white p-6">
+      <div className="card overflow-hidden border-l-[3px] border-l-brand p-6" style={{ background: "var(--brand-tint)" }}>
         <div className="flex items-start gap-4">
           <span className="select-none text-4xl font-serif leading-none text-brand/40">&ldquo;</span>
           <div>
@@ -795,10 +812,10 @@ function EmployeeDashboard() {
         </div>
       </div>
       {promptCheckIn && (
-         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+         <div className="modal-scrim items-center justify-center p-4">
            <div className="card w-full max-w-md p-6">
              <h3 className="text-lg font-bold text-ink">Late Check-in</h3>
-             <p className="mt-2 text-sm text-slate-500">You are checking in late. Please provide a reason.</p>
+             <p className="mt-2 text-sm text-ink-3">You are checking in late. Please provide a reason.</p>
              <input autoFocus className="input mt-4" placeholder="Traffic, transit delay, etc." value={reason} onChange={e => setReason(e.target.value)} />
              <div className="mt-5 flex gap-3 justify-end">
                <button className="btn btn-soft" onClick={() => setPromptCheckIn(false)}>Cancel</button>
@@ -808,10 +825,10 @@ function EmployeeDashboard() {
          </div>
       )}
       {promptCheckOut && (
-         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+         <div className="modal-scrim items-center justify-center p-4">
            <div className="card w-full max-w-md p-6">
              <h3 className="text-lg font-bold text-ink">Early Check-out</h3>
-             <p className="mt-2 text-sm text-slate-500">You haven't completed your minimum shift hours. Please provide a reason.</p>
+             <p className="mt-2 text-sm text-ink-3">You haven't completed your minimum shift hours. Please provide a reason.</p>
              <input autoFocus className="input mt-4" placeholder="Personal work, medical, etc." value={reason} onChange={e => setReason(e.target.value)} />
              <div className="mt-5 flex gap-3 justify-end">
                <button className="btn btn-soft" onClick={() => setPromptCheckOut(false)}>Cancel</button>
@@ -827,10 +844,10 @@ function EmployeeDashboard() {
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="label">Today attendance</p>
-              <h3 className="mt-2 text-3xl font-extrabold text-ink bg-clip-text text-transparent bg-gradient-to-r from-slate-800 to-slate-600">{summary.todayAttendance?.status ?? "Not marked"}</h3>
-              <p className="mt-2 text-sm text-slate-500 flex gap-3 items-center">
+              <h3 className="mt-2 text-[30px] font-bold leading-none tracking-[-0.035em] text-ink">{summary.todayAttendance?.status ?? "Not marked"}</h3>
+              <p className="mt-2 text-sm text-ink-3 flex gap-3 items-center">
                 <span><span className="font-medium">In:</span> {summary.todayAttendance?.check_in ?? "--"}</span>
-                <span className="h-4 w-px bg-slate-300 block"></span>
+                <span className="h-4 w-px bg-ink-4 block"></span>
                 <span><span className="font-medium">Out:</span> {summary.todayAttendance?.check_out ?? "--"}</span>
               </p>
             </div>
@@ -843,7 +860,7 @@ function EmployeeDashboard() {
               )}
               <div className="flex gap-2">
                 {isSunday ? (
-                   <span className="badge bg-slate-100 text-slate-600 px-4 py-2 text-sm border border-slate-200">Weekend (No check-in)</span>
+                   <span className="badge bg-sunk text-ink-2 px-4 py-2 text-sm border border-line">Weekend (No check-in)</span>
                 ) : !hasCheckedIn ? (
                    <button className="btn btn-primary px-8" onClick={handleCheckInClick}><Clock3 size={18} /> Check in</button>
                 ) : !hasCheckedOut ? (
@@ -856,7 +873,7 @@ function EmployeeDashboard() {
                      <button className="btn btn-danger" onClick={handleCheckOutClick}><LogOut size={18} /> Check out</button>
                    </>
                 ) : (
-                   <span className="badge bg-slate-100 text-slate-600 px-4 py-2 text-sm border border-slate-200">Shift Completed</span>
+                   <span className="badge bg-sunk text-ink-2 px-4 py-2 text-sm border border-line">Shift Completed</span>
                 )}
               </div>
             </div>
@@ -878,14 +895,14 @@ function EmployeeDashboard() {
               <div key={leave.id} className="flex items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
                 <div>
                   <p className="font-semibold text-ink">{leave.leave_type_name}</p>
-                  <p className="text-xs text-slate-500">{leave.start_date} → {leave.end_date} · {leave.days} day{leave.days === 1 ? "" : "s"}</p>
+                  <p className="text-xs text-ink-3">{leave.start_date} → {leave.end_date} · {leave.days} day{leave.days === 1 ? "" : "s"}</p>
                 </div>
                 <Badge value="Approved" />
               </div>
-            )) : <p className="text-sm text-slate-500">No approved upcoming leave.</p>}
+            )) : <p className="text-sm text-ink-3">No approved upcoming leave.</p>}
           </div>
         </div>
-        <div className="card border-2 border-amber-300 bg-gradient-to-br from-amber-50 to-white p-5 shadow-md shadow-amber-500/10">
+        <div className="card p-5" style={{ background: "var(--warn-tint)", borderColor: "#f5dba8" }}>
           <div className="flex items-center gap-2">
             <span className="rounded-lg bg-amber-400 p-2 text-white shadow-sm"><Sparkles size={18} /></span>
             <h3 className="font-bold text-ink">Upcoming holidays</h3>
@@ -900,7 +917,7 @@ function EmployeeDashboard() {
                 <div key={holiday.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-white px-4 py-3 shadow-sm">
                   <div>
                     <p className="font-bold text-ink">{holiday.name}</p>
-                    {holiday.description ? <p className="text-xs text-slate-500">{holiday.description}</p> : null}
+                    {holiday.description ? <p className="text-xs text-ink-3">{holiday.description}</p> : null}
                   </div>
                   <div className="shrink-0 text-right">
                     <p className="text-sm font-bold text-amber-700">{holiday.holiday_date}</p>
@@ -910,7 +927,7 @@ function EmployeeDashboard() {
                   </div>
                 </div>
               );
-            }) : <p className="text-sm text-slate-500">No upcoming holidays.</p>}
+            }) : <p className="text-sm text-ink-3">No upcoming holidays.</p>}
           </div>
         </div>
       </div>
@@ -920,12 +937,12 @@ function EmployeeDashboard() {
 
 function PageTitle({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-      <div>
-        <h1 className="text-2xl font-bold text-ink">{title}</h1>
-        <p className="mt-1 text-sm text-slate-500">{description}</p>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <h1 className="text-[26px] font-bold leading-tight tracking-[-0.035em] text-ink">{title}</h1>
+        <p className="mt-1 text-[13.5px] leading-relaxed text-ink-3">{description}</p>
       </div>
-      {action}
+      {action ? <div className="shrink-0">{action}</div> : null}
     </div>
   );
 }
@@ -945,26 +962,26 @@ function DataTable<T extends { id: number }>({
 }) {
   return (
     <div className="card overflow-hidden">
-      <div className="border-b border-line px-4 py-3">
-        <h3 className="font-bold text-ink">{title}</h3>
+      <div className="border-b px-5 py-3.5" style={{ borderColor: "var(--line)" }}>
+        <h3 className="text-[15px] font-semibold tracking-[-0.02em] text-ink">{title}</h3>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+          <thead className="table-header">
             <tr>
               {columns.map(([label]) => (
-                <th key={label} className="px-4 py-3 font-bold">
+                <th key={label} className="whitespace-nowrap px-5 py-2.5">
                   {label}
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-line">
+          <tbody className="divide-y" style={{ borderColor: "var(--line)" }}>
             {rows.length ? (
               rows.map((row) => (
-                <tr key={row.id} className="bg-white">
+                <tr key={row.id} className="bg-white transition-colors duration-150 hover:bg-[var(--surface-sunk)]">
                   {columns.map(([label, render]) => (
-                    <td key={label} className="px-4 py-3 align-top text-slate-700">
+                    <td key={label} className="px-5 py-3 align-middle text-[13.5px] text-ink-2">
                       {render(row)}
                     </td>
                   ))}
@@ -972,7 +989,7 @@ function DataTable<T extends { id: number }>({
               ))
             ) : (
               <tr>
-                <td className="px-4 py-8 text-center text-slate-500" colSpan={columns.length}>
+                <td className="px-5 py-12 text-center text-[13.5px] text-ink-3" colSpan={columns.length}>
                   No records found.
                 </td>
               </tr>
@@ -1032,7 +1049,7 @@ function Employees() {
       />
       <div className="card p-3">
         <div className="flex items-center gap-2">
-          <Search size={18} className="text-slate-400" />
+          <Search size={18} className="text-ink-4" />
           <input className="input border-0 focus:ring-0" placeholder="Search employees" value={query} onChange={(event) => setQuery(event.target.value)} />
         </div>
       </div>
@@ -1040,7 +1057,7 @@ function Employees() {
         title="Employees"
         rows={filtered}
         columns={[
-          ["Employee", (row) => <div className="font-semibold text-ink">{row.full_name}<div className="code text-xs font-normal text-slate-500">{row.employee_code}</div></div>],
+          ["Employee", (row) => <div className="font-semibold text-ink">{row.full_name}<div className="code text-xs font-normal text-ink-3">{row.employee_code}</div></div>],
           ["Email", (row) => row.email],
           ["Department", (row) => row.department_name ?? "-"],
           ["Designation", (row) => row.designation_name ?? "-"],
@@ -1121,12 +1138,12 @@ function EmployeeModal({
   }
 
   return (
-    <div className="fixed inset-0 z-40 overflow-y-auto bg-slate-900/40 p-4">
+    <div className="modal-scrim items-start justify-center overflow-y-auto p-4">
       <form onSubmit={submit} className="card mx-auto max-w-3xl p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-xl font-bold text-ink">{employee ? "Edit employee" : "Add employee"}</h2>
-            <p className="text-sm text-slate-500">Employee profile, salary, bank details, and login.</p>
+            <p className="text-sm text-ink-3">Employee profile, salary, bank details, and login.</p>
           </div>
           <button type="button" className="btn btn-soft" onClick={onClose}>
             Close
@@ -1233,10 +1250,10 @@ function Departments() {
       </div>
 
       {editingDept && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+        <div className="modal-scrim items-center justify-center p-4">
           <div className="card w-full max-w-md p-6 space-y-4">
             <h3 className="text-lg font-bold text-ink">Edit Department</h3>
-            <p className="text-xs text-slate-500">Update {editingDept.name} and its shift hours. Leave shift fields blank to use the company default.</p>
+            <p className="text-xs text-ink-3">Update {editingDept.name} and its shift hours. Leave shift fields blank to use the company default.</p>
             <Field label="Name">
               <input className="input" value={editingDept.name} onChange={(e) => setEditingDept({ ...editingDept, name: e.target.value })} />
             </Field>
@@ -1264,24 +1281,24 @@ function Departments() {
       )}
 
       {checkingEmployeesDept && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+        <div className="modal-scrim items-center justify-center p-4">
           <div className="card w-full max-w-md p-6 space-y-4">
             <h3 className="text-lg font-bold text-ink">{checkingEmployeesDept.name} Employees</h3>
-            <p className="text-xs text-slate-500">All employees in the {checkingEmployeesDept.name} department</p>
+            <p className="text-xs text-ink-3">All employees in the {checkingEmployeesDept.name} department</p>
             <div className="max-h-96 overflow-y-auto">
               {allEmployees.length === 0 ? (
-                <div className="p-4 text-center text-stone-500">Loading...</div>
+                <div className="p-4 text-center text-ink-3">Loading...</div>
               ) : (
                 <div className="space-y-2">
                   {allEmployees.filter((e) => e.department_id === checkingEmployeesDept.id).length === 0 ? (
-                    <div className="p-4 text-center text-stone-500">No employees found in this department.</div>
+                    <div className="p-4 text-center text-ink-3">No employees found in this department.</div>
                   ) : (
                     allEmployees.filter((e) => e.department_id === checkingEmployeesDept.id).map((emp) => {
                       const desig = designations.find(d => d.id === emp.designation_id)?.name || "Unknown Designation";
                       return (
-                        <div key={emp.id} className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 p-3">
-                          <div className="font-semibold text-stone-800">{emp.full_name}</div>
-                          <div className="text-sm text-stone-500">{desig}</div>
+                        <div key={emp.id} className="flex items-center justify-between rounded-lg border border-line bg-sunk p-3">
+                          <div className="font-semibold text-ink">{emp.full_name}</div>
+                          <div className="text-sm text-ink-3">{desig}</div>
                         </div>
                       );
                     })
@@ -1328,7 +1345,7 @@ function ManagerList({
       <div className="mt-4 divide-y divide-line">
         {rows.map((row) => (
           <div key={row.id} className="flex items-center justify-between gap-3 py-3">
-            <span className="font-semibold text-slate-700">{row.name}</span>
+            <span className="font-semibold text-ink-2">{row.name}</span>
             <div className="flex shrink-0 gap-2">
               {onCheckEmployees ? <button type="button" className="btn btn-soft" onClick={() => onCheckEmployees(row)}>Employees</button> : null}
               {onEdit ? <button type="button" className="btn btn-soft" onClick={() => onEdit(row)}>Edit</button> : null}
@@ -1355,7 +1372,7 @@ function dayTone(status: string) {
   if (["Present", "Holiday", "Paid leave", "Paid"].includes(status)) return "bg-emerald-50 text-emerald-700 border-emerald-200";
   if (["Half day", "No check-in", "Half Day"].includes(status)) return "bg-amber-50 text-amber-700 border-amber-200";
   if (["Absent", "Unpaid leave", "Unpaid", "Not joined"].includes(status)) return "bg-rose-50 text-rose-700 border-rose-200";
-  return "bg-slate-50 text-slate-600 border-slate-200";
+  return "bg-sunk text-ink-2 border-line";
 }
 
 // Month day grid. On Attendance it shows attendance only; on Payroll (admin)
@@ -1400,7 +1417,7 @@ function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloa
     <div className="card p-5">
       <div>
         <h3 className="font-bold text-ink">{showSalary ? "Salary day breakdown" : "Day-by-day attendance"}</h3>
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-ink-3">
           {showSalary
             ? "How each day affects this salary. Per-day rate = monthly salary ÷ days in month."
             : "Every day of the month with its status. Sundays are paid weekly offs."}
@@ -1413,19 +1430,19 @@ function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloa
         <>
           {showSalary ? (
             <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Per day</p><p className="tnum text-lg font-bold text-ink">{currency.format(data.summary.perDay ?? 0)}</p></div>
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Paid days</p><p className="text-lg font-bold text-emerald-600">{data.summary.paidDays}</p></div>
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deduction days</p><p className="text-lg font-bold text-rose-600">{data.summary.deductionDays}</p></div>
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Deductions</p><p className="tnum text-lg font-bold text-rose-600">-{currency.format(data.summary.deductions ?? 0)}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Per day</p><p className="tnum text-lg font-bold text-ink">{currency.format(data.summary.perDay ?? 0)}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Paid days</p><p className="text-lg font-bold text-emerald-600">{data.summary.paidDays}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Deduction days</p><p className="text-lg font-bold text-rose-600">{data.summary.deductionDays}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Deductions</p><p className="tnum text-lg font-bold text-rose-600">-{currency.format(data.summary.deductions ?? 0)}</p></div>
               <div className="rounded-xl border-2 border-brand/30 bg-orange-50 p-3"><p className="text-[11px] font-semibold uppercase text-brand">Net payable</p><p className="tnum text-lg font-extrabold text-brand">{currency.format(data.summary.net ?? 0)}</p></div>
             </div>
           ) : (
             <div className="mt-4 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Present</p><p className="text-lg font-bold text-emerald-600">{data.days.filter((d) => d.status === "Present").length}</p></div>
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Half days</p><p className="text-lg font-bold text-amber-600">{data.days.filter((d) => d.status === "Half day" || d.status === "Half Day" || d.status === "No check-in").length}</p></div>
-              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-slate-500">Absent</p><p className="text-lg font-bold text-rose-600">{data.days.filter((d) => d.status === "Absent").length}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Present</p><p className="text-lg font-bold text-emerald-600">{data.days.filter((d) => d.status === "Present").length}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Half days</p><p className="text-lg font-bold text-amber-600">{data.days.filter((d) => d.status === "Half day" || d.status === "Half Day" || d.status === "No check-in").length}</p></div>
+              <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Absent</p><p className="text-lg font-bold text-rose-600">{data.days.filter((d) => d.status === "Absent").length}</p></div>
             </div>
           )}
 
@@ -1451,15 +1468,15 @@ function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloa
               </button>
             ))}
           </div>
-          {isAdmin ? <p className="mt-3 text-[11px] text-slate-400">Click any day to override it as Paid / Half day / Unpaid.</p> : null}
+          {isAdmin ? <p className="mt-3 text-[11px] text-ink-4">Click any day to override it as Paid / Half day / Unpaid.</p> : null}
         </>
-      ) : <p className="mt-4 text-sm text-slate-500">Select an employee to see the breakdown.</p>}
+      ) : <p className="mt-4 text-sm text-ink-3">Select an employee to see the breakdown.</p>}
 
       {editing && isAdmin && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+        <div className="modal-scrim items-center justify-center p-4">
           <form onSubmit={saveOverride} className="card w-full max-w-md p-6 space-y-4">
             <h3 className="text-lg font-bold text-ink">Override {editing.day}</h3>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-ink-3">
               Currently <span className="font-semibold">{editing.status}</span>
               {editing.note ? ` · ${editing.note}` : ""}
               {editing.hours ? ` · ${editing.hours.toFixed(2)}h worked` : ""}
@@ -1551,7 +1568,7 @@ function DayRequests({ isAdmin }: { isAdmin: boolean }) {
       {message ? <div className="px-4 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+          <thead className="bg-sunk text-xs uppercase tracking-wide text-ink-3">
             <tr>
               {isAdmin ? <th className="px-4 py-3 font-bold">Employee</th> : null}
               <th className="px-4 py-3 font-bold">Date</th>
@@ -1569,7 +1586,7 @@ function DayRequests({ isAdmin }: { isAdmin: boolean }) {
                 <td className="px-4 py-3">{r.attendance_date}</td>
                 <td className="px-4 py-3">{r.request_type}</td>
                 <td className="px-4 py-3">{r.request_type === "Timing" ? `${r.requested_check_in || "—"} → ${r.requested_check_out || "—"}` : "—"}</td>
-                <td className="px-4 py-3 text-slate-600">{r.reason || "—"}</td>
+                <td className="px-4 py-3 text-ink-2">{r.reason || "—"}</td>
                 <td className="px-4 py-3"><Badge value={r.status} /></td>
                 <td className="px-4 py-3">
                   {isAdmin && r.status === "Pending" ? (
@@ -1581,17 +1598,17 @@ function DayRequests({ isAdmin }: { isAdmin: boolean }) {
                 </td>
               </tr>
             )) : (
-              <tr><td className="px-4 py-8 text-center text-slate-500" colSpan={isAdmin ? 7 : 6}>No correction requests.</td></tr>
+              <tr><td className="px-4 py-8 text-center text-ink-3" colSpan={isAdmin ? 7 : 6}>No correction requests.</td></tr>
             )}
           </tbody>
         </table>
       </div>
 
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+        <div className="modal-scrim items-center justify-center p-4">
           <form onSubmit={submit} className="card w-full max-w-md p-6 space-y-4">
             <h3 className="text-lg font-bold text-ink">Request attendance correction</h3>
-            <p className="text-xs text-slate-500">Your admin will review this. Once approved it updates your attendance and salary automatically.</p>
+            <p className="text-xs text-ink-3">Your admin will review this. Once approved it updates your attendance and salary automatically.</p>
             <Field label="Date"><input required className="input" type="date" value={form.attendance_date} onChange={(e) => setForm({ ...form, attendance_date: e.target.value })} /></Field>
             <Field label="What do you need?">
               <select className="input" value={form.request_type} onChange={(e) => setForm({ ...form, request_type: e.target.value })}>
@@ -1746,10 +1763,10 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
       />
 
       {editingAttendance && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+        <div className="modal-scrim items-center justify-center p-4">
           <form onSubmit={saveEdit} className="card w-full max-w-md p-6 space-y-4">
             <h3 className="text-lg font-bold text-ink">Edit Attendance Details</h3>
-            <p className="text-xs text-slate-500">Modify times or status for {editingAttendance.employee_name} on {editingAttendance.attendance_date}.</p>
+            <p className="text-xs text-ink-3">Modify times or status for {editingAttendance.employee_name} on {editingAttendance.attendance_date}.</p>
             
             <div className="grid grid-cols-2 gap-4">
               <Field label="Check In">
@@ -1856,7 +1873,7 @@ function PresenceDot({ status, className }: { status?: string | null; className?
       </span>
     );
   }
-  const tone = status === "online" ? "bg-emerald-500" : status === "away" ? "bg-amber-400" : "bg-slate-300";
+  const tone = status === "online" ? "bg-emerald-500" : status === "away" ? "bg-amber-400" : "bg-ink-4";
   return <span title={presenceLabel(status)} className={classNames("inline-block h-2.5 w-2.5 rounded-full ring-2 ring-white", tone, className)} />;
 }
 
@@ -2007,9 +2024,9 @@ function ChatToast({ title, body, onOpen, onClose }: { title: string; body: stri
         </span>
         <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
           <span className="block truncate text-sm font-semibold text-ink">{title}</span>
-          <span className="mt-0.5 block truncate text-xs text-slate-500">{body}</span>
+          <span className="mt-0.5 block truncate text-xs text-ink-3">{body}</span>
         </button>
-        <button type="button" aria-label="Dismiss" className="shrink-0 text-slate-400 hover:text-ink" onClick={onClose}><X size={15} /></button>
+        <button type="button" aria-label="Dismiss" className="shrink-0 text-ink-4 hover:text-ink" onClick={onClose}><X size={15} /></button>
       </div>
     </div>
   );
@@ -2082,7 +2099,7 @@ function SoundToggle() {
   return (
     <button type="button"
       onClick={() => { const next = !on; localStorage.setItem("fast_hrms_sound", next ? "on" : "off"); setOn(next); if (next) playPing(); }}
-      className="text-xs font-semibold text-slate-500 hover:text-brand">
+      className="text-xs font-semibold text-ink-3 hover:text-brand">
       Sound {on ? "on" : "off"}
     </button>
   );
@@ -2104,7 +2121,7 @@ function NotificationOptIn({ compact }: { compact?: boolean }) {
             ? "Could not post a notification from this browser."
             : `Sent via ${via}. If no banner appeared, open macOS Notification Center — if it is listed there, set Chrome's alert style to Banners in System Settings → Notifications → Google Chrome.`);
         }}
-        className={classNames("max-w-md text-left text-xs font-semibold text-slate-500 hover:text-brand", compact && "w-full px-4 py-2")}>
+        className={classNames("max-w-md text-left text-xs font-semibold text-ink-3 hover:text-brand", compact && "w-full px-4 py-2")}>
         {tested || "Send a test notification"}
       </button>
     );
@@ -2112,7 +2129,7 @@ function NotificationOptIn({ compact }: { compact?: boolean }) {
 
   if (permission === "denied") {
     return (
-      <p className={classNames("text-xs text-slate-500", compact && "px-4 py-2")}>
+      <p className={classNames("text-xs text-ink-3", compact && "px-4 py-2")}>
         Desktop notifications are blocked for this site. Turn them back on in your browser's site settings (the icon beside the address bar).
       </p>
     );
@@ -2149,13 +2166,13 @@ function MessengerDock({ channels, incoming, onOpen }: {
         <div className="mb-3 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-line bg-white shadow-xl">
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
             <h3 className="font-bold text-ink">Messages</h3>
-            <button type="button" aria-label="Close messages" className="text-slate-400 hover:text-ink" onClick={() => setOpen(false)}><X size={16} /></button>
+            <button type="button" aria-label="Close messages" className="text-ink-4 hover:text-ink" onClick={() => setOpen(false)}><X size={16} /></button>
           </div>
           <NotificationOptIn compact />
           <div className="max-h-80 overflow-y-auto">
             {recent.length ? recent.map((c) => (
               <button key={c.id} type="button" onClick={() => { setOpen(false); onOpen(c.id); }}
-                className="flex w-full items-start gap-3 border-b border-line px-4 py-3 text-left last:border-0 hover:bg-stone-50">
+                className="flex w-full items-start gap-3 border-b border-line px-4 py-3 text-left last:border-0 hover:bg-sunk">
                 <span className="relative shrink-0">
                   <span className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">
                     {c.kind === "dm" ? initialsOf(c.peer_name || "?") : "#"}
@@ -2167,13 +2184,13 @@ function MessengerDock({ channels, incoming, onOpen }: {
                     <span className="truncate text-sm font-semibold text-ink">{channelLabel(c)}</span>
                     {c.unread ? <span className="ml-auto shrink-0 rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{c.unread}</span> : null}
                   </span>
-                  <span className="mt-0.5 block truncate text-xs text-slate-500">
+                  <span className="mt-0.5 block truncate text-xs text-ink-3">
                     {c.last_author ? `${c.last_author}: ` : ""}{c.last_body || "Attachment"}
                   </span>
-                  <span className="mt-0.5 block text-[10px] text-slate-400">{c.last_at ? chatTime(c.last_at) : ""}</span>
+                  <span className="mt-0.5 block text-[10px] text-ink-4">{c.last_at ? chatTime(c.last_at) : ""}</span>
                 </span>
               </button>
-            )) : <p className="px-4 py-8 text-center text-sm text-slate-500">No conversations yet.</p>}
+            )) : <p className="px-4 py-8 text-center text-sm text-ink-3">No conversations yet.</p>}
           </div>
         </div>
       ) : null}
@@ -2292,9 +2309,9 @@ function NotificationBell() {
               {items.length ? items.map((n) => (
                 <div key={n.id} className={classNames("border-b border-line px-4 py-3 last:border-0", !n.is_read && "bg-orange-50/60")}>
                   <p className="text-sm font-semibold text-ink">{n.title}</p>
-                  <p className="mt-0.5 text-xs text-slate-600">{n.message}</p>
+                  <p className="mt-0.5 text-xs text-ink-2">{n.message}</p>
                 </div>
-              )) : <p className="px-4 py-8 text-center text-sm text-slate-500">Nothing new.</p>}
+              )) : <p className="px-4 py-8 text-center text-sm text-ink-3">Nothing new.</p>}
             </div>
           </div>
         </>
@@ -2717,7 +2734,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-ink">Chat</h1>
-          <p className="mt-1 hidden text-sm text-slate-500 sm:block">Talk to your team — channels for topics, direct messages for one-to-one.</p>
+          <p className="mt-1 hidden text-sm text-ink-3 sm:block">Talk to your team — channels for topics, direct messages for one-to-one.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 sm:justify-end"><SoundToggle /><NotificationOptIn /></div>
       </div>
@@ -2731,34 +2748,34 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
         )}>
           <div className="border-b border-line p-3">
             <div className="relative">
-              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
               <input className="input h-9 py-0 pl-8 text-sm" placeholder="Search conversations" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-2 py-2">
             <div className="flex items-center justify-between px-2 py-1">
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Channels</h3>
-              <button type="button" className="rounded p-0.5 text-slate-400 hover:text-brand" title="New channel" onClick={() => setNewChannelOpen(true)}><Plus size={14} /></button>
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-ink-4">Channels</h3>
+              <button type="button" className="rounded p-0.5 text-ink-4 hover:text-brand" title="New channel" onClick={() => setNewChannelOpen(true)}><Plus size={14} /></button>
             </div>
             {filtered(groupChannels).map((c) => (
               <button key={c.id} type="button" onClick={() => openChannel(c.id)}
                 className={classNames("flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition",
-                  c.id === activeId ? "bg-orange-50 font-bold text-brand" : "font-semibold text-stone-600 hover:bg-stone-50")}>
-                <span className="text-slate-400">#</span>
+                  c.id === activeId ? "bg-orange-50 font-bold text-brand" : "font-semibold text-ink-2 hover:bg-sunk")}>
+                <span className="text-ink-4">#</span>
                 <span className="min-w-0 flex-1 truncate">{c.name}</span>
                 {c.unread > 0 ? <span className="shrink-0 rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{c.unread}</span> : null}
               </button>
             ))}
 
             <div className="mt-4 flex items-center justify-between px-2 py-1">
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Direct messages</h3>
-              <button type="button" className="rounded p-0.5 text-slate-400 hover:text-brand" title="New message" onClick={() => setDmOpen(true)}><Plus size={14} /></button>
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-ink-4">Direct messages</h3>
+              <button type="button" className="rounded p-0.5 text-ink-4 hover:text-brand" title="New message" onClick={() => setDmOpen(true)}><Plus size={14} /></button>
             </div>
             {filtered(dms).map((c) => (
               <button key={c.id} type="button" onClick={() => openChannel(c.id)}
                 className={classNames("flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition",
-                  c.id === activeId ? "bg-orange-50 font-bold text-brand" : "font-semibold text-stone-600 hover:bg-stone-50")}>
+                  c.id === activeId ? "bg-orange-50 font-bold text-brand" : "font-semibold text-ink-2 hover:bg-sunk")}>
                 <span className="relative shrink-0">
                   <span className={classNames("flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold", AVATAR_TONES[toneIndex(c.peer_id ?? c.peer_name ?? "?")])}>
                     {initialsOf(c.peer_name || "?")}
@@ -2767,12 +2784,12 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{c.peer_name}</span>
-                  <span className="block truncate text-[10px] font-medium text-slate-400">{lastSeenLabel(c.peer_presence, c.peer_last_seen)}</span>
+                  <span className="block truncate text-[10px] font-medium text-ink-4">{lastSeenLabel(c.peer_presence, c.peer_last_seen)}</span>
                 </span>
                 {c.unread > 0 ? <span className="shrink-0 rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{c.unread}</span> : null}
               </button>
             ))}
-            {!dms.length ? <p className="px-2 py-2 text-xs text-slate-400">No conversations yet.</p> : null}
+            {!dms.length ? <p className="px-2 py-2 text-xs text-ink-4">No conversations yet.</p> : null}
           </div>
         </div>
 
@@ -2790,12 +2807,12 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
             <div className="pointer-events-none absolute inset-2 z-40 flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-brand bg-orange-50/90">
               <ImageIcon size={28} className="text-brand" />
               <p className="text-sm font-bold text-brand">Drop to attach</p>
-              <p className="text-xs text-slate-500">Images are resized automatically</p>
+              <p className="text-xs text-ink-3">Images are resized automatically</p>
             </div>
           ) : null}
           <div className="flex items-center gap-3 border-b border-line px-4 py-3">
             <button type="button" onClick={() => setMobilePane("list")}
-              className="rounded-lg p-1 text-slate-400 hover:bg-stone-100 lg:hidden" aria-label="Back to conversations">
+              className="rounded-lg p-1 text-ink-4 hover:bg-sunk lg:hidden" aria-label="Back to conversations">
               <ChevronLeft size={18} />
             </button>
             {active?.kind === "dm" ? (
@@ -2808,8 +2825,8 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
             ) : null}
             <div className="min-w-0">
               <h3 className="truncate font-bold text-ink">{active ? channelLabel(active) : "Select a conversation"}</h3>
-              {active?.kind === "channel" ? <p className="text-xs text-slate-500">Everyone in the team can see this channel. Use @name to notify someone.</p> : null}
-              {active?.kind === "dm" ? <p className="text-xs text-slate-500">{lastSeenLabel(active.peer_presence, active.peer_last_seen)}</p> : null}
+              {active?.kind === "channel" ? <p className="text-xs text-ink-3">Everyone in the team can see this channel. Use @name to notify someone.</p> : null}
+              {active?.kind === "dm" ? <p className="text-xs text-ink-3">{lastSeenLabel(active.peer_presence, active.peer_last_seen)}</p> : null}
             </div>
           </div>
 
@@ -2819,7 +2836,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                 return (
                   <div key={row.key} className="my-3 flex items-center gap-3">
                     <span className="h-px flex-1 bg-line" />
-                    <span className="rounded-full border border-line bg-white px-3 py-0.5 text-[11px] font-bold text-slate-500">{row.label}</span>
+                    <span className="rounded-full border border-line bg-white px-3 py-0.5 text-[11px] font-bold text-ink-3">{row.label}</span>
                     <span className="h-px flex-1 bg-line" />
                   </div>
                 );
@@ -2835,10 +2852,10 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                   row.grouped ? "py-0.5" : "mt-2 py-1",
                   // Your own lines carry a faint brand rail so the two sides of a
                   // conversation are never mistaken for one another.
-                  mine ? "border-l-2 border-brand/60 bg-orange-50/40 hover:bg-orange-50/70" : "border-l-2 border-transparent hover:bg-stone-50/70",
+                  mine ? "border-l-2 border-brand/60 bg-orange-50/40 hover:bg-orange-50/70" : "border-l-2 border-transparent hover:bg-sunk/70",
                 )}>
                   {row.grouped ? (
-                    <span className="w-9 shrink-0 pt-0.5 text-right text-[10px] text-transparent group-hover:text-slate-400">{clockTime(m.created_at)}</span>
+                    <span className="w-9 shrink-0 pt-0.5 text-right text-[10px] text-transparent group-hover:text-ink-4">{clockTime(m.created_at)}</span>
                   ) : (
                     <span className={classNames("flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[11px] font-bold", AVATAR_TONES[tone])}>
                       {initialsOf(m.author_name)}
@@ -2849,18 +2866,18 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                     {!row.grouped ? (
                       <p className="flex flex-wrap items-baseline gap-2">
                         <span className={classNames("text-sm font-bold", mine ? "text-brand" : NAME_TONES[tone])}>{mine ? "You" : m.author_name}</span>
-                        <span className="text-[11px] text-slate-400">{clockTime(m.created_at)}</span>
+                        <span className="text-[11px] text-ink-4">{clockTime(m.created_at)}</span>
                       </p>
                     ) : null}
 
                     {m.reply_to_id && !m.deleted_at ? (
-                      <div className="mb-1 rounded-r-lg border-l-2 border-brand/50 bg-stone-50 px-2 py-1 text-[11px] text-slate-500">
-                        <span className="font-semibold text-slate-600">{m.reply_to_author}</span>: {(m.reply_to_body || "attachment").slice(0, 90)}
+                      <div className="mb-1 rounded-r-lg border-l-2 border-brand/50 bg-sunk px-2 py-1 text-[11px] text-ink-3">
+                        <span className="font-semibold text-ink-2">{m.reply_to_author}</span>: {(m.reply_to_body || "attachment").slice(0, 90)}
                       </div>
                     ) : null}
 
                     {m.deleted_at ? (
-                      <p className="text-sm italic text-slate-400">Message deleted</p>
+                      <p className="text-sm italic text-ink-4">Message deleted</p>
                     ) : mineEdit ? (
                       <div className="mt-1">
                         <textarea autoFocus className="input min-h-[60px] w-full resize-none text-sm"
@@ -2880,7 +2897,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                         {m.body ? (
                           <p className="whitespace-pre-wrap break-words text-sm text-ink">
                             {highlightMentions(m.body, people)}
-                            {m.edited_at ? <span className="ml-1 text-[10px] text-slate-400">(edited)</span> : null}
+                            {m.edited_at ? <span className="ml-1 text-[10px] text-ink-4">(edited)</span> : null}
                           </p>
                         ) : null}
                         {m.attachment ? (
@@ -2898,7 +2915,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                           <button key={r.emoji} type="button" title={r.who ?? undefined}
                             onClick={() => toggleReaction(m.id, r.emoji)}
                             className={classNames("flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition",
-                              r.mine ? "border-brand bg-orange-50 text-brand" : "border-line bg-white text-stone-600 hover:border-stone-300")}>
+                              r.mine ? "border-brand bg-orange-50 text-brand" : "border-line bg-white text-ink-2 hover:border-line-strong")}>
                             <span>{r.emoji}</span><span className="font-semibold">{r.count}</span>
                           </button>
                         ))}
@@ -2908,11 +2925,11 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
 
                   {!m.deleted_at && !mineEdit ? (
                     <div className="absolute right-2 top-0 hidden items-center gap-0.5 rounded-lg border border-line bg-white p-0.5 shadow-sm group-hover:flex">
-                      <button type="button" aria-label="Add reaction" className="rounded px-1.5 py-0.5 text-sm hover:bg-stone-100"
+                      <button type="button" aria-label="Add reaction" className="rounded px-1.5 py-0.5 text-sm hover:bg-sunk"
                         onClick={() => setPickerFor(pickerFor === m.id ? null : m.id)}>🙂</button>
-                      <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-slate-500 hover:text-brand" onClick={() => setReplyTo(m)}>Reply</button>
-                      {mine ? <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-slate-500 hover:text-brand" onClick={() => setEditing({ id: m.id, body: m.body ?? "" })}>Edit</button> : null}
-                      {mine ? <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-slate-500 hover:text-rose-600" onClick={() => removeMessage(m.id)}>Delete</button> : null}
+                      <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-ink-3 hover:text-brand" onClick={() => setReplyTo(m)}>Reply</button>
+                      {mine ? <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-ink-3 hover:text-brand" onClick={() => setEditing({ id: m.id, body: m.body ?? "" })}>Edit</button> : null}
+                      {mine ? <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-ink-3 hover:text-rose-600" onClick={() => removeMessage(m.id)}>Delete</button> : null}
                     </div>
                   ) : null}
 
@@ -2921,7 +2938,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                       <div className="fixed inset-0 z-20" onClick={() => setPickerFor(null)} />
                       <div className="absolute right-2 top-7 z-30 flex gap-1 rounded-xl border border-line bg-white p-1 shadow-lg">
                         {REACTION_CHOICES.map((emoji) => (
-                          <button key={emoji} type="button" className="rounded-lg px-1.5 py-1 text-lg hover:bg-stone-100"
+                          <button key={emoji} type="button" className="rounded-lg px-1.5 py-1 text-lg hover:bg-sunk"
                             onClick={() => toggleReaction(m.id, emoji)}>{emoji}</button>
                         ))}
                       </div>
@@ -2930,7 +2947,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                 </div>
               );
             }) : (
-              <p className="py-10 text-center text-sm text-slate-400">
+              <p className="py-10 text-center text-sm text-ink-4">
                 {active ? "No messages yet — say hello." : "Pick a conversation to start."}
               </p>
             )}
@@ -2946,11 +2963,11 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
           ) : null}
 
           {typing.length ? (
-            <div className="flex items-center gap-2 border-t border-line px-4 py-1.5 text-xs text-slate-500">
+            <div className="flex items-center gap-2 border-t border-line px-4 py-1.5 text-xs text-ink-3">
               <span className="flex gap-0.5">
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-3 [animation-delay:-0.3s]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-3 [animation-delay:-0.15s]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-3" />
               </span>
               {typing.length === 1
                 ? `${typing[0].display_name} is typing…`
@@ -2963,13 +2980,13 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
           {active ? (
             <form onSubmit={send} className={classNames("border-line p-3", typing.length ? "" : "border-t")}>
               {replyTo ? (
-                <div className="mb-2 flex items-center justify-between rounded-lg bg-stone-50 px-3 py-2 text-xs">
-                  <span className="truncate text-slate-500">Replying to <b>{replyTo.author_name}</b>: {(replyTo.body || "attachment").slice(0, 60)}</span>
+                <div className="mb-2 flex items-center justify-between rounded-lg bg-sunk px-3 py-2 text-xs">
+                  <span className="truncate text-ink-3">Replying to <b>{replyTo.author_name}</b>: {(replyTo.body || "attachment").slice(0, 60)}</span>
                   <button type="button" onClick={() => setReplyTo(null)}><X size={14} /></button>
                 </div>
               ) : null}
               {file ? (
-                <div className="mb-2 flex items-center gap-3 rounded-xl border border-line bg-stone-50 p-2">
+                <div className="mb-2 flex items-center gap-3 rounded-xl border border-line bg-sunk p-2">
                   {file.data.startsWith("data:image") ? (
                     <img src={file.data} alt="" className="h-14 w-14 shrink-0 rounded-lg border border-line object-cover" />
                   ) : (
@@ -2977,9 +2994,9 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                   )}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-xs font-semibold text-ink">{file.name}</span>
-                    <span className="tnum block text-[11px] text-slate-400">{Math.round((file.data.length * 0.75) / 1024)} KB · ready to send</span>
+                    <span className="tnum block text-[11px] text-ink-4">{Math.round((file.data.length * 0.75) / 1024)} KB · ready to send</span>
                   </span>
-                  <button type="button" aria-label="Remove attachment" className="shrink-0 rounded-lg p-1 text-slate-400 hover:bg-stone-200 hover:text-ink" onClick={() => setFile(null)}><X size={15} /></button>
+                  <button type="button" aria-label="Remove attachment" className="shrink-0 rounded-lg p-1 text-ink-4 hover:bg-sunk hover:text-ink" onClick={() => setFile(null)}><X size={15} /></button>
                 </div>
               ) : null}
 
@@ -2990,14 +3007,14 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                     {mentionMatches.map((p, i) => (
                       <button key={p.id} type="button" onMouseDown={(e) => { e.preventDefault(); insertMention(p); }}
                         onMouseEnter={() => setMentionIdx(i)}
-                        className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", i === mentionIdx ? "bg-orange-50 text-brand" : "text-stone-600")}>
+                        className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", i === mentionIdx ? "bg-orange-50 text-brand" : "text-ink-2")}>
                         <span className={classNames("flex h-6 w-6 items-center justify-center rounded-full text-[9px] font-bold",
                           p.id === -1 ? "bg-brand text-white" : AVATAR_TONES[toneIndex(p.id)])}>
                           {p.id === -1 ? "@" : initialsOf(p.display_name)}
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate font-semibold">{p.display_name}</span>
-                          {p.hint ? <span className="block truncate text-[10px] font-medium text-slate-400">{p.hint}</span> : null}
+                          {p.hint ? <span className="block truncate text-[10px] font-medium text-ink-4">{p.hint}</span> : null}
                         </span>
                       </button>
                     ))}
@@ -3006,7 +3023,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
 
                 <textarea
                   ref={draftRef}
-                  className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-3 pt-3 text-sm text-ink outline-none placeholder:text-slate-400"
+                  className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-3 pt-3 text-sm text-ink outline-none placeholder:text-ink-4"
                   rows={2}
                   placeholder={active.kind === "dm" ? `Message ${active.peer_name} — @ to notify` : `Message #${active.name} — @ to notify`}
                   value={draft}
@@ -3025,11 +3042,11 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
                 />
 
                 <div className="flex items-center gap-2 px-2 pb-2">
-                  <label className="cursor-pointer rounded-lg p-1.5 text-slate-400 transition hover:bg-stone-100 hover:text-brand" title="Attach a file">
+                  <label className="cursor-pointer rounded-lg p-1.5 text-ink-4 transition hover:bg-sunk hover:text-brand" title="Attach a file">
                     <Plus size={16} />
                     <input type="file" className="hidden" accept="image/*,application/pdf" onChange={(e) => pickFile(e.target.files?.[0])} />
                   </label>
-                  <span className="hidden text-[11px] text-slate-400 sm:inline">Enter to send · paste or drop an image to attach</span>
+                  <span className="hidden text-[11px] text-ink-4 sm:inline">Enter to send · paste or drop an image to attach</span>
                   <button type="submit" className="btn btn-primary ml-auto px-4 py-1.5" disabled={sending || (!draft.trim() && !file)}>Send</button>
                 </div>
               </div>
@@ -3039,11 +3056,11 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
       </div>
 
       {newChannelOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+        <div className="modal-scrim items-center justify-center p-4">
           <form onSubmit={createChannel} className="card w-full max-w-sm p-6 space-y-4">
             <h3 className="text-lg font-bold text-ink">New channel</h3>
             <Field label="Channel name"><input autoFocus required className="input" value={newChannelName} onChange={(e) => setNewChannelName(e.target.value)} placeholder="e.g. design" /></Field>
-            <p className="text-xs text-slate-500">Channels are visible to everyone in the team.</p>
+            <p className="text-xs text-ink-3">Channels are visible to everyone in the team.</p>
             <div className="flex justify-end gap-3">
               <button type="button" className="btn btn-soft" onClick={() => setNewChannelOpen(false)}>Cancel</button>
               <button type="submit" className="btn btn-primary">Create</button>
@@ -3053,20 +3070,20 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
       )}
 
       {dmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+        <div className="modal-scrim items-center justify-center p-4">
           <div className="card w-full max-w-sm p-6 space-y-4">
             <h3 className="text-lg font-bold text-ink">Start a conversation</h3>
             <div className="max-h-72 space-y-1 overflow-y-auto">
               {people.map((p) => (
-                <button key={p.id} type="button" onClick={() => startDm(p.id)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-stone-50">
+                <button key={p.id} type="button" onClick={() => startDm(p.id)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-sunk">
                   <span className="relative shrink-0">
                     <span className={classNames("flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-bold", AVATAR_TONES[toneIndex(p.id)])}>{initialsOf(p.display_name)}</span>
                     <PresenceDot status={p.presence} className="absolute -bottom-0.5 -right-0.5" />
                   </span>
-                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{p.display_name}</span><span className="block truncate text-xs text-slate-500">{p.role} · {lastSeenLabel(p.presence, p.last_seen_at)}</span></span>
+                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{p.display_name}</span><span className="block truncate text-xs text-ink-3">{p.role} · {lastSeenLabel(p.presence, p.last_seen_at)}</span></span>
                 </button>
               ))}
-              {!people.length ? <p className="py-4 text-center text-sm text-slate-400">No other team members yet.</p> : null}
+              {!people.length ? <p className="py-4 text-center text-sm text-ink-4">No other team members yet.</p> : null}
             </div>
             <div className="flex justify-end"><button type="button" className="btn btn-soft" onClick={() => setDmOpen(false)}>Close</button></div>
           </div>
@@ -3093,7 +3110,7 @@ const WORK_STATUSES = ["Backlog", "To Do", "In Progress", "In Review", "Done"];
 
 // A colour per column, the way ClickUp tints its statuses.
 const statusStyle: Record<string, string> = {
-  "Backlog": "bg-slate-100 text-slate-600",
+  "Backlog": "bg-sunk text-ink-2",
   "To Do": "bg-sky-50 text-sky-700",
   "In Progress": "bg-amber-50 text-amber-700",
   "In Review": "bg-violet-50 text-violet-700",
@@ -3101,7 +3118,7 @@ const statusStyle: Record<string, string> = {
 };
 
 const statusBar: Record<string, string> = {
-  "Backlog": "bg-slate-300",
+  "Backlog": "bg-ink-4",
   "To Do": "bg-sky-400",
   "In Progress": "bg-amber-400",
   "In Review": "bg-violet-400",
@@ -3111,16 +3128,16 @@ const statusBar: Record<string, string> = {
 const priorityStyle: Record<string, { chip: string; bar: string }> = {
   Urgent: { chip: "bg-rose-100 text-rose-700", bar: "bg-rose-500" },
   High: { chip: "bg-orange-100 text-orange-700", bar: "bg-orange-500" },
-  Normal: { chip: "bg-slate-100 text-slate-600", bar: "bg-slate-400" },
+  Normal: { chip: "bg-sunk text-ink-2", bar: "bg-ink-3" },
   Low: { chip: "bg-emerald-50 text-emerald-700", bar: "bg-emerald-400" },
 };
 
 function dueTone(due?: string | null, status?: string) {
-  if (!due || status === "Done") return "text-slate-400";
+  if (!due || status === "Done") return "text-ink-4";
   const diff = Math.round((Date.parse(due) - Date.parse(today)) / 86400000);
   if (diff < 0) return "text-rose-600 font-semibold";
   if (diff === 0) return "text-amber-600 font-semibold";
-  return "text-slate-500";
+  return "text-ink-3";
 }
 
 // A finished task is never late, however long it sat there — saying "5d overdue"
@@ -3225,15 +3242,15 @@ function SearchSelect({ label, value, options, allLabel, placeholder, onChange, 
 
   return (
     <div className="relative">
-      <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-ink-4">{label}</p>
       <div className="flex items-center gap-1">
         <button type="button" disabled={disabled} onClick={() => { setOpen((v) => !v); setQuery(""); }}
           className={classNames(
             "flex h-9 min-w-[9rem] items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition",
-            disabled ? "cursor-not-allowed border-line bg-stone-50 text-slate-300" : "border-line bg-white text-stone-700 hover:border-stone-300",
+            disabled ? "cursor-not-allowed border-line bg-sunk text-ink-4" : "border-line bg-white text-ink-2 hover:border-line-strong",
           )}>
           <span className="min-w-0 flex-1 truncate text-left">{selected ? selected.label : allLabel}</span>
-          <ChevronDown size={14} className="shrink-0 text-slate-400" />
+          <ChevronDown size={14} className="shrink-0 text-ink-4" />
         </button>
         {trailing}
       </div>
@@ -3248,17 +3265,17 @@ function SearchSelect({ label, value, options, allLabel, placeholder, onChange, 
             </div>
             <div className="max-h-60 overflow-y-auto py-1">
               <button type="button" onClick={() => { onChange(0); setOpen(false); }}
-                className={classNames("flex w-full px-3 py-2 text-left text-sm", !value ? "bg-orange-50 font-semibold text-brand" : "text-stone-600 hover:bg-stone-50")}>
+                className={classNames("flex w-full px-3 py-2 text-left text-sm", !value ? "bg-orange-50 font-semibold text-brand" : "text-ink-2 hover:bg-sunk")}>
                 {allLabel}
               </button>
               {matches.map((o) => (
                 <button key={o.id} type="button" onClick={() => { onChange(o.id); setOpen(false); }}
-                  className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", o.id === value ? "bg-orange-50 font-semibold text-brand" : "text-stone-600 hover:bg-stone-50")}>
+                  className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", o.id === value ? "bg-orange-50 font-semibold text-brand" : "text-ink-2 hover:bg-sunk")}>
                   <span className="min-w-0 flex-1 truncate">{o.label}</span>
-                  {o.hint ? <span className="shrink-0 text-[11px] text-slate-400">{o.hint}</span> : null}
+                  {o.hint ? <span className="shrink-0 text-[11px] text-ink-4">{o.hint}</span> : null}
                 </button>
               ))}
-              {!matches.length ? <p className="px-3 py-4 text-center text-xs text-slate-400">No match.</p> : null}
+              {!matches.length ? <p className="px-3 py-4 text-center text-xs text-ink-4">No match.</p> : null}
             </div>
           </div>
         </>
@@ -3525,9 +3542,9 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
             onChange={(id) => { setSpaceId(id); setListId(0); }}
             trailing={isAdmin && spaceId ? (
               <>
-                <button type="button" aria-label="Rename space" className="rounded p-1 text-slate-400 hover:text-ink"
+                <button type="button" aria-label="Rename space" className="rounded p-1 text-ink-4 hover:text-ink"
                   onClick={() => { const sp = activeSpaces.find((x) => x.id === spaceId); if (sp) startEdit("spaces", sp.id, sp.name); }}><Pencil size={13} /></button>
-                <button type="button" aria-label="Delete space" className="rounded p-1 text-slate-400 hover:text-rose-600"
+                <button type="button" aria-label="Delete space" className="rounded p-1 text-ink-4 hover:text-rose-600"
                   onClick={() => { const sp = activeSpaces.find((x) => x.id === spaceId); if (sp) remove("spaces", sp.id, `Delete the space "${sp.name}"? This also deletes ${sp.list_count} list(s) and ${sp.task_count} task(s).`); }}><Trash2 size={13} /></button>
               </>
             ) : undefined}
@@ -3539,9 +3556,9 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
             onChange={(id) => { setListId(id); const l = activeLists.find((x) => x.id === id); if (l) setSpaceId(l.space_id); }}
             trailing={isAdmin && listId ? (
               <>
-                <button type="button" aria-label="Rename list" className="rounded p-1 text-slate-400 hover:text-ink"
+                <button type="button" aria-label="Rename list" className="rounded p-1 text-ink-4 hover:text-ink"
                   onClick={() => { const l = activeLists.find((x) => x.id === listId); if (l) startEdit("lists", l.id, l.name); }}><Pencil size={13} /></button>
-                <button type="button" aria-label="Delete list" className="rounded p-1 text-slate-400 hover:text-rose-600"
+                <button type="button" aria-label="Delete list" className="rounded p-1 text-ink-4 hover:text-rose-600"
                   onClick={() => { const l = activeLists.find((x) => x.id === listId); if (l) remove("lists", l.id, `Delete the list "${l.name}"? This also deletes its ${l.task_count} task(s).`); }}><Trash2 size={13} /></button>
               </>
             ) : undefined}
@@ -3559,11 +3576,11 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
 
           <div className="ml-auto flex items-end gap-2">
             <button type="button" onClick={() => setNewSpaceOpen(true)}
-              className="flex items-center gap-1 rounded-full px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:text-brand">
+              className="flex items-center gap-1 rounded-full px-2 py-1.5 text-xs font-semibold text-ink-4 transition hover:text-brand">
               <Plus size={13} />{isAdmin ? "Space" : "Request space"}
             </button>
             <button type="button" onClick={() => setNewListFor(spaceId || activeSpaces[0]?.id || 0)}
-              className="flex items-center gap-1 rounded-full px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:text-brand">
+              className="flex items-center gap-1 rounded-full px-2 py-1.5 text-xs font-semibold text-ink-4 transition hover:text-brand">
               <Plus size={13} />{isAdmin ? "List" : "Request list"}
             </button>
           </div>
@@ -3572,7 +3589,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         {/* Find a task by name, or narrow by where it stands and when it is due. */}
         <div className="flex flex-wrap items-center gap-2 p-3">
           <div className="relative min-w-[12rem] flex-1">
-            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
             <input ref={searchRef} className="input h-9 py-0 pl-8 text-sm" placeholder="Search tasks by name…   /"
               value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
@@ -3597,7 +3614,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
             <option value="recent">Sort: newest</option>
           </select>
           {filtersOn ? (
-            <button type="button" className="rounded-full px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-brand" onClick={clearFilters}>
+            <button type="button" className="rounded-full px-3 py-1.5 text-xs font-semibold text-ink-3 hover:text-brand" onClick={clearFilters}>
               Clear
             </button>
           ) : null}
@@ -3606,14 +3623,14 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         {/* Saved filters: name the set you keep coming back to, then reapply it
             in one click. Kept in this browser, like the default view. */}
         <div className="flex flex-wrap items-center gap-2 p-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Saved</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-ink-4">Saved</span>
           {savedFilters.length ? savedFilters.map((f) => (
-            <span key={f.name} className="flex items-center gap-1 rounded-full border border-line bg-white px-3 py-1 text-xs font-semibold text-stone-600 transition hover:border-stone-300">
+            <span key={f.name} className="flex items-center gap-1 rounded-full border border-line bg-white px-3 py-1 text-xs font-semibold text-ink-2 transition hover:border-line-strong">
               <button type="button" onClick={() => applyFilter(f)}>{f.name}</button>
-              <button type="button" aria-label={`Delete saved filter ${f.name}`} className="text-slate-300 hover:text-rose-600"
+              <button type="button" aria-label={`Delete saved filter ${f.name}`} className="text-ink-4 hover:text-rose-600"
                 onClick={() => removeSavedFilter(f.name)}><X size={11} /></button>
             </span>
-          )) : <span className="text-xs text-slate-400">No saved filters yet.</span>}
+          )) : <span className="text-xs text-ink-4">No saved filters yet.</span>}
 
           {savingFilter ? (
             <span className="flex items-center gap-1">
@@ -3626,7 +3643,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
           ) : (
             <button type="button" onClick={() => setSavingFilter(true)} disabled={!filtersOn}
               className={classNames("ml-auto flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold transition",
-                filtersOn ? "text-brand hover:bg-orange-50" : "cursor-not-allowed text-slate-300")}
+                filtersOn ? "text-brand hover:bg-orange-50" : "cursor-not-allowed text-ink-4")}
               title={filtersOn ? "Save this filter set" : "Set a filter first"}>
               <Plus size={12} />Save current filters
             </button>
@@ -3636,26 +3653,26 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         <div className="flex flex-wrap items-center gap-3 p-3">
           <div className="min-w-0">
             <p className="truncate text-sm font-bold text-ink">{scopeLabel}</p>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-ink-4">
               {visibleTasks.length - done} open{done ? ` · ${done} done` : ""}{overdue ? ` · ${overdue} overdue` : ""}
               {filtersOn ? ` · filtered from ${tasks.length}` : ""}
             </p>
           </div>
           {isAdmin ? (
-            <label className="flex cursor-pointer items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-stone-600">
+            <label className="flex cursor-pointer items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-2">
               <input type="checkbox" checked={mine} onChange={(e) => { setMine(e.target.checked); if (e.target.checked) setAssigneeId(0); }} />
               My tasks
             </label>
           ) : null}
-          <label className="flex cursor-pointer items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-stone-600">
+          <label className="flex cursor-pointer items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-2">
             <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} />
             Hide done
           </label>
-          <div className="ml-auto flex gap-1 rounded-full bg-stone-100 p-1">
+          <div className="ml-auto flex gap-1 rounded-full bg-sunk p-1">
             {(["board", "list", "calendar"] as const).map((v) => (
               <button key={v} type="button" onClick={() => setView(v)}
                 className={classNames("rounded-full px-3 py-1 text-xs font-semibold capitalize transition",
-                  view === v ? "bg-white text-ink shadow-sm" : "text-stone-500 hover:text-ink")}>
+                  view === v ? "bg-white text-ink shadow-sm" : "text-ink-3 hover:text-ink")}>
                 {v}
               </button>
             ))}
@@ -3678,13 +3695,15 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                 setDragId(null); setDragOver(null);
               }}
               className={classNames(
-                "flex w-[240px] shrink-0 grow flex-col rounded-2xl p-2 transition",
-                dragOver === status ? "bg-orange-50 ring-2 ring-brand/40" : "bg-stone-50/80",
+                "flex w-[240px] shrink-0 grow flex-col rounded-xl border p-2 transition-colors duration-150",
+                dragOver === status
+                  ? "border-brand/40 bg-[var(--brand-tint)]"
+                  : "border-[var(--line)] bg-[var(--surface-sunk)]",
               )}>
               <div className="flex items-center gap-2 px-1 pb-2">
                 <span className={classNames("h-1.5 w-1.5 rounded-full", statusBar[status])} />
-                <span className="text-xs font-bold uppercase tracking-wide text-stone-500">{status}</span>
-                <span className="ml-auto text-xs text-slate-400">{grouped[status]?.length ?? 0}</span>
+                <span className="text-xs font-bold uppercase tracking-wide text-ink-3">{status}</span>
+                <span className="ml-auto text-xs text-ink-4">{grouped[status]?.length ?? 0}</span>
               </div>
               <div className="flex-1 space-y-2">
                 {(grouped[status] ?? []).map((t) => (
@@ -3694,19 +3713,19 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     onClick={() => setOpenTask(t)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenTask(t); } }}
                     className={classNames(
-                      "w-full cursor-grab rounded-xl border border-line p-3 text-left transition hover:border-stone-300 hover:shadow-sm active:cursor-grabbing",
-                      t.status === "Done" ? "bg-stone-50" : "bg-white",
+                      "w-full cursor-grab rounded-xl border border-line p-3 text-left transition hover:border-line-strong hover:shadow-sm active:cursor-grabbing",
+                      t.status === "Done" ? "bg-sunk" : "bg-white",
                       dragId === t.id && "opacity-40",
                     )}>
                     <div className="mb-1 flex items-center gap-1.5">
                       <PriorityTag priority={t.priority} compact />
                       {isOverdue(t) ? <span className="rounded-full bg-rose-100 px-1.5 text-[9px] font-bold uppercase text-rose-700">Late</span> : null}
                     </div>
-                    <p className={classNames("text-sm font-semibold leading-snug", t.status === "Done" ? "text-slate-400 line-through decoration-slate-300" : "text-ink")}>{t.title}</p>
-                    {!listId ? <p className="mt-1 truncate text-[11px] text-slate-400">{t.list_name}</p> : null}
+                    <p className={classNames("text-sm font-semibold leading-snug", t.status === "Done" ? "text-ink-4 line-through decoration-slate-300" : "text-ink")}>{t.title}</p>
+                    {!listId ? <p className="mt-1 truncate text-[11px] text-ink-4">{t.list_name}</p> : null}
                     <div className="mt-2 flex items-center gap-2">
                       <span className={classNames("truncate text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date, t.status)}</span>
-                      {t.comment_count ? <span className="text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
+                      {t.comment_count ? <span className="text-[11px] text-ink-4">💬 {t.comment_count}</span> : null}
                       <span className="ml-auto flex -space-x-1">
                         {t.assignees.slice(0, 3).map((a) => (
                           <span key={a.user_id} title={a.display_name} className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700 ring-1 ring-white">
@@ -3726,13 +3745,13 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                         if (e.key === "Escape") { setQuickAddIn(null); setQuickTitle(""); }
                       }}
                       placeholder="What needs doing?"
-                      className="w-full resize-none border-0 bg-transparent text-sm text-ink outline-none placeholder:text-slate-400" />
+                      className="w-full resize-none border-0 bg-transparent text-sm text-ink outline-none placeholder:text-ink-4" />
                     <div className="mt-1 flex items-center gap-2">
                       <button type="button" className="btn btn-primary px-3 py-1 text-xs" disabled={quickBusy || !quickTitle.trim()} onClick={() => quickAdd(status)}>
                         {quickBusy ? "Adding…" : "Add"}
                       </button>
-                      <button type="button" className="text-xs font-semibold text-slate-400 hover:text-ink" onClick={() => { setQuickAddIn(null); setQuickTitle(""); }}>Cancel</button>
-                      <button type="button" className="ml-auto text-[11px] font-semibold text-slate-400 hover:text-brand"
+                      <button type="button" className="text-xs font-semibold text-ink-4 hover:text-ink" onClick={() => { setQuickAddIn(null); setQuickTitle(""); }}>Cancel</button>
+                      <button type="button" className="ml-auto text-[11px] font-semibold text-ink-4 hover:text-brand"
                         onClick={() => { setNewOpen({ status, listId: defaultListId }); setQuickAddIn(null); setQuickTitle(""); }}>
                         More options
                       </button>
@@ -3741,7 +3760,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                 ) : (
                   <button type="button"
                     onClick={() => (defaultListId ? (setQuickAddIn(status), setQuickTitle("")) : setNewOpen({ status, listId: defaultListId }))}
-                    className="flex w-full items-center gap-1 rounded-xl px-2 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-white hover:text-brand">
+                    className="flex w-full items-center gap-1 rounded-xl px-2 py-1.5 text-xs font-semibold text-ink-4 transition hover:bg-white hover:text-brand">
                     <Plus size={13} />Task
                   </button>
                 )}
@@ -3755,7 +3774,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         <div className="card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[680px] text-left text-sm">
-              <thead className="bg-stone-50 text-[11px] uppercase tracking-wide text-slate-500">
+              <thead className="bg-sunk text-[11px] uppercase tracking-wide text-ink-3">
                 <tr>
                   <th className="px-4 py-3 font-bold">Task</th>
                   <th className="px-4 py-3 font-bold">Priority</th>
@@ -3771,27 +3790,27 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     {/* Where the finished work starts, say so rather than leaving
                         the reader to notice the statuses changed. */}
                     {t.status === "Done" && visibleTasks[i - 1]?.status !== "Done" ? (
-                      <tr className="bg-stone-50/70">
-                        <td colSpan={6} className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      <tr className="bg-sunk/70">
+                        <td colSpan={6} className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-ink-4">
                           Completed · {visibleTasks.filter((x) => x.status === "Done").length}
                         </td>
                       </tr>
                     ) : null}
-                  <tr className={classNames("cursor-pointer hover:bg-stone-50", t.status === "Done" ? "bg-stone-50/40" : "bg-white")} onClick={() => setOpenTask(t)}>
+                  <tr className={classNames("cursor-pointer hover:bg-sunk", t.status === "Done" ? "bg-sunk/40" : "bg-white")} onClick={() => setOpenTask(t)}>
                     <td className="px-4 py-3">
                       <span className="flex items-center gap-2">
-                        <span className={classNames("font-semibold", t.status === "Done" ? "text-slate-400 line-through decoration-slate-300" : "text-ink")}>{t.title}</span>
-                        {t.comment_count ? <span className="text-[11px] text-slate-400">💬 {t.comment_count}</span> : null}
+                        <span className={classNames("font-semibold", t.status === "Done" ? "text-ink-4 line-through decoration-slate-300" : "text-ink")}>{t.title}</span>
+                        {t.comment_count ? <span className="text-[11px] text-ink-4">💬 {t.comment_count}</span> : null}
                       </span>
                     </td>
                     <td className={classNames("px-4 py-3", t.status === "Done" && "opacity-50")}><PriorityTag priority={t.priority} /></td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{t.list_name}</td>
+                    <td className="px-4 py-3 text-xs text-ink-3">{t.list_name}</td>
                     <td className="px-4 py-3">
                       <span className="flex -space-x-1">
                         {t.assignees.map((a) => (
                           <span key={a.user_id} title={a.display_name} className="flex h-6 w-6 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700 ring-1 ring-white">{initialsOf(a.display_name)}</span>
                         ))}
-                        {!t.assignees.length ? <span className="text-xs text-slate-400">—</span> : null}
+                        {!t.assignees.length ? <span className="text-xs text-ink-4">—</span> : null}
                       </span>
                     </td>
                     <td className={classNames("px-4 py-3 text-xs", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date, t.status)}</td>
@@ -3803,7 +3822,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     </td>
                   </tr>
                   </Fragment>
-                )) : <tr><td className="px-4 py-10 text-center text-slate-500" colSpan={6}>{filtersOn ? "No task matches those filters." : "Nothing here yet."}</td></tr>}
+                )) : <tr><td className="px-4 py-10 text-center text-ink-3" colSpan={6}>{filtersOn ? "No task matches those filters." : "Nothing here yet."}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -3859,7 +3878,7 @@ function WorkCalendar({ tasks, onOpen }: { tasks: WorkTask[]; onOpen: (t: WorkTa
         </Field>
         <Field label="Year"><input className="input h-10 w-24 py-1" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
       </div>
-      <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-bold uppercase text-slate-400">
+      <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-bold uppercase text-ink-4">
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => <div key={d} className="py-1">{d}</div>)}
       </div>
       <div className="grid grid-cols-7 gap-1">
@@ -3869,7 +3888,7 @@ function WorkCalendar({ tasks, onOpen }: { tasks: WorkTask[]; onOpen: (t: WorkTa
           const list = byDay[day] ?? [];
           return (
             <div key={day} className={classNames("min-h-[86px] rounded-lg border p-1", day === today ? "border-brand bg-orange-50/40" : "border-line")}>
-              <p className="px-1 text-[11px] font-bold text-slate-500">{i + 1}</p>
+              <p className="px-1 text-[11px] font-bold text-ink-3">{i + 1}</p>
               <div className="space-y-1">
                 {list.slice(0, 3).map((t) => (
                   <button key={t.id} type="button" onClick={() => onOpen(t)}
@@ -3880,7 +3899,7 @@ function WorkCalendar({ tasks, onOpen }: { tasks: WorkTask[]; onOpen: (t: WorkTa
                     <span className="min-w-0 flex-1 truncate">{t.title}</span>
                   </button>
                 ))}
-                {list.length > 3 ? <p className="px-1 text-[10px] text-slate-400">+{list.length - 3} more</p> : null}
+                {list.length > 3 ? <p className="px-1 text-[10px] text-ink-4">+{list.length - 3} more</p> : null}
               </div>
             </div>
           );
@@ -3938,16 +3957,16 @@ function WorkTaskModal({ task, isAdmin, people, spaces, lists, onClose, onChange
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/50 p-4 backdrop-blur-sm">
+    <div className="modal-scrim items-start justify-center overflow-y-auto p-4">
       <div className="card my-8 w-full max-w-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{task.space_name} › {task.list_name}</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-4">{task.space_name} › {task.list_name}</p>
             {isAdmin
               ? <input className="input mt-1 text-lg font-bold" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
               : <h3 className="mt-1 text-lg font-bold text-ink">{task.title}</h3>}
           </div>
-          <button type="button" aria-label="Close" className="rounded-lg p-1.5 text-slate-400 hover:bg-stone-100" onClick={onClose}><X size={20} /></button>
+          <button type="button" aria-label="Close" className="rounded-lg p-1.5 text-ink-4 hover:bg-sunk" onClick={onClose}><X size={20} /></button>
         </div>
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -3988,7 +4007,7 @@ function WorkTaskModal({ task, isAdmin, people, spaces, lists, onClose, onChange
           <p className="label">Description</p>
           {isAdmin
             ? <textarea className="input min-h-20" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-            : <p className="rounded-xl border border-line p-3 text-sm text-slate-600">{task.description || "No description."}</p>}
+            : <p className="rounded-xl border border-line p-3 text-sm text-ink-2">{task.description || "No description."}</p>}
         </div>
 
         <div className="mt-4">
@@ -3999,7 +4018,7 @@ function WorkTaskModal({ task, isAdmin, people, spaces, lists, onClose, onChange
               return (
                 <button key={p.id} type="button" disabled={!isAdmin} onClick={() => toggleAssignee(p.id)}
                   className={classNames("flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold transition",
-                    on ? "border-brand bg-orange-50 text-brand" : "border-line bg-white text-stone-500", !isAdmin && "cursor-default")}>
+                    on ? "border-brand bg-orange-50 text-brand" : "border-line bg-white text-ink-3", !isAdmin && "cursor-default")}>
                   <span className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-100 text-[9px] font-bold text-orange-700">{initialsOf(p.display_name)}</span>
                   {p.display_name}
                 </button>
@@ -4015,11 +4034,11 @@ function WorkTaskModal({ task, isAdmin, people, spaces, lists, onClose, onChange
               <div key={c.id} className="flex gap-2">
                 <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[10px] font-bold text-orange-700">{initialsOf(c.author_name)}</span>
                 <div>
-                  <p className="text-[11px] text-slate-400"><span className="font-semibold text-slate-600">{c.author_name}</span> · {chatTime(c.created_at)}</p>
+                  <p className="text-[11px] text-ink-4"><span className="font-semibold text-ink-2">{c.author_name}</span> · {chatTime(c.created_at)}</p>
                   <p className="whitespace-pre-wrap text-sm text-ink">{c.body}</p>
                 </div>
               </div>
-            )) : <p className="text-sm text-slate-400">No comments yet.</p>}
+            )) : <p className="text-sm text-ink-4">No comments yet.</p>}
           </div>
           <form onSubmit={comment} className="mt-3 flex gap-2">
             <input className="input flex-1" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Write a comment…" />
@@ -4070,7 +4089,7 @@ function WorkTaskForm({ spaces, lists, people, initial, onClose, onSaved }: {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/50 p-4 backdrop-blur-sm">
+    <div className="modal-scrim items-start justify-center overflow-y-auto p-4">
       <form onSubmit={submit} className="card my-8 w-full max-w-lg space-y-4 p-6">
         <h3 className="text-lg font-bold text-ink">New task</h3>
         {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
@@ -4115,7 +4134,7 @@ function WorkTaskForm({ spaces, lists, people, initial, onClose, onSaved }: {
               return (
                 <button key={p.id} type="button"
                   onClick={() => setForm((f) => ({ ...f, assignees: on ? f.assignees.filter((x) => x !== p.id) : [...f.assignees, p.id] }))}
-                  className={classNames("rounded-full border px-3 py-1 text-xs font-semibold", on ? "border-brand bg-orange-50 text-brand" : "border-line text-stone-500")}>
+                  className={classNames("rounded-full border px-3 py-1 text-xs font-semibold", on ? "border-brand bg-orange-50 text-brand" : "border-line text-ink-3")}>
                   {p.display_name}
                 </button>
               );
@@ -4150,10 +4169,10 @@ function NewSpaceForm({ isAdmin, onClose, onSaved }: { isAdmin: boolean; onClose
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 p-4 backdrop-blur-sm">
+    <div className="modal-scrim items-center justify-center p-4">
       <form onSubmit={submit} className="card w-full max-w-md space-y-4 p-6">
         <h3 className="text-lg font-bold text-ink">{isAdmin ? "New space" : "Request a space"}</h3>
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-ink-3">
           {isAdmin ? "Spaces group your brand lists — e.g. Clients, Internal." : "Your request goes to the admin for approval."}
         </p>
         {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
@@ -4189,10 +4208,10 @@ function NewListForm({ isAdmin, spaces, initialSpaceId, onClose, onSaved }: {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 p-4 backdrop-blur-sm">
+    <div className="modal-scrim items-center justify-center p-4">
       <form onSubmit={submit} className="card w-full max-w-md space-y-4 p-6">
         <h3 className="text-lg font-bold text-ink">{isAdmin ? "New list" : "Request a list"}</h3>
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-ink-3">
           {isAdmin ? "One list per brand you work with." : "Your request goes to the admin for approval."}
         </p>
         {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
@@ -4278,7 +4297,7 @@ function Leave({ isAdmin }: { isAdmin: boolean }) {
                 <div key={type.id} className="flex items-center justify-between gap-3 py-3">
                   <div>
                     <p className="font-semibold text-ink">{type.name}</p>
-                    <p className="text-xs text-slate-500">{type.is_paid ? "Paid" : "Unpaid"} · {type.monthly_balance}/month · {type.yearly_balance}/year</p>
+                    <p className="text-xs text-ink-3">{type.is_paid ? "Paid" : "Unpaid"} · {type.monthly_balance}/month · {type.yearly_balance}/year</p>
                   </div>
                   <button className="btn btn-soft" onClick={() => removeType(type.id)}>Delete</button>
                 </div>
@@ -4480,19 +4499,19 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
       {isAdmin && rows.length ? (
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="card p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Outstanding</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink-3">Outstanding</p>
             <p className="tnum mt-1 text-2xl font-bold text-rose-600">{currency.format(outstandingTotal)}</p>
-            <p className="text-xs text-slate-400">{unpaidRows.length} unpaid</p>
+            <p className="text-xs text-ink-4">{unpaidRows.length} unpaid</p>
           </div>
           <div className="card p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Paid</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink-3">Paid</p>
             <p className="tnum mt-1 text-2xl font-bold text-emerald-600">{currency.format(paidTotal)}</p>
-            <p className="text-xs text-slate-400">{rows.length - unpaidRows.length} settled</p>
+            <p className="text-xs text-ink-4">{rows.length - unpaidRows.length} settled</p>
           </div>
           <div className="card p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink-3">Total</p>
             <p className="tnum mt-1 text-2xl font-bold text-ink">{currency.format(outstandingTotal + paidTotal)}</p>
-            <p className="text-xs text-slate-400">{rows.length} salary rows</p>
+            <p className="text-xs text-ink-4">{rows.length} salary rows</p>
           </div>
         </div>
       ) : null}
@@ -4562,11 +4581,11 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
         columns={[
           ["Employee", (row) => row.employee_name ?? row.employee_code],
           ["Period", (row) => `${monthNames[row.salary_month - 1]} ${row.salary_year}`],
-          ["Days", (row) => <span className="text-xs text-slate-600">{row.paid_days} / {row.working_days} paid</span>],
+          ["Days", (row) => <span className="text-xs text-ink-2">{row.paid_days} / {row.working_days} paid</span>],
           ["Gross", (row) => currency.format(row.gross_salary)],
           ["Deductions", (row) => row.deductions > 0
             ? <span className="font-semibold text-rose-600">-{currency.format(row.deductions)}</span>
-            : <span className="text-slate-400">—</span>],
+            : <span className="text-ink-4">—</span>],
           ["Net", (row) => <span className="font-bold text-ink">{currency.format(row.net_salary)}</span>],
           ["Status", (row) => <Badge value={row.status === "Done" ? "Paid" : "Unpaid"} />],
           [
@@ -4600,10 +4619,10 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
       />
 
       {payModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+        <div className="modal-scrim items-center justify-center p-4">
           <form onSubmit={markPaidSubmit} className="card w-full max-w-md p-6 space-y-4">
             <h3 className="text-lg font-bold text-ink">Mark as Paid</h3>
-            <p className="text-xs text-slate-500">Upload a payment screenshot for {payModalOpen.employee}.</p>
+            <p className="text-xs text-ink-3">Upload a payment screenshot for {payModalOpen.employee}.</p>
             <Field label="Payment Screenshot (Optional)">
               <input type="file" className="input file:mr-4 file:rounded-full file:border-0 file:bg-primary-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-primary-700 hover:file:bg-primary-100" accept="image/*" onChange={(e) => setPaymentProofFile(e.target.files?.[0] || null)} />
             </Field>
@@ -4616,10 +4635,10 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
       )}
 
       {editingSalary && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4 animate-fade-in">
+        <div className="modal-scrim items-center justify-center p-4">
           <form onSubmit={saveOverride} className="card w-full max-w-md p-6 space-y-4">
             <h3 className="text-lg font-bold text-ink">Edit Salary Details</h3>
-            <p className="text-xs text-slate-500">Modify attendance days, gross salary, or add custom deductions for {editingSalary.employee_name}.</p>
+            <p className="text-xs text-ink-3">Modify attendance days, gross salary, or add custom deductions for {editingSalary.employee_name}.</p>
             <div className="grid grid-cols-2 gap-4">
               <Field label="Working Days">
                 <input className="input" type="number" step="any" value={editForm.working_days} onChange={(e) => handleFormChange("working_days", Number(e.target.value))} />
@@ -4756,7 +4775,7 @@ function ReportCard({ title, href }: { title: string; href: string }) {
   return (
     <div className="card p-4">
       <h3 className="font-bold text-ink">{title}</h3>
-      <p className="mt-2 text-sm text-slate-500">Download a filtered CSV for admin review.</p>
+      <p className="mt-2 text-sm text-ink-3">Download a filtered CSV for admin review.</p>
       <a className="btn btn-primary mt-4 w-full" href={href}><Download size={17} />Export CSV</a>
     </div>
   );

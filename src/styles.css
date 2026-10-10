@@ -2,12 +2,59 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Design tokens.
+
+   One warm-neutral family, because the brand is a warm orange and cool greys
+   fight it. One accent, spent sparingly — the restraint is what reads as
+   expensive. Shadows are low-opacity and layered rather than large and dark;
+   a premium surface looks lifted, not dropped.
+   ──────────────────────────────────────────────────────────────────────── */
 :root {
-  color: #1c1917;
-  background: #faf7f2;
+  --canvas:        #f7f7f5;
+  --surface:       #ffffff;
+  --surface-sunk:  #faf9f7;
+  --surface-hover: #f4f3f0;
+
+  --line:          #e9e7e2;
+  --line-strong:   #dcd9d2;
+
+  --ink:           #1a1917;
+  --ink-2:         #57544e;
+  --ink-3:         #8e8a82;
+  --ink-4:         #b3aea5;
+
+  --brand:         #ea580c;
+  --brand-hover:   #d14d08;
+  --brand-press:   #b84306;
+  --brand-tint:    #fff3ec;
+  --brand-line:    #fbd5bd;
+
+  --ok:            #15803d;
+  --ok-tint:       #effaf2;
+  --warn:          #b45309;
+  --warn-tint:     #fff8eb;
+  --bad:           #be123c;
+  --bad-tint:      #fff1f3;
+
+  /* Layered and shallow: depth without the smudge of one big blur. */
+  --shadow-xs: 0 1px 2px rgba(28, 25, 23, 0.04);
+  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.04), 0 2px 6px rgba(28, 25, 23, 0.03);
+  --shadow-md: 0 2px 4px rgba(28, 25, 23, 0.04), 0 6px 16px rgba(28, 25, 23, 0.06);
+  --shadow-lg: 0 4px 8px rgba(28, 25, 23, 0.04), 0 16px 40px rgba(28, 25, 23, 0.10);
+
+  /* Decelerating, and quick enough to feel like a response rather than a
+     performance. Anything over ~200ms on a click starts to feel sluggish. */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --fast: 130ms;
+  --base: 180ms;
+
+  color: var(--ink);
+  background: var(--canvas);
   font-family: "Geist Variable", Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis-weight: none;
   text-rendering: optimizeLegibility;
+  accent-color: var(--brand);
 }
 
 body {
@@ -18,17 +65,19 @@ body {
   line-height: 1.55;
 }
 
+::selection { background: var(--brand-tint); color: var(--brand-press); }
+
 /* Large type carries its own weight — the bigger it gets, the tighter it wants
    to be set. Loose headings are the usual tell of an unconsidered interface. */
 h1, h2, h3, h4, h5, h6 {
   letter-spacing: -0.032em;
   line-height: 1.15;
+  color: var(--ink);
 }
 
 /* Figures stay in the sans, set with tabular numerals: every digit takes the
    same width, so amounts and times still line up in a column — but without the
-   slashed zeros and code-editor air a monospace brings to a money column.
-   That is how Stripe, Linear and the rest set their numbers. */
+   slashed zeros and code-editor air a monospace brings to a money column. */
 .tnum,
 time,
 input[type="number"],
@@ -47,73 +96,166 @@ input[type="time"] {
   letter-spacing: -0.03em;
 }
 
-/* Tables keep the sans face for names and labels, but never let digits drift. */
-table {
-  font-variant-numeric: tabular-nums;
+table { font-variant-numeric: tabular-nums; }
+
+button, input, select, textarea { font: inherit; }
+
+/* A scrollbar you notice only when you need it. */
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
 }
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-4); background-clip: content-box; }
 
-
-
-button,
-input,
-select,
-textarea {
-  font: inherit;
+/* One visible focus treatment everywhere, for keyboard users only. */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 @layer components {
+  /* ── Surfaces ─────────────────────────────────────────────────────────── */
   .card {
-    @apply rounded-2xl border border-slate-200/70 bg-white shadow-sm transition-all duration-300;
+    @apply rounded-xl border bg-white;
+    border-color: var(--line);
+    box-shadow: var(--shadow-xs);
+    transition: box-shadow var(--base) var(--ease), border-color var(--base) var(--ease), transform var(--base) var(--ease);
   }
 
   .card-hover {
-    @apply cursor-pointer hover:-translate-y-0.5 hover:border-orange-200 hover:shadow-lg hover:shadow-orange-500/10;
+    @apply cursor-pointer;
+  }
+  .card-hover:hover {
+    border-color: var(--line-strong);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
   }
 
+  /* ── Buttons ──────────────────────────────────────────────────────────── */
+  /* Flat fills and a shorter frame. The old gradient-and-bounce reads as a
+     2019 dashboard; a premium control changes colour and nothing else. */
   .btn {
-    @apply inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97];
+    @apply inline-flex min-h-[38px] select-none items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold;
+    transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease),
+                border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), opacity var(--fast) var(--ease);
   }
+  .btn:disabled { @apply cursor-not-allowed opacity-40; }
 
-  .btn-primary {
-    @apply bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-md shadow-orange-500/25 hover:from-orange-400 hover:to-orange-500 hover:shadow-lg hover:shadow-orange-500/30;
-  }
+  .btn-primary { background: var(--brand); color: #fff; box-shadow: var(--shadow-xs); }
+  .btn-primary:hover:not(:disabled) { background: var(--brand-hover); }
+  .btn-primary:active:not(:disabled) { background: var(--brand-press); }
 
   .btn-soft {
-    @apply border border-stone-200 bg-white text-stone-700 shadow-sm hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700 hover:shadow;
+    background: var(--surface);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow-xs);
   }
+  .btn-soft:hover:not(:disabled) { background: var(--surface-hover); color: var(--ink); border-color: var(--line-strong); }
 
-  .btn-danger {
-    @apply bg-gradient-to-r from-red-500 to-rose-600 text-white shadow-md shadow-red-500/20 hover:from-red-400 hover:to-rose-500 hover:shadow-lg hover:shadow-red-500/30;
-  }
+  .btn-ghost { background: transparent; color: var(--ink-2); }
+  .btn-ghost:hover:not(:disabled) { background: var(--surface-hover); color: var(--ink); }
 
-  .btn-success {
-    @apply bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-md shadow-emerald-500/20 hover:from-emerald-400 hover:to-teal-500 hover:shadow-lg hover:shadow-emerald-500/30;
-  }
+  .btn-danger { background: var(--bad); color: #fff; }
+  .btn-danger:hover:not(:disabled) { filter: brightness(0.93); }
 
+  .btn-success { background: var(--ok); color: #fff; }
+  .btn-success:hover:not(:disabled) { filter: brightness(0.93); }
+
+  /* ── Fields ───────────────────────────────────────────────────────────── */
+  /* 16px text keeps iOS Safari from zooming the page on focus. */
   .input {
-    /* text-base (16px) keeps iOS Safari from auto-zooming when an input is focused. */
-    @apply min-h-[44px] w-full rounded-xl border border-stone-300 bg-white px-4 py-2.5 text-base text-stone-800 outline-none transition-all placeholder:text-stone-400 focus:border-orange-500 focus:ring-4 focus:ring-orange-500/10;
+    @apply min-h-[40px] w-full rounded-lg px-3 py-2 text-base outline-none;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    color: var(--ink);
+    transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), background-color var(--fast) var(--ease);
   }
+  .input::placeholder { color: var(--ink-4); }
+  .input:hover:not(:focus) { border-color: var(--ink-4); }
+  .input:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.12);
+    outline: none;
+  }
+  select.input { @apply cursor-pointer pr-8; }
 
   .label {
-    @apply text-xs font-semibold uppercase tracking-[0.08em] text-slate-500 mb-1.5 block;
+    @apply mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.07em];
+    color: var(--ink-3);
   }
 
+  /* ── Indicators ───────────────────────────────────────────────────────── */
   .badge {
-    @apply inline-flex items-center rounded-full px-3 py-1 text-xs font-bold shadow-sm;
+    @apply inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold;
+    letter-spacing: -0.005em;
   }
-  
+
   .table-header {
-    @apply bg-slate-50/50 text-slate-500 font-semibold text-xs uppercase tracking-[0.08em];
+    @apply text-[11px] font-semibold uppercase tracking-[0.07em];
+    background: var(--surface-sunk);
+    color: var(--ink-3);
+  }
+
+  /* A hairline that matches the token, for dividers inside surfaces. */
+  .hairline { border-color: var(--line); }
+
+  /* One scrim for every dialog: a deep, desaturated veil rather than a flat
+     black, so the surface above it reads as lifted instead of cut out. */
+  .modal-scrim {
+    @apply fixed inset-0 z-50 flex overflow-y-auto;
+    background: rgba(28, 25, 23, 0.42);
+    backdrop-filter: blur(6px) saturate(140%);
+    -webkit-backdrop-filter: blur(6px) saturate(140%);
+    animation: fadeIn 140ms var(--ease) both;
+  }
+  /* auto margins centre the dialog AND let it scroll when it is taller than
+     the window — flex centring on its own clips the top, which is the usual
+     way a long form becomes unreachable. */
+  .modal-scrim > form,
+  .modal-scrim > div {
+    margin: auto;
+    animation: popIn 180ms var(--ease) both;
   }
 }
 
-/* Animations */
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+/* ─────────────────────────────────────────────────────────────────────────
+   Motion. Short, decelerating, and never in the way.
+   ──────────────────────────────────────────────────────────────────────── */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-.animate-fade-in {
-  animation: fadeIn 0.4s ease-out forwards;
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.97) translateY(4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-fade-in { animation: riseIn var(--base) var(--ease) both; }
+.animate-rise    { animation: riseIn 260ms var(--ease) both; }
+.animate-pop     { animation: popIn 160ms var(--ease) both; }
+
+/* Each screen settles in rather than snapping. */
+.view-enter { animation: riseIn 240ms var(--ease) both; }
+
+/* Honour the system setting: no decoration is worth making someone ill. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -259,6 +259,46 @@ button, input, select, textarea { font: inherit; }
 /* Each screen settles in rather than snapping. */
 .view-enter { animation: riseIn 240ms var(--ease) both; }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Print. "Download PDF" is the browser's own Save as PDF, which means the
+   printed page has to be designed rather than whatever the screen happened to
+   look like: no chrome, no controls, nothing clipped across a page break.
+   ──────────────────────────────────────────────────────────────────────── */
+.print-only { display: none; }
+
+@media print {
+  @page { size: A4; margin: 14mm; }
+
+  html, body { background: #fff !important; }
+
+  /* Navigation, filters, floating widgets and anything interactive are not
+     part of a report. */
+  aside, header, .no-print, .modal-scrim { display: none !important; }
+
+  .print-only { display: block !important; }
+
+  /* Let the content use the full sheet. */
+  main { max-width: none !important; padding: 0 !important; }
+  .lg\:pl-\[244px\], .lg\:pl-\[72px\] { padding-left: 0 !important; }
+
+  /* Flat on paper: shadows and tints cost ink and add nothing. */
+  .card {
+    box-shadow: none !important;
+    border: 1px solid #d4d4d4 !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Bars and fills have to survive the browser dropping backgrounds. */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+  table { page-break-inside: auto; }
+  tr { page-break-inside: avoid; page-break-after: auto; }
+  thead { display: table-header-group; }
+
+  h1, h2, h3 { break-after: avoid; page-break-after: avoid; }
+}
+
 /* Honour the system setting: no decoration is worth making someone ill. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

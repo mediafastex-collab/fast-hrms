@@ -116,6 +116,7 @@ async function route(context: Context) {
   if (method === "DELETE" && path.match(/^\/tasks\/\d+$/)) return deleteTask(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/audit-logs") return auditLogs(db);
   if (method === "GET" && path === "/reports/meta") return reportsMeta(db);
+  if (method === "GET" && path === "/reports/summary") return reportsSummary(db, url);
   if (method === "GET" && path === "/reports/leaves.csv") return leaveCsv(db, url);
   if (method === "GET" && path === "/reports/salaries.csv") return salaryCsv(db, url);
 
@@ -1523,6 +1524,88 @@ async function reportsMeta(db: D1Database) {
     db.prepare("SELECT id, name FROM departments ORDER BY name").all(),
   ]);
   return json({ employees: employees.results, departments: departments.results });
+}
+
+// Everything the Reports screen draws, in one round trip. Only fetched when
+// someone opens the screen, so it can afford to do real work.
+async function reportsSummary(db: D1Database, url: URL) {
+  const start = url.searchParams.get("start") || dateOnly().slice(0, 8) + "01";
+  const end = url.searchParams.get("end") || dateOnly();
+  const employeeId = url.searchParams.get("employeeId");
+  const departmentId = url.searchParams.get("departmentId");
+
+  const scope: string[] = [];
+  const scopeArgs: unknown[] = [];
+  if (employeeId) { scope.push("e.id = ?"); scopeArgs.push(employeeId); }
+  if (departmentId) { scope.push("e.department_id = ?"); scopeArgs.push(departmentId); }
+  const andScope = scope.length ? ` AND ${scope.join(" AND ")}` : "";
+
+  const [byStatus, daily, byEmployee, leaveByType, payroll, tasks, headcount] = await Promise.all([
+    db.prepare(
+      `SELECT a.status, COUNT(*) AS count FROM attendance a JOIN employees e ON e.id = a.employee_id
+       WHERE a.attendance_date BETWEEN ? AND ?${andScope} GROUP BY a.status`,
+    ).bind(start, end, ...scopeArgs).all(),
+
+    db.prepare(
+      `SELECT a.attendance_date AS day,
+         SUM(CASE WHEN a.status IN ('Present','Late') THEN 1 ELSE 0 END) AS present,
+         SUM(CASE WHEN a.status = 'Late' THEN 1 ELSE 0 END) AS late,
+         COUNT(*) AS marked
+       FROM attendance a JOIN employees e ON e.id = a.employee_id
+       WHERE a.attendance_date BETWEEN ? AND ?${andScope}
+       GROUP BY a.attendance_date ORDER BY a.attendance_date`,
+    ).bind(start, end, ...scopeArgs).all(),
+
+    db.prepare(
+      `SELECT e.full_name AS name, e.employee_code AS code,
+         SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) AS present,
+         SUM(CASE WHEN a.status = 'Late' THEN 1 ELSE 0 END) AS late,
+         SUM(CASE WHEN a.status = 'Half Day' THEN 1 ELSE 0 END) AS half,
+         SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) AS absent,
+         SUM(CASE WHEN a.status = 'On Leave' THEN 1 ELSE 0 END) AS leave_days,
+         COUNT(*) AS marked
+       FROM employees e LEFT JOIN attendance a
+         ON a.employee_id = e.id AND a.attendance_date BETWEEN ? AND ?
+       WHERE e.employment_status = 'Active'${andScope}
+       GROUP BY e.id ORDER BY e.full_name`,
+    ).bind(start, end, ...scopeArgs).all(),
+
+    db.prepare(
+      `SELECT lt.name AS type, COUNT(*) AS requests, COALESCE(SUM(l.days), 0) AS days
+       FROM leave_requests l JOIN employees e ON e.id = l.employee_id
+       LEFT JOIN leave_types lt ON lt.id = l.leave_type_id
+       WHERE l.start_date <= ? AND l.end_date >= ? AND l.status = 'Approved'${andScope}
+       GROUP BY lt.name ORDER BY days DESC`,
+    ).bind(end, start, ...scopeArgs).all(),
+
+    db.prepare(
+      `SELECT s.salary_year AS year, s.salary_month AS month,
+         COALESCE(SUM(s.gross_salary), 0) AS gross,
+         COALESCE(SUM(s.deductions), 0) AS deductions,
+         COALESCE(SUM(s.net_salary), 0) AS net,
+         SUM(CASE WHEN s.status = 'Done' THEN s.net_salary ELSE 0 END) AS paid
+       FROM salaries s JOIN employees e ON e.id = s.employee_id
+       WHERE 1 = 1${andScope}
+       GROUP BY s.salary_year, s.salary_month
+       ORDER BY s.salary_year DESC, s.salary_month DESC LIMIT 6`,
+    ).bind(...scopeArgs).all(),
+
+    db.prepare("SELECT status, COUNT(*) AS count FROM work_tasks GROUP BY status").all(),
+
+    db.prepare(`SELECT COUNT(*) AS n FROM employees e WHERE e.employment_status = 'Active'${andScope}`)
+      .bind(...scopeArgs).first<{ n: number }>(),
+  ]);
+
+  return json({
+    range: { start, end },
+    headcount: Number(headcount?.n ?? 0),
+    attendanceByStatus: byStatus.results,
+    daily: daily.results,
+    byEmployee: byEmployee.results,
+    leaveByType: leaveByType.results,
+    payroll: payroll.results.reverse(),
+    tasksByStatus: tasks.results,
+  });
 }
 
 async function leaveCsv(db: D1Database, url: URL) {

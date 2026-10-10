@@ -471,21 +471,37 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   }, [chatIncoming?.messageId]);
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("fast_hrms_nav") !== "collapsed");
   useEffect(() => { localStorage.setItem("fast_hrms_nav", navOpen ? "open" : "collapsed"); }, [navOpen]);
-  const nav = [
-    { id: "dashboard" as View, label: "Dashboard", icon: LayoutDashboard, show: true },
-    { id: "employees" as View, label: "Employees", icon: UsersRound, show: isAdmin },
-    { id: "departments" as View, label: "Departments", icon: Building2, show: isAdmin },
-    { id: "attendance" as View, label: "Attendance", icon: CalendarCheck, show: true },
-    { id: "tasks" as View, label: "Tasks", icon: ClipboardList, show: true },
-    { id: "chat" as View, label: "Chat", icon: MessageSquare, show: true },
-    { id: "leave" as View, label: "Leave", icon: FileText, show: true },
-    { id: "payroll" as View, label: "Payroll", icon: Banknote, show: true },
-    { id: "holidays" as View, label: "Holidays", icon: Sparkles, show: true },
-    { id: "reports" as View, label: "Reports", icon: Download, show: isAdmin },
-    { id: "settings" as View, label: "Settings", icon: Settings, show: isAdmin },
-    { id: "audit" as View, label: "Audit Logs", icon: History, show: isAdmin },
-    { id: "profile" as View, label: "Profile", icon: UserRound, show: !isAdmin },
-  ].filter((item) => item.show);
+  // Thirteen flat items is a list to read, not a structure to navigate. Grouped
+  // by what someone is actually trying to do, it becomes four short lists.
+  const navGroups: Array<{ group: string; items: Array<{ id: View; label: string; icon: typeof UsersRound; show: boolean }> }> = [
+    { group: "", items: [
+      { id: "dashboard" as View, label: "Dashboard", icon: LayoutDashboard, show: true },
+    ] },
+    { group: "People", items: [
+      { id: "employees" as View, label: "Employees", icon: UsersRound, show: isAdmin },
+      { id: "departments" as View, label: "Departments", icon: Building2, show: isAdmin },
+      { id: "profile" as View, label: "My profile", icon: UserRound, show: !isAdmin },
+    ] },
+    { group: "Time", items: [
+      { id: "attendance" as View, label: "Attendance", icon: CalendarCheck, show: true },
+      { id: "leave" as View, label: "Leave", icon: FileText, show: true },
+      { id: "holidays" as View, label: "Holidays", icon: Sparkles, show: true },
+    ] },
+    { group: "Work", items: [
+      { id: "tasks" as View, label: "Tasks", icon: ClipboardList, show: true },
+      { id: "chat" as View, label: "Chat", icon: MessageSquare, show: true },
+    ] },
+    { group: "Finance", items: [
+      { id: "payroll" as View, label: "Payroll", icon: Banknote, show: true },
+      { id: "reports" as View, label: "Reports", icon: Download, show: isAdmin },
+    ] },
+    { group: "Admin", items: [
+      { id: "settings" as View, label: "Settings", icon: Settings, show: isAdmin },
+      { id: "audit" as View, label: "Audit log", icon: History, show: isAdmin },
+    ] },
+  ].map((g) => ({ ...g, items: g.items.filter((i) => i.show) })).filter((g) => g.items.length);
+
+  const nav = navGroups.flatMap((g) => g.items);
 
   function choose(next: View) {
     onView(next);
@@ -508,8 +524,19 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           ) : null}
         </div>
 
-        <nav className="flex-1 space-y-0.5 overflow-y-auto">
-          {nav.map((item) => {
+        <nav className="flex-1 overflow-y-auto">
+          {navGroups.map((group) => (
+            <div key={group.group || "top"} className={group.group ? "mt-4" : ""}>
+              {group.group && navOpen ? (
+                <p className="px-2.5 pb-1 text-[9.5px] font-semibold uppercase tracking-[0.11em] text-[var(--rail-text)] opacity-70">
+                  {group.group}
+                </p>
+              ) : null}
+              {group.group && !navOpen ? (
+                <div className="mx-auto mb-2 h-px w-5" style={{ background: "var(--rail-edge)" }} />
+              ) : null}
+              <div className="space-y-0.5">
+          {group.items.map((item) => {
             const active = view === item.id;
             return (
               <button
@@ -531,6 +558,9 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
               </button>
             );
           })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         {/* Identity lives with the navigation, which lets the content area drop
@@ -2036,7 +2066,7 @@ function useNewVersionAvailable() {
 // desktop notification without telling the page, so the preview also shows here.
 function ChatToast({ title, body, onOpen, onClose }: { title: string; body: string; onOpen: () => void; onClose: () => void }) {
   return (
-    <div className="fixed bottom-6 right-6 z-50 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-line bg-white shadow-xl">
+    <div className="no-print fixed bottom-6 right-6 z-50 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-line bg-white shadow-xl">
       <div className="flex items-start gap-3 p-3">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">
           {initialsOf(title.replace(/^#/, ""))}
@@ -2180,7 +2210,7 @@ function MessengerDock({ channels, incoming, onOpen }: {
     .slice(0, 6);
 
   return (
-    <div className="fixed bottom-6 right-6 z-40">
+    <div className="no-print fixed bottom-6 right-6 z-40">
       {open ? (
         <div className="mb-3 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-line bg-white shadow-xl">
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
@@ -4745,60 +4775,339 @@ function Holidays({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
+// ─── Charts ────────────────────────────────────────────────────────────────
+// Hand-drawn SVG rather than a charting library: a few hundred bytes instead
+// of ~100KB, and full control over the marks.
+//
+// Colour is assigned by the job it does. Attendance states use the reserved
+// status palette; everything else is a single hue, because identity is carried
+// by the axis label and a second colour would only be decoration.
+//
+// The validator flagged status-warning (#fab219) against status-serious
+// (#ec835a) at ΔE 13.6, under the 15 floor for normal vision. So no chart here
+// ever asks the reader to tell two status colours apart: every status is its
+// own directly-labelled row, and the same numbers are in the table below.
+
+const VIZ = {
+  good: "#0ca30c",
+  warning: "#fab219",
+  serious: "#ec835a",
+  critical: "#d03b3b",
+  neutral: "#b3aea5",
+  single: "#ea580c",
+  grid: "var(--line)",
+};
+
+const STATUS_COLOUR: Record<string, string> = {
+  Present: VIZ.good,
+  Late: VIZ.warning,
+  "Half Day": VIZ.serious,
+  Absent: VIZ.critical,
+  "On Leave": VIZ.neutral,
+};
+
+function ChartFrame({ title, hint, children, empty }: {
+  title: string; hint?: string; children: React.ReactNode; empty?: boolean;
+}) {
+  return (
+    <div className="card p-5">
+      <div className="mb-4">
+        <h3 className="text-[14px] font-semibold tracking-[-0.015em] text-ink">{title}</h3>
+        {hint ? <p className="mt-0.5 text-[11.5px] text-ink-3">{hint}</p> : null}
+      </div>
+      {empty ? <p className="py-10 text-center text-[13px] text-ink-3">Nothing in this range.</p> : children}
+    </div>
+  );
+}
+
+// Horizontal bars, one labelled row each. The label carries identity, so the
+// colour never has to.
+function BarRows({ rows, tone }: { rows: Array<{ label: string; value: number; colour?: string }>; tone?: string }) {
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  return (
+    <div className="space-y-2.5">
+      {rows.map((r) => (
+        <div key={r.label} className="group flex items-center gap-3" title={`${r.label}: ${r.value}`}>
+          <span className="w-[86px] shrink-0 truncate text-[12px] text-ink-2">{r.label}</span>
+          <div className="relative h-[18px] flex-1 overflow-hidden rounded-[4px]" style={{ background: "var(--surface-sunk)" }}>
+            <div
+              className="h-full rounded-[4px] transition-[width] duration-500 ease-premium"
+              style={{ width: `${Math.max(r.value ? 3 : 0, (r.value / max) * 100)}%`, background: r.colour ?? tone ?? VIZ.single }}
+            />
+          </div>
+          <span className="tnum w-9 shrink-0 text-right text-[12px] font-semibold text-ink">{r.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// One series over time. 2px line, 8px markers on hover, recessive grid.
+function TrendLine({ points, suffix = "" }: { points: Array<{ label: string; value: number }>; suffix?: string }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const w = 560, h = 150, padX = 8, padY = 12;
+  const max = Math.max(1, ...points.map((p) => p.value));
+  const stepX = points.length > 1 ? (w - padX * 2) / (points.length - 1) : 0;
+  const xy = (i: number, v: number) => [padX + i * stepX, h - padY - (v / max) * (h - padY * 2)] as const;
+  const line = points.map((p, i) => { const [x, y] = xy(i, p.value); return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`; }).join(" ");
+  const area = `${line} L${(padX + (points.length - 1) * stepX).toFixed(1)},${h - padY} L${padX},${h - padY} Z`;
+  const active = hover !== null ? points[hover] : null;
+
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 150 }} role="img" aria-label="Trend over the selected range">
+        {[0, 0.5, 1].map((t) => (
+          <line key={t} x1={padX} x2={w - padX} y1={padY + t * (h - padY * 2)} y2={padY + t * (h - padY * 2)} stroke="var(--line)" strokeWidth="1" />
+        ))}
+        <path d={area} fill={VIZ.single} opacity="0.08" />
+        <path d={line} fill="none" stroke={VIZ.single} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((p, i) => {
+          const [x, y] = xy(i, p.value);
+          return (
+            <g key={p.label}>
+              {hover === i ? <circle cx={x} cy={y} r="4.5" fill={VIZ.single} stroke="#fff" strokeWidth="2" /> : null}
+              <rect x={x - stepX / 2} y={0} width={Math.max(stepX, 10)} height={h} fill="transparent"
+                onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} />
+            </g>
+          );
+        })}
+      </svg>
+      <div className="mt-1 flex items-center justify-between text-[10.5px] text-ink-3">
+        <span>{points[0]?.label}</span>
+        <span className="tnum font-semibold text-ink-2">
+          {active ? `${active.label} · ${active.value}${suffix}` : `peak ${max}${suffix}`}
+        </span>
+        <span>{points[points.length - 1]?.label}</span>
+      </div>
+    </div>
+  );
+}
+
+type ReportSummary = {
+  range: { start: string; end: string };
+  headcount: number;
+  attendanceByStatus: Array<{ status: string; count: number }>;
+  daily: Array<{ day: string; present: number; late: number; marked: number }>;
+  byEmployee: Array<{ name: string; code: string; present: number; late: number; half: number; absent: number; leave_days: number; marked: number }>;
+  leaveByType: Array<{ type: string | null; requests: number; days: number }>;
+  payroll: Array<{ year: number; month: number; gross: number; deductions: number; net: number; paid: number }>;
+  tasksByStatus: Array<{ status: string; count: number }>;
+};
+
+const RANGE_PRESETS: Array<{ id: string; label: string; of: () => [string, string] }> = [
+  { id: "this-month", label: "This month", of: () => [today.slice(0, 8) + "01", today] },
+  { id: "last-month", label: "Last month", of: () => {
+      const d = new Date(); const y = d.getMonth() === 0 ? d.getFullYear() - 1 : d.getFullYear();
+      const m = d.getMonth() === 0 ? 12 : d.getMonth();
+      const last = new Date(y, m, 0).getDate();
+      const mm = String(m).padStart(2, "0");
+      return [`${y}-${mm}-01`, `${y}-${mm}-${String(last).padStart(2, "0")}`];
+    } },
+  { id: "quarter", label: "Last 90 days", of: () => [new Date(Date.now() - 89 * 86400000).toISOString().slice(0, 10), today] },
+  { id: "year", label: "This year", of: () => [`${new Date().getFullYear()}-01-01`, today] },
+];
+
 function Reports() {
   const [meta, setMeta] = useState<{ employees: Employee[]; departments: Department[] }>({ employees: [], departments: [] });
-  const [filters, setFilters] = useState({ employeeId: "", departmentId: "", start: today.slice(0, 8) + "01", end: today, month: String(new Date().getMonth() + 1), year: String(new Date().getFullYear()) });
+  const [preset, setPreset] = useState("this-month");
+  const [filters, setFilters] = useState({ employeeId: "", departmentId: "", start: today.slice(0, 8) + "01", end: today });
+  const [data, setData] = useState<ReportSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    api<{ employees: Employee[]; departments: Department[] }>("/reports/meta")
-      .then(setMeta)
-      .catch(console.error);
+    api<{ employees: Employee[]; departments: Department[] }>("/reports/meta").then(setMeta).catch(() => undefined);
   }, []);
 
-  const common = new URLSearchParams({ employeeId: filters.employeeId, departmentId: filters.departmentId, start: filters.start, end: filters.end }).toString();
-  const month = new URLSearchParams({ employeeId: filters.employeeId, departmentId: filters.departmentId, month: filters.month, year: filters.year }).toString();
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    const q = new URLSearchParams({ start: filters.start, end: filters.end, employeeId: filters.employeeId, departmentId: filters.departmentId });
+    api<ReportSummary>(`/reports/summary?${q.toString()}`)
+      .then((d) => { if (alive) { setData(d); setError(""); } })
+      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : "Could not build the report"); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [filters.start, filters.end, filters.employeeId, filters.departmentId]);
+
+  function applyPreset(id: string) {
+    const found = RANGE_PRESETS.find((p) => p.id === id);
+    setPreset(id);
+    if (found) { const [start, end] = found.of(); setFilters((f) => ({ ...f, start, end })); }
+  }
+
+  const statusRows = ["Present", "Late", "Half Day", "Absent", "On Leave"].map((status) => ({
+    label: status,
+    value: Number(data?.attendanceByStatus.find((r) => r.status === status)?.count ?? 0),
+    colour: STATUS_COLOUR[status],
+  }));
+
+  const marked = statusRows.reduce((n, r) => n + r.value, 0);
+  const attended = statusRows.filter((r) => r.label === "Present" || r.label === "Late").reduce((n, r) => n + r.value, 0);
+  const attendanceRate = marked ? Math.round((attended / marked) * 100) : 0;
+  const payrollTotal = (data?.payroll ?? []).reduce((n, p) => n + Number(p.net || 0), 0);
+  const payrollOutstanding = (data?.payroll ?? []).reduce((n, p) => n + (Number(p.net || 0) - Number(p.paid || 0)), 0);
+  const leaveDays = (data?.leaveByType ?? []).reduce((n, l) => n + Number(l.days || 0), 0);
+
+  const scopeLabel = [
+    meta.employees.find((e) => String(e.id) === filters.employeeId)?.full_name,
+    meta.departments.find((d) => String(d.id) === filters.departmentId)?.name,
+  ].filter(Boolean).join(" · ") || "All employees";
+
+  const csvArgs = new URLSearchParams({
+    employeeId: filters.employeeId, departmentId: filters.departmentId, start: filters.start, end: filters.end,
+  }).toString();
 
   return (
     <section className="space-y-5">
-      <PageTitle title="Reports" description="Export simple attendance, leave, and salary reports as CSV." />
-      <div className="card grid gap-3 p-4 md:grid-cols-5">
-        <Field label="Employee">
-          <select className="input" value={filters.employeeId} onChange={(e) => setFilters({ ...filters, employeeId: e.target.value })}>
-            <option value="">All employees</option>
-            {meta.employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
-          </select>
-        </Field>
-        <Field label="Department">
-          <select className="input" value={filters.departmentId} onChange={(e) => setFilters({ ...filters, departmentId: e.target.value })}>
-            <option value="">All departments</option>
-            {meta.departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Start"><input className="input" type="date" value={filters.start} onChange={(e) => setFilters({ ...filters, start: e.target.value })} /></Field>
-        <Field label="End"><input className="input" type="date" value={filters.end} onChange={(e) => setFilters({ ...filters, end: e.target.value })} /></Field>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Month"><input className="input" type="number" min={1} max={12} value={filters.month} onChange={(e) => setFilters({ ...filters, month: e.target.value })} /></Field>
-          <Field label="Year"><input className="input" type="number" value={filters.year} onChange={(e) => setFilters({ ...filters, year: e.target.value })} /></Field>
+      {/* Hidden on paper: the printed sheet gets its own heading below, with the
+          period and scope spelled out. */}
+      <div className="no-print">
+        <PageTitle
+          title="Reports"
+          description="Attendance, leave, payroll and workload across any period."
+          action={
+            <div className="flex flex-wrap gap-2">
+              <a className="btn btn-soft" href={`/api/attendance.csv?${csvArgs}`}><Download size={15} />CSV</a>
+              <button type="button" className="btn btn-primary" onClick={() => window.print()}>
+                <FileText size={15} />Download PDF
+              </button>
+            </div>
+          }
+        />
+      </div>
+
+      {/* Filters sit in one row above the charts. */}
+      <div className="card no-print space-y-3 p-4">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {RANGE_PRESETS.map((p) => (
+            <button key={p.id} type="button" onClick={() => applyPreset(p.id)}
+              className={classNames(
+                "rounded-full border px-3 py-1 text-[12px] font-semibold transition-colors duration-150",
+                preset === p.id ? "border-brand bg-brand-tint text-brand" : "border-line bg-white text-ink-2 hover:border-line-strong",
+              )}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="From">
+            <input className="input" type="date" value={filters.start}
+              onChange={(e) => { setPreset("custom"); setFilters({ ...filters, start: e.target.value }); }} />
+          </Field>
+          <Field label="To">
+            <input className="input" type="date" value={filters.end}
+              onChange={(e) => { setPreset("custom"); setFilters({ ...filters, end: e.target.value }); }} />
+          </Field>
+          <Field label="Employee">
+            <select className="input" value={filters.employeeId} onChange={(e) => setFilters({ ...filters, employeeId: e.target.value })}>
+              <option value="">All employees</option>
+              {meta.employees.map((e) => <option key={e.id} value={e.id}>{e.full_name}</option>)}
+            </select>
+          </Field>
+          <Field label="Department">
+            <select className="input" value={filters.departmentId} onChange={(e) => setFilters({ ...filters, departmentId: e.target.value })}>
+              <option value="">All departments</option>
+              {meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
         </div>
       </div>
-      <div className="grid gap-4 md:grid-cols-3">
-        <ReportCard title="Attendance report" href={`/api/attendance.csv?${common}`} />
-        <ReportCard title="Leave report" href={`/api/reports/leaves.csv?${common}`} />
-        <ReportCard title="Salary report" href={`/api/reports/salaries.csv?${month}`} />
+
+      {error ? <div className="rounded-lg bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</div> : null}
+
+      {/* The printed page needs its own heading, since the chrome is hidden. */}
+      <div className="print-only mb-4">
+        <h1 className="text-xl font-bold text-ink">Fastex HRMS — Report</h1>
+        <p className="text-[12px] text-ink-2">{scopeLabel} · {filters.start} to {filters.end}</p>
       </div>
+
+      {loading && !data ? (
+        <div className="card p-10 text-center text-[13px] text-ink-3">Building report…</div>
+      ) : (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard icon={CalendarCheck} label="Attendance rate" value={`${attendanceRate}%`} sub={`${attended} of ${marked} marked days`} />
+            <StatCard icon={UsersRound} label="Headcount" value={data?.headcount ?? 0} sub={scopeLabel} />
+            <StatCard icon={FileText} label="Leave days" value={leaveDays} sub={`${(data?.leaveByType ?? []).reduce((n, l) => n + Number(l.requests || 0), 0)} approved requests`} />
+            <StatCard icon={Banknote} label="Payroll outstanding" value={currency.format(payrollOutstanding)} sub={`of ${currency.format(payrollTotal)} across ${(data?.payroll ?? []).length} month(s)`} />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ChartFrame title="Attendance mix" hint="Marked days in the selected range" empty={!marked}>
+              <BarRows rows={statusRows} />
+            </ChartFrame>
+
+            <ChartFrame title="Daily attendance" hint="People present each day" empty={!(data?.daily ?? []).length}>
+              <TrendLine points={(data?.daily ?? []).map((d) => ({ label: d.day.slice(5), value: Number(d.present) }))} />
+            </ChartFrame>
+
+            <ChartFrame title="Leave by type" hint="Approved days overlapping the range" empty={!(data?.leaveByType ?? []).length}>
+              <BarRows rows={(data?.leaveByType ?? []).map((l) => ({ label: l.type ?? "Other", value: Number(l.days) }))} />
+            </ChartFrame>
+
+            <ChartFrame title="Workload" hint="Every task by stage" empty={!(data?.tasksByStatus ?? []).length}>
+              <BarRows rows={WORK_STATUSES.map((st) => ({
+                label: st,
+                value: Number((data?.tasksByStatus ?? []).find((t) => t.status === st)?.count ?? 0),
+              }))} />
+            </ChartFrame>
+          </div>
+
+          <div className="card overflow-hidden">
+            <div className="border-b px-5 py-3.5" style={{ borderColor: "var(--line)" }}>
+              <h3 className="text-[15px] font-semibold tracking-[-0.02em] text-ink">Attendance by employee</h3>
+              <p className="mt-0.5 text-[11.5px] text-ink-3">The same numbers as the charts above, for anyone who would rather read them.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-sm">
+                <thead className="table-header">
+                  <tr>
+                    {["Employee", "Present", "Late", "Half day", "Absent", "Leave", "Rate"].map((h) => (
+                      <th key={h} className="whitespace-nowrap px-5 py-2.5">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y" style={{ borderColor: "var(--line)" }}>
+                  {(data?.byEmployee ?? []).length ? (data?.byEmployee ?? []).map((r) => {
+                    const total = Number(r.marked) || 0;
+                    const ok = Number(r.present) + Number(r.late);
+                    return (
+                      <tr key={r.code ?? r.name} className="bg-white">
+                        <td className="px-5 py-3">
+                          <span className="font-semibold text-ink">{r.name}</span>
+                          <span className="code ml-2 text-[11px] text-ink-3">{r.code}</span>
+                        </td>
+                        <td className="tnum px-5 py-3 text-ink-2">{r.present}</td>
+                        <td className="tnum px-5 py-3 text-ink-2">{r.late}</td>
+                        <td className="tnum px-5 py-3 text-ink-2">{r.half}</td>
+                        <td className="tnum px-5 py-3 text-ink-2">{r.absent}</td>
+                        <td className="tnum px-5 py-3 text-ink-2">{r.leave_days}</td>
+                        <td className="tnum px-5 py-3 font-semibold text-ink">{total ? Math.round((ok / total) * 100) : 0}%</td>
+                      </tr>
+                    );
+                  }) : (
+                    <tr><td className="px-5 py-12 text-center text-[13.5px] text-ink-3" colSpan={7}>No attendance in this range.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {(data?.payroll ?? []).length ? (
+            <ChartFrame title="Payroll by month" hint="Net payable, most recent months">
+              <BarRows rows={(data?.payroll ?? []).map((p) => ({
+                label: `${monthNames[p.month - 1]?.slice(0, 3)} ${p.year}`,
+                value: Math.round(Number(p.net)),
+              }))} />
+            </ChartFrame>
+          ) : null}
+        </>
+      )}
     </section>
   );
 }
 
-function ReportCard({ title, href }: { title: string; href: string }) {
-  return (
-    <div className="card p-4">
-      <h3 className="font-bold text-ink">{title}</h3>
-      <p className="mt-2 text-sm text-ink-3">Download a filtered CSV for admin review.</p>
-      <a className="btn btn-primary mt-4 w-full" href={href}><Download size={17} />Export CSV</a>
-    </div>
-  );
-}
 
 function SettingsPage() {
   const [settings, setSettings] = useState<CompanySettings | null>(null);

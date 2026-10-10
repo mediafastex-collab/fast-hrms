@@ -495,23 +495,20 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   return (
     <div className="min-h-screen bg-cloud">
       <aside className={classNames(
-        "fixed inset-y-0 left-0 z-20 hidden border-r bg-white px-3 pb-4 pt-3 lg:flex lg:flex-col",
+        "fixed inset-y-0 left-0 z-20 hidden flex-col px-3 pb-3 pt-4 lg:flex",
         "transition-[width] duration-200 ease-premium",
-        navOpen ? "w-[248px]" : "w-[72px]",
-      )} style={{ borderColor: "var(--line)" }}>
-        <div className={classNames("flex items-center gap-2.5 px-1 py-2", !navOpen && "justify-center px-0")}>
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-brand text-white shadow-xs">
-            <BriefcaseBusiness size={18} strokeWidth={2.2} />
+        navOpen ? "w-[244px]" : "w-[72px]",
+      )} style={{ background: "var(--rail)" }}>
+        <div className={classNames("flex items-center gap-2.5 px-1.5 pb-5", !navOpen && "justify-center px-0")}>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-brand text-white">
+            <BriefcaseBusiness size={17} strokeWidth={2.2} />
           </div>
           {navOpen ? (
-            <div className="min-w-0 leading-tight">
-              <p className="truncate text-[15px] font-bold tracking-[-0.02em] text-ink">Fast HRMS</p>
-              <p className="truncate text-[11px] text-ink-3">{user.role}</p>
-            </div>
+            <p className="truncate text-[14.5px] font-semibold tracking-[-0.02em] text-white">Fastex HRMS</p>
           ) : null}
         </div>
 
-        <nav className="mt-5 flex-1 space-y-0.5 overflow-y-auto">
+        <nav className="flex-1 space-y-0.5 overflow-y-auto">
           {nav.map((item) => {
             const active = view === item.id;
             return (
@@ -520,35 +517,59 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
                 onClick={() => choose(item.id)}
                 title={navOpen ? undefined : item.label}
                 className={classNames(
-                  "group relative flex w-full items-center rounded-lg py-2 text-[13.5px] font-medium transition-colors duration-150 ease-premium",
+                  "group relative flex w-full items-center rounded-lg py-[7px] text-[13px] transition-colors duration-150 ease-premium",
                   navOpen ? "gap-3 px-2.5" : "justify-center px-0",
-                  active ? "bg-brand-tint font-semibold text-brand" : "text-ink-2 hover:bg-[var(--surface-hover)] hover:text-ink",
+                  active ? "font-semibold text-white" : "font-medium text-[var(--rail-text)] hover:text-white",
                 )}
+                style={active ? { background: "var(--rail-active)" } : undefined}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--rail-hover)"; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
               >
-                {/* A 2px edge marks the current screen without shouting. */}
                 {active ? <span className="absolute left-0 top-1/2 h-4 w-[2.5px] -translate-y-1/2 rounded-r-full bg-brand" /> : null}
-                <item.icon size={17} strokeWidth={active ? 2.3 : 1.9} className="shrink-0" />
+                <item.icon size={16.5} strokeWidth={active ? 2.2 : 1.9} className="shrink-0" />
                 {navOpen ? <span className="truncate">{item.label}</span> : null}
               </button>
             );
           })}
         </nav>
 
-        <button
-          type="button"
-          onClick={() => setNavOpen((open) => !open)}
-          title={navOpen ? "Collapse menu" : "Expand menu"}
-          className={classNames(
-            "mt-2 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[12px] font-medium text-ink-3 transition-colors duration-150 ease-premium hover:bg-[var(--surface-hover)] hover:text-ink",
-            !navOpen && "justify-center px-0",
-          )}
-        >
-          <Menu size={16} className="shrink-0" />
-          {navOpen ? "Collapse" : null}
-        </button>
+        {/* Identity lives with the navigation, which lets the content area drop
+            its header bar entirely — one less horizontal band across the page. */}
+        <div className="mt-2 border-t pt-2" style={{ borderColor: "var(--rail-edge)" }}>
+          <div className={classNames("flex items-center gap-2.5 rounded-lg px-1.5 py-2", !navOpen && "justify-center px-0")}>
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-bold text-white">
+              {initialsOf(user.displayName ?? user.employeeName ?? user.email)}
+            </span>
+            {navOpen ? (
+              <span className="min-w-0 flex-1 leading-tight">
+                <span className="block truncate text-[12.5px] font-semibold text-white">{user.displayName ?? user.employeeName ?? user.email}</span>
+                <span className="block truncate text-[10.5px] text-[var(--rail-text)]">{user.role}</span>
+              </span>
+            ) : null}
+            {navOpen ? (
+              <button type="button" onClick={onLogout} title="Logout"
+                className="shrink-0 rounded-md p-1.5 text-[var(--rail-text)] transition-colors duration-150 hover:bg-[var(--rail-hover)] hover:text-white">
+                <LogOut size={15} />
+              </button>
+            ) : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setNavOpen((open) => !open)}
+            title={navOpen ? "Collapse menu" : "Expand menu"}
+            className={classNames(
+              "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--rail-text)] transition-colors duration-150 hover:bg-[var(--rail-hover)] hover:text-white",
+              !navOpen && "justify-center px-0",
+            )}
+          >
+            <Menu size={15} className="shrink-0" />
+            {navOpen ? "Collapse" : null}
+          </button>
+        </div>
       </aside>
 
-      <div className={navOpen ? "lg:pl-[248px]" : "lg:pl-[72px]"}>
+      <div className={navOpen ? "lg:pl-[244px]" : "lg:pl-[72px]"}>
         {newVersion ? (
           <div className="flex flex-wrap items-center justify-center gap-3 bg-brand px-4 py-2 text-sm font-semibold text-white">
             A newer version of Fast HRMS is ready.
@@ -557,23 +578,21 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
             </button>
           </div>
         ) : null}
-        <header className="sticky top-0 z-10 border-b bg-white/80 backdrop-blur-xl" style={{ borderColor: "var(--line)" }}>
-          <div className={classNames("mx-auto flex items-center justify-between gap-3 px-5 py-3", view === "chat" ? "max-w-none" : "max-w-7xl")}>
-            <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-3">Welcome back</p>
-              <h2 className="truncate text-[17px] font-bold tracking-[-0.025em] text-ink">{user.displayName ?? user.employeeName ?? user.email}</h2>
-            </div>
-            <div className="flex items-center gap-1.5">
+        {/* No header band on desktop any more: identity sits in the rail, so the
+            only thing that needs floating here is the bell. The page title below
+            becomes the top of the page, the way a document starts with its title. */}
+        <header className="sticky top-0 z-10 bg-[var(--canvas)]/80 backdrop-blur-xl">
+          <div className={classNames("mx-auto flex items-center gap-2 px-5 pb-1 pt-3", view === "chat" ? "max-w-none" : "max-w-7xl")}>
+            <button className="btn btn-soft px-2.5 lg:hidden" onClick={() => setMobileOpen((open) => !open)} title="Menu">
+              <Menu size={17} />
+            </button>
+            <span className="truncate text-[13px] font-semibold text-ink lg:hidden">
+              {user.displayName ?? user.employeeName ?? user.email}
+            </span>
+            <div className="ml-auto flex items-center gap-1.5">
               <NotificationBell />
-              <button className="btn btn-ghost px-2.5 lg:hidden" onClick={() => setMobileOpen((open) => !open)} title="Menu">
-                <Menu size={17} />
-              </button>
-              <span className="hidden rounded-md border px-2.5 py-1 text-[11px] font-semibold text-ink-3 sm:inline-flex" style={{ borderColor: "var(--line)" }}>
-                {user.role}
-              </span>
-              <button className="btn btn-ghost px-2.5" onClick={onLogout} title="Logout">
+              <button className="btn btn-ghost px-2.5 lg:hidden" onClick={onLogout} title="Logout">
                 <LogOut size={16} />
-                <span className="hidden text-[13px] sm:inline">Logout</span>
               </button>
             </div>
           </div>
@@ -591,7 +610,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           </nav>
         </header>
 
-        <main key={view} className={classNames("view-enter mx-auto px-5 py-7", view === "chat" ? "max-w-none" : "max-w-7xl")}>
+        <main key={view} className={classNames("view-enter mx-auto px-5 pb-10 pt-3", view === "chat" ? "max-w-none" : "max-w-7xl")}>
           {view === "dashboard" ? user.role === "Superadmin" ? <AdminDashboard /> : <EmployeeDashboard /> : null}
           {view === "employees" && isAdmin ? <Employees /> : null}
           {view === "departments" && isAdmin ? <Departments /> : null}
@@ -2743,7 +2762,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
       <div className="grid gap-4 lg:grid-cols-[290px_minmax(0,1fr)]">
         {/* Conversations. On a phone this is the whole screen until you pick one. */}
         <div className={classNames(
-          "card h-[calc(100dvh-15rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-13rem)]",
+          "card h-[calc(100dvh-13.5rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-11.5rem)]",
           mobilePane === "thread" ? "hidden lg:flex" : "flex",
         )}>
           <div className="border-b border-line p-3">
@@ -2800,7 +2819,7 @@ function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
           onDragLeave={onDragLeave}
           onDrop={onDrop}
           className={classNames(
-            "card relative h-[calc(100dvh-15rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-13rem)]",
+            "card relative h-[calc(100dvh-13.5rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-11.5rem)]",
             mobilePane === "list" ? "hidden lg:flex" : "flex",
           )}>
           {dragActive && active ? (

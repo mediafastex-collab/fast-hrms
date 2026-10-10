@@ -30,6 +30,15 @@
   --brand-tint:    #fff3ec;
   --brand-line:    #fbd5bd;
 
+  /* The navigation rail is dark on purpose: it frames the work, separates
+     chrome from content at a glance, and is the single clearest signal that
+     this is a considered product rather than a bootstrap template. */
+  --rail:          #1b1917;
+  --rail-edge:     #2b2825;
+  --rail-text:     #9d968c;
+  --rail-hover:    rgba(255, 255, 255, 0.06);
+  --rail-active:   rgba(255, 255, 255, 0.10);
+
   --ok:            #15803d;
   --ok-tint:       #effaf2;
   --warn:          #b45309;

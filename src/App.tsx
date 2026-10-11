@@ -1684,6 +1684,105 @@ function DayRequests({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
+const VIZ = {
+  good: "#0ca30c",
+  warning: "#fab219",
+  serious: "#ec835a",
+  critical: "#d03b3b",
+  neutral: "#b3aea5",
+  single: "#ea580c",
+  grid: "var(--line)",
+};
+
+const STATUS_COLOUR: Record<string, string> = {
+  Present: VIZ.good,
+  Late: VIZ.warning,
+  "Half Day": VIZ.serious,
+  Absent: VIZ.critical,
+  "On Leave": VIZ.neutral,
+};
+
+// A month of attendance is a shape, not a list — so the month is drawn as a
+// month. The table underneath still carries every detail for anyone auditing a
+// particular day.
+function AttendanceCalendar({ year, month, byDay, headcount, single }: {
+  year: number; month: number;
+  byDay: Map<string, AttendanceRecord[]>;
+  headcount: number;
+  single: boolean;
+}) {
+  const days = new Date(year, month, 0).getDate();
+  const firstDow = new Date(year, month - 1, 1).getDay();
+
+  return (
+    <div className="card p-4">
+      <div className="mb-3 grid grid-cols-7 gap-1.5 text-center text-[10px] font-semibold uppercase tracking-[0.07em] text-ink-3">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => <div key={d}>{d}</div>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1.5">
+        {Array.from({ length: firstDow }).map((_, i) => <div key={`pad${i}`} />)}
+        {Array.from({ length: days }).map((_, i) => {
+          const date = `${year}-${String(month).padStart(2, "0")}-${String(i + 1).padStart(2, "0")}`;
+          const records = byDay.get(date) ?? [];
+          const isToday = date === today;
+          const isSunday = new Date(year, month - 1, i + 1).getDay() === 0;
+          const one = single ? records[0] : null;
+
+          return (
+            <div key={date}
+              title={records.length ? records.map((r) => `${r.employee_name ?? "You"}: ${r.status}`).join("\n") : undefined}
+              className={classNames(
+                "min-h-[62px] rounded-lg border p-1.5 transition-colors duration-150",
+                isToday ? "border-brand bg-brand-tint" : isSunday ? "border-line bg-sunk" : "border-line bg-white",
+              )}>
+              <div className="flex items-baseline justify-between">
+                <span className={classNames("tnum text-[11px] font-semibold", isToday ? "text-brand" : "text-ink-2")}>{i + 1}</span>
+                {isSunday ? <span className="text-[8.5px] font-medium uppercase text-ink-4">Off</span> : null}
+              </div>
+
+              {one ? (
+                <div className="mt-1">
+                  {/* A phone cell is ~38px wide — "Half Day" does not fit, so the
+                      label gives way to the dot and the tooltip carries it. */}
+                  <span className={classNames("badge hidden w-full justify-center !px-1 !text-[9px] sm:inline-flex", statusTone(one.status))}>
+                    {one.status}
+                  </span>
+                  <span className="mx-auto block h-2 w-2 rounded-full sm:hidden"
+                    style={{ background: STATUS_COLOUR[one.status] ?? VIZ.neutral }} />
+                  {one.check_in ? <p className="tnum mt-1 text-center text-[9.5px] text-ink-3">{one.check_in.slice(0, 5)}</p> : null}
+                </div>
+              ) : records.length ? (
+                <div className="mt-1.5">
+                  <div className="flex flex-wrap gap-[3px]">
+                    {records.slice(0, 8).map((r) => (
+                      <span key={r.id} title={`${r.employee_name}: ${r.status}`}
+                        className="h-[7px] w-[7px] rounded-full"
+                        style={{ background: STATUS_COLOUR[r.status] ?? VIZ.neutral }} />
+                    ))}
+                  </div>
+                  <p className="tnum mt-1 text-[9.5px] text-ink-3">
+                    {records.filter((r) => r.status === "Present" || r.status === "Late").length}/{headcount || records.length} in
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Status colours never carry meaning alone. */}
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t pt-3" style={{ borderColor: "var(--line)" }}>
+        {["Present", "Late", "Half Day", "Absent", "On Leave"].map((s) => (
+          <span key={s} className="flex items-center gap-1.5 text-[11px] text-ink-3">
+            <span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLOUR[s] ?? VIZ.neutral }} />
+            {s}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Attendance({ isAdmin }: { isAdmin: boolean }) {
   const now = new Date();
   const [rows, setRows] = useState<AttendanceRecord[]>([]);
@@ -1718,6 +1817,44 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
   useEffect(() => {
     load().catch(console.error);
   }, [month, year, employeeId, reloadKey]);
+
+  // Stepping a month at a time is how people actually move through attendance;
+  // a month dropdown next to a year box next to a Refresh button is three
+  // decisions for what should be one arrow.
+  function stepMonth(by: number) {
+    const d = new Date(year, month - 1 + by, 1);
+    setMonth(d.getMonth() + 1);
+    setYear(d.getFullYear());
+  }
+
+  const byDay = useMemo(() => {
+    const m = new Map<string, AttendanceRecord[]>();
+    for (const r of rows) {
+      const list = m.get(r.attendance_date) ?? [];
+      list.push(r);
+      m.set(r.attendance_date, list);
+    }
+    return m;
+  }, [rows]);
+
+  const tally = useMemo(() => {
+    const t = { Present: 0, Late: 0, "Half Day": 0, Absent: 0, "On Leave": 0 } as Record<string, number>;
+    for (const r of rows) if (t[r.status] !== undefined) t[r.status] += 1;
+    return t;
+  }, [rows]);
+
+  const marked = rows.length;
+  const attended = tally.Present + tally.Late;
+  const rate = marked ? Math.round((attended / marked) * 100) : 0;
+  // Only days actually worked count towards the average — summing hours across
+  // absences and dividing by worked days inflates it.
+  const workedRows = rows.filter((r) => r.status === "Present" || r.status === "Late" || r.status === "Half Day");
+  const avgHours = workedRows.length
+    ? (workedRows.reduce((n, r) => n + (Number(r.total_hours) || 0), 0) / workedRows.length).toFixed(1)
+    : "0.0";
+  const singleEmployee = !isAdmin || !!employeeId;
+  const headcount = isAdmin && !employeeId ? employees.length : 1;
+  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
 
   function handleEditClick(record: AttendanceRecord) {
     setEditingAttendance(record);
@@ -1784,24 +1921,47 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
         action={isAdmin ? <a className="btn btn-soft" href={`/api/attendance.csv?${new URLSearchParams({ start: monthStart, end: monthEnd, ...(employeeId ? { employeeId } : {}) }).toString()}`}><Download size={17} />CSV</a> : null}
       />
 
-      {/* One control bar drives the calendar and the history table below. */}
-      <div className={classNames("card grid gap-3 p-4", isAdmin ? "md:grid-cols-4" : "md:grid-cols-3")}>
+      {/* One bar: which month, whose, and a way to force a refetch. */}
+      <div className="card flex flex-wrap items-center gap-3 p-3">
+        <div className="flex items-center gap-1">
+          <button type="button" aria-label="Previous month" className="btn btn-ghost px-2" onClick={() => stepMonth(-1)}>
+            <ChevronLeft size={17} />
+          </button>
+          <span className="min-w-[8.5rem] text-center text-[14px] font-semibold tracking-[-0.02em] text-ink">
+            {monthNames[month - 1]} {year}
+          </span>
+          <button type="button" aria-label="Next month" className="btn btn-ghost px-2" disabled={isCurrentMonth} onClick={() => stepMonth(1)}>
+            <ChevronRight size={17} />
+          </button>
+          {!isCurrentMonth ? (
+            <button type="button" className="ml-1 rounded-full px-2.5 py-1 text-[11.5px] font-semibold text-brand hover:bg-brand-tint"
+              onClick={() => { setMonth(now.getMonth() + 1); setYear(now.getFullYear()); }}>
+              Today
+            </button>
+          ) : null}
+        </div>
+
         {isAdmin ? (
-          <Field label="Employee">
-            <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
-              <option value="">All employees</option>
-              {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
-            </select>
-          </Field>
-        ) : null}
-        <Field label="Month">
-          <select className="input" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
-            {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+          <select className="input h-9 w-auto py-0 text-sm" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <option value="">All employees</option>
+            {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
           </select>
-        </Field>
-        <Field label="Year"><input className="input" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
-        <button type="button" className="btn btn-primary self-end" onClick={() => setReloadKey((k) => k + 1)}><RefreshCcw size={17} />Refresh</button>
+        ) : null}
+
+        <button type="button" className="btn btn-ghost ml-auto px-2.5" title="Refresh" onClick={() => setReloadKey((k) => k + 1)}>
+          <RefreshCcw size={15} />
+        </button>
       </div>
+
+      {/* How the month went, before the detail of how each day went. */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard icon={CalendarCheck} label="Attendance rate" value={`${rate}%`} sub={`${attended} of ${marked} marked days`} />
+        <StatCard icon={Clock3} label="Late marks" value={tally.Late} sub={`${tally["Half Day"]} half day${tally["Half Day"] === 1 ? "" : "s"}`} />
+        <StatCard icon={X} label="Absent" value={tally.Absent} sub={`${tally["On Leave"]} on approved leave`} />
+        <StatCard icon={History} label="Average day" value={`${avgHours} hrs`} sub="Across days worked" />
+      </div>
+
+      <AttendanceCalendar year={year} month={month} byDay={byDay} headcount={headcount} single={singleEmployee} />
 
       <DayRequests isAdmin={isAdmin} />
 
@@ -4788,23 +4948,6 @@ function Holidays({ isAdmin }: { isAdmin: boolean }) {
 // ever asks the reader to tell two status colours apart: every status is its
 // own directly-labelled row, and the same numbers are in the table below.
 
-const VIZ = {
-  good: "#0ca30c",
-  warning: "#fab219",
-  serious: "#ec835a",
-  critical: "#d03b3b",
-  neutral: "#b3aea5",
-  single: "#ea580c",
-  grid: "var(--line)",
-};
-
-const STATUS_COLOUR: Record<string, string> = {
-  Present: VIZ.good,
-  Late: VIZ.warning,
-  "Half Day": VIZ.serious,
-  Absent: VIZ.critical,
-  "On Leave": VIZ.neutral,
-};
 
 function ChartFrame({ title, hint, children, empty }: {
   title: string; hint?: string; children: React.ReactNode; empty?: boolean;

@@ -30,6 +30,9 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronLeft,
+  Repeat,
+  Pause,
+  Play,
 } from "lucide-react";
 import { Fragment, FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -3308,8 +3311,18 @@ type WorkAssignee = { user_id: number; display_name: string };
 type WorkTask = {
   id: number; list_id: number; list_name: string; space_name: string; space_id: number;
   title: string; description?: string | null; status: string; priority: string;
-  start_date?: string | null; due_date?: string | null; estimate_hours?: number | null;
+  start_date?: string | null; due_date?: string | null; due_time?: string | null; estimate_hours?: number | null;
+  recurrence_id?: number | null;
   assignees: WorkAssignee[]; comment_count: number;
+};
+// A repeating task: the rule. Each day it applies arrives as an ordinary task.
+type WorkRecurrence = {
+  id: number; list_id: number; list_name: string; space_name: string;
+  title: string; description?: string | null; priority: string;
+  frequency: "weekly" | "monthly"; days_of_week: string | null; month_day: number | null;
+  start_date: string; end_date: string | null; due_time: string | null;
+  assignee_ids: number[]; active: number; created_by: number | null; created_by_name: string;
+  next_date: string | null; done_count: number; made_count: number;
 };
 type WorkPerson = { id: number; display_name: string; role: string };
 type WorkComment = { id: number; body: string; created_at: string; user_id: number; author_name: string };
@@ -3351,19 +3364,56 @@ function dueTone(due?: string | null, status?: string) {
 
 // A finished task is never late, however long it sat there — saying "5d overdue"
 // on something already done is just wrong.
-function dueLabel(due?: string | null, status?: string) {
+function dueLabel(due?: string | null, status?: string, time?: string | null) {
   if (status === "Done") return due ? `Completed · due ${due}` : "Completed";
   if (!due) return "No due date";
   const diff = Math.round((Date.parse(due) - Date.parse(today)) / 86400000);
-  if (diff === 0) return "Due today";
-  if (diff === 1) return "Due tomorrow";
+  if (diff === 0) return time ? `Due today · ${time}` : "Due today";
+  if (diff === 1) return time ? `Due tomorrow · ${time}` : "Due tomorrow";
   if (diff === -1) return "1 day overdue";
   if (diff < 0) return `${Math.abs(diff)} days overdue`;
-  return due;
+  return time ? `${due} · ${time}` : due;
 }
 
 function isOverdue(task: { due_date?: string | null; status: string }) {
   return !!task.due_date && task.status !== "Done" && Date.parse(task.due_date) < Date.parse(today);
+}
+
+// A repeat created ahead of its day. It exists so the calendar can show what is
+// coming, but it is not work anyone owes yet, so the board and list leave it out.
+function isUpcomingRepeat(task: WorkTask) {
+  return !!task.recurrence_id && !!task.due_date && task.due_date > today;
+}
+
+const WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WEEKDAY_LETTER = ["S", "M", "T", "W", "T", "F", "S"];
+// Monday first, the way a working week reads.
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
+function ordinal(n: number) {
+  const tail = n % 100 >= 11 && n % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th";
+  return `${n}${tail}`;
+}
+
+function prettyDate(ymd: string) {
+  const d = new Date(`${ymd}T00:00:00`);
+  return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
+}
+
+// "Mon–Sat at 10:00 · until 31 Oct" — the whole rule in one line.
+function describeRepeat(r: { frequency: string; days_of_week: string | null; month_day: number | null; due_time: string | null; end_date: string | null }) {
+  let when: string;
+  if (r.frequency === "monthly") {
+    when = `Monthly on the ${ordinal(Number(r.month_day) || 1)}`;
+  } else {
+    const days = String(r.days_of_week ?? "").split(",").filter(Boolean).map(Number);
+    const key = [...days].sort().join(",");
+    if (key === "0,1,2,3,4,5,6") when = "Every day";
+    else if (key === "1,2,3,4,5,6") when = "Mon–Sat";
+    else if (key === "1,2,3,4,5") when = "Weekdays";
+    else when = WEEK_ORDER.filter((d) => days.includes(d)).map((d) => WEEKDAY_SHORT[d]).join(", ");
+  }
+  return `${when}${r.due_time ? ` at ${r.due_time}` : ""}${r.end_date ? ` · until ${prettyDate(r.end_date)}` : ""}`;
 }
 
 // Urgent first, then whatever is due soonest — undated work sinks to the bottom.
@@ -3531,6 +3581,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [quickAddIn, setQuickAddIn] = useState<string | null>(null);
   const [quickTitle, setQuickTitle] = useState("");
   const [quickBusy, setQuickBusy] = useState(false);
+  const [seriesOpen, setSeriesOpen] = useState(false);
 
   async function loadMeta() {
     const m = await api<{ spaces: WorkSpace[]; lists: WorkList[]; people: WorkPerson[] }>("/work/meta");
@@ -3646,6 +3697,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     const startOfWeek = Date.parse(today);
     return tasks
       .filter((t) => {
+        if (view !== "calendar" && isUpcomingRepeat(t)) return false;
         if (needle && !`${t.title} ${t.description ?? ""} ${t.list_name}`.toLowerCase().includes(needle)) return false;
         if (statusFilter && t.status !== statusFilter) return false;
         if (priorityFilter && t.priority !== priorityFilter) return false;
@@ -3660,7 +3712,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         return true;
       })
       .sort(sortBy === "recent" ? (a2, b2) => doneLast(a2, b2) || b2.id - a2.id : sortBy === "due" ? byDueThenPriority : byPriorityThenDue);
-  }, [tasks, query, statusFilter, dueFilter, priorityFilter, sortBy, hideDone]);
+  }, [tasks, query, statusFilter, dueFilter, priorityFilter, sortBy, hideDone, view]);
+  const upcomingRepeats = view === "calendar" ? 0 : tasks.filter(isUpcomingRepeat).length;
 
   const grouped = useMemo(() => {
     const map: Record<string, WorkTask[]> = {};
@@ -3717,9 +3770,14 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         title="Work"
         description={isAdmin ? "Spaces hold your brand lists. Every task lives in a list." : "Your work, and anything raised for you."}
         action={(
-          <button type="button" className="btn btn-primary" onClick={() => setNewOpen({ status: "To Do", listId: defaultListId })}>
-            <Plus size={16} />New task
-          </button>
+          <span className="flex gap-2">
+            <button type="button" className="btn btn-soft" onClick={() => setSeriesOpen(true)}>
+              <Repeat size={15} />Repeating
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => setNewOpen({ status: "To Do", listId: defaultListId })}>
+              <Plus size={16} />New task
+            </button>
+          </span>
         )}
       />
       {message ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
@@ -3865,6 +3923,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
             <p className="text-xs text-ink-4">
               {visibleTasks.length - done} open{done ? ` · ${done} done` : ""}{overdue ? ` · ${overdue} overdue` : ""}
               {filtersOn ? ` · filtered from ${tasks.length}` : ""}
+              {upcomingRepeats ? ` · ${upcomingRepeats} upcoming repeat${upcomingRepeats === 1 ? "" : "s"} on the calendar` : ""}
             </p>
           </div>
           {isAdmin ? (
@@ -3928,12 +3987,13 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     )}>
                     <div className="mb-1 flex items-center gap-1.5">
                       <PriorityTag priority={t.priority} compact />
+                      {t.recurrence_id ? <Repeat size={11} className="text-ink-4" aria-label="Repeating task" /> : null}
                       {isOverdue(t) ? <span className="rounded-full bg-rose-100 px-1.5 text-[9px] font-bold uppercase text-rose-700">Late</span> : null}
                     </div>
                     <p className={classNames("text-sm font-semibold leading-snug", t.status === "Done" ? "text-ink-4 line-through decoration-slate-300" : "text-ink")}>{t.title}</p>
                     {!listId ? <p className="mt-1 truncate text-[11px] text-ink-4">{t.list_name}</p> : null}
                     <div className="mt-2 flex items-center gap-2">
-                      <span className={classNames("truncate text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date, t.status)}</span>
+                      <span className={classNames("truncate text-[11px]", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date, t.status, t.due_time)}</span>
                       {t.comment_count ? <span className="text-[11px] text-ink-4">💬 {t.comment_count}</span> : null}
                       <span className="ml-auto flex -space-x-1">
                         {t.assignees.slice(0, 3).map((a) => (
@@ -4009,6 +4069,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                     <td className="px-4 py-3">
                       <span className="flex items-center gap-2">
                         <span className={classNames("font-semibold", t.status === "Done" ? "text-ink-4 line-through decoration-slate-300" : "text-ink")}>{t.title}</span>
+                        {t.recurrence_id ? <Repeat size={12} className="shrink-0 text-ink-4" aria-label="Repeating task" /> : null}
                         {t.comment_count ? <span className="text-[11px] text-ink-4">💬 {t.comment_count}</span> : null}
                       </span>
                     </td>
@@ -4022,7 +4083,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
                         {!t.assignees.length ? <span className="text-xs text-ink-4">—</span> : null}
                       </span>
                     </td>
-                    <td className={classNames("px-4 py-3 text-xs", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date, t.status)}</td>
+                    <td className={classNames("px-4 py-3 text-xs", dueTone(t.due_date, t.status))}>{dueLabel(t.due_date, t.status, t.due_time)}</td>
                     <td className="px-4 py-3">
                       <select className={classNames("input h-8 w-auto py-0 text-xs font-semibold", statusStyle[t.status])}
                         value={t.status} onClick={(e) => e.stopPropagation()} onChange={(e) => setStatus(t, e.target.value)}>
@@ -4048,6 +4109,11 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
       {newOpen ? (
         <WorkTaskForm spaces={activeSpaces} lists={activeLists} people={people} initial={newOpen} onClose={() => setNewOpen(null)}
           onSaved={async () => { setNewOpen(null); await refresh(); await loadMeta(); }} />
+      ) : null}
+
+      {seriesOpen ? (
+        <RecurringPanel isAdmin={isAdmin} spaces={activeSpaces} lists={activeLists} people={people}
+          onClose={() => setSeriesOpen(false)} onChanged={refresh} />
       ) : null}
 
       {newSpaceOpen ? (
@@ -4105,7 +4171,8 @@ function WorkCalendar({ tasks, onOpen }: { tasks: WorkTask[]; onOpen: (t: WorkTa
                     className={classNames("flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-[10px] font-semibold", statusStyle[t.status])}>
                     {/* The priority stripe carries into the calendar too. */}
                     <span className={classNames("h-2.5 w-1 shrink-0 rounded-full", priorityStyle[t.priority]?.bar)} />
-                    <span className="min-w-0 flex-1 truncate">{t.title}</span>
+                    <span className="min-w-0 flex-1 truncate">{t.due_time ? `${t.due_time} ` : ""}{t.title}</span>
+                    {t.recurrence_id ? <Repeat size={9} className="shrink-0 opacity-60" /> : null}
                   </button>
                 ))}
                 {list.length > 3 ? <p className="px-1 text-[10px] text-ink-4">+{list.length - 3} more</p> : null}
@@ -4125,7 +4192,7 @@ function WorkTaskModal({ task, isAdmin, people, spaces, lists, onClose, onChange
 }) {
   const [form, setForm] = useState({
     title: task.title, description: task.description ?? "", status: task.status, priority: task.priority,
-    due_date: task.due_date ?? "", list_id: String(task.list_id),
+    due_date: task.due_date ?? "", due_time: task.due_time ?? "", list_id: String(task.list_id),
     assignees: task.assignees.map((a) => a.user_id),
   });
   const [spaceId, setSpaceId] = useState(task.space_id);
@@ -4171,6 +4238,11 @@ function WorkTaskModal({ task, isAdmin, people, spaces, lists, onClose, onChange
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-4">{task.space_name} › {task.list_name}</p>
+            {task.recurrence_id ? (
+              <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-sunk px-2 py-0.5 text-[11px] font-semibold text-ink-3">
+                <Repeat size={11} />One day of a repeating task — changes here apply to this day only
+              </p>
+            ) : null}
             {isAdmin
               ? <input className="input mt-1 text-lg font-bold" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
               : <h3 className="mt-1 text-lg font-bold text-ink">{task.title}</h3>}
@@ -4190,7 +4262,10 @@ function WorkTaskModal({ task, isAdmin, people, spaces, lists, onClose, onChange
             </select>
           </Field>
           <Field label="Due date">
-            <input className="input" type="date" value={form.due_date} disabled={!isAdmin} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+            <div className="flex gap-2">
+              <input className="input min-w-0 flex-1" type="date" value={form.due_date} disabled={!isAdmin} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+              <input className="input w-28" type="time" aria-label="Due time" value={form.due_time} disabled={!isAdmin} onChange={(e) => setForm({ ...form, due_time: e.target.value })} />
+            </div>
           </Field>
           {isAdmin ? (
             <>
@@ -4267,32 +4342,76 @@ function WorkTaskModal({ task, isAdmin, people, spaces, lists, onClose, onChange
   );
 }
 
-function WorkTaskForm({ spaces, lists, people, initial, onClose, onSaved }: {
-  spaces: WorkSpace[]; lists: WorkList[]; people: WorkPerson[]; initial: { status: string; listId: string };
+type RepeatMode = "none" | "weekly" | "monthly";
+
+// One form for a single task and for a repeating one. With "Repeat" on, the due
+// date gives way to a schedule: which days, from when, until when, at what time.
+// Passing `series` opens an existing repeating task for editing.
+function WorkTaskForm({ spaces, lists, people, initial, series, onClose, onSaved }: {
+  spaces: WorkSpace[]; lists: WorkList[]; people: WorkPerson[]; initial: { status: string; listId: string; repeat?: RepeatMode };
+  series?: WorkRecurrence;
   onClose: () => void; onSaved: () => void;
 }) {
   const [form, setForm] = useState({
-    list_id: initial.listId, title: "", description: "",
-    priority: "Normal", status: initial.status, due_date: "", assignees: [] as number[],
+    list_id: series ? String(series.list_id) : initial.listId,
+    title: series?.title ?? "", description: series?.description ?? "",
+    priority: series?.priority ?? "Normal", status: initial.status, due_date: "", due_time: series?.due_time ?? "",
+    assignees: series?.assignee_ids ?? ([] as number[]),
   });
+  const [repeat, setRepeat] = useState<RepeatMode>(series ? series.frequency : initial.repeat ?? "none");
+  const [days, setDays] = useState<number[]>(
+    series?.days_of_week ? series.days_of_week.split(",").map(Number) : [1, 2, 3, 4, 5, 6],
+  );
+  const [monthDay, setMonthDay] = useState(series?.month_day ?? Number(today.slice(8, 10)));
+  const [startDate, setStartDate] = useState(series?.start_date ?? today);
+  const [endDate, setEndDate] = useState(series?.end_date ?? "");
+  const [ends, setEnds] = useState<"never" | "on">(series?.end_date ? "on" : "never");
   // Pick the space first, then only its lists are offered.
   const [spaceId, setSpaceId] = useState(
-    lists.find((l) => String(l.id) === initial.listId)?.space_id ?? spaces[0]?.id ?? 0,
+    lists.find((l) => String(l.id) === (series ? String(series.list_id) : initial.listId))?.space_id ?? spaces[0]?.id ?? 0,
   );
   const formLists = lists.filter((l) => l.space_id === spaceId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  const repeating = repeat !== "none";
+  const sortedDays = WEEK_ORDER.filter((d) => days.includes(d));
+  const preview = repeating
+    ? describeRepeat({
+      frequency: repeat, days_of_week: sortedDays.join(","), month_day: monthDay,
+      due_time: form.due_time || null, end_date: ends === "on" && endDate ? endDate : null,
+    })
+    : "";
+
+  function toggleDay(d: number) {
+    setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d]));
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     // Every task must sit under a brand list.
     if (!form.list_id) { setError("Pick the list this task belongs to."); return; }
+    if (repeat === "weekly" && !days.length) { setError("Pick at least one day for it to repeat on."); return; }
+    if (repeating && ends === "on" && !endDate) { setError("Pick the date the repeat ends, or choose “Never”."); return; }
+    if (repeating && ends === "on" && endDate < startDate) { setError("The end date is before the start date."); return; }
     setBusy(true); setError("");
     try {
-      await api("/work/tasks", { method: "POST", body: JSON.stringify(form) });
+      if (repeating) {
+        const body = {
+          list_id: Number(form.list_id), title: form.title, description: form.description, priority: form.priority,
+          assignees: form.assignees, due_time: form.due_time,
+          frequency: repeat, days_of_week: sortedDays, month_day: monthDay,
+          start_date: startDate, end_date: ends === "on" ? endDate : "",
+        };
+        await api(series ? `/work/recurrences/${series.id}` : "/work/recurrences", {
+          method: series ? "PUT" : "POST", body: JSON.stringify(body),
+        });
+      } else {
+        await api("/work/tasks", { method: "POST", body: JSON.stringify(form) });
+      }
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create task");
+      setError(err instanceof Error ? err.message : "Failed to save");
     }
     setBusy(false);
   }
@@ -4300,7 +4419,7 @@ function WorkTaskForm({ spaces, lists, people, initial, onClose, onSaved }: {
   return (
     <div className="modal-scrim items-start justify-center overflow-y-auto p-4">
       <form onSubmit={submit} className="card my-8 w-full max-w-lg space-y-4 p-6">
-        <h3 className="text-lg font-bold text-ink">New task</h3>
+        <h3 className="text-lg font-bold text-ink">{series ? "Edit repeating task" : "New task"}</h3>
         {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
         <div className="grid grid-cols-2 gap-3">
           <Field label="Space">
@@ -4320,21 +4439,120 @@ function WorkTaskForm({ spaces, lists, people, initial, onClose, onSaved }: {
           </Field>
         </div>
         {!formLists.length ? <p className="text-xs font-semibold text-amber-700">No approved list in this space yet — create one first.</p> : null}
-        <Field label="Title"><input required autoFocus className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Design August reels" /></Field>
+        <Field label="Title"><input required autoFocus className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder={repeating ? "e.g. Daily client report" : "e.g. Design August reels"} /></Field>
         <Field label="Description"><textarea className="input min-h-20" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
-        <div className="grid grid-cols-3 gap-3">
-          <Field label="Status">
-            <select className="input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-              {WORK_STATUSES.map((s) => <option key={s}>{s}</option>)}
-            </select>
-          </Field>
+
+        {/* Repeat: off by default; a series cannot be turned back into one task. */}
+        {!series ? (
+          <div>
+            <p className="label">Repeat</p>
+            <div className="flex gap-1 rounded-full bg-sunk p-1">
+              {([["none", "Does not repeat"], ["weekly", "Weekly"], ["monthly", "Monthly"]] as const).map(([value, label]) => (
+                <button key={value} type="button" onClick={() => setRepeat(value)}
+                  className={classNames("flex-1 rounded-full px-3 py-1.5 text-xs font-semibold transition",
+                    repeat === value ? "bg-white text-ink shadow-sm" : "text-ink-3 hover:text-ink")}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {repeating ? (
+          <div className="space-y-3 rounded-xl border border-line bg-sunk/50 p-3">
+            {repeat === "weekly" ? (
+              <div>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-ink-4">On these days</p>
+                  <span className="flex gap-1">
+                    {([["Mon–Sat", [1, 2, 3, 4, 5, 6]], ["Weekdays", [1, 2, 3, 4, 5]], ["Every day", [0, 1, 2, 3, 4, 5, 6]]] as const).map(([label, set]) => (
+                      <button key={label} type="button" onClick={() => setDays([...set])}
+                        className="rounded-full px-2 py-0.5 text-[11px] font-semibold text-ink-3 hover:bg-white hover:text-brand">
+                        {label}
+                      </button>
+                    ))}
+                  </span>
+                </div>
+                <div className="flex gap-1.5">
+                  {WEEK_ORDER.map((d) => {
+                    const on = days.includes(d);
+                    return (
+                      <button key={d} type="button" aria-pressed={on} aria-label={WEEKDAY_SHORT[d]} title={WEEKDAY_SHORT[d]} onClick={() => toggleDay(d)}
+                        className={classNames("flex h-9 flex-1 items-center justify-center rounded-lg border text-xs font-bold transition",
+                          on ? "border-brand bg-brand text-white" : "border-line bg-white text-ink-3 hover:border-line-strong")}>
+                        {WEEKDAY_LETTER[d]}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <Field label="Day of the month">
+                <select className="input" value={monthDay} onChange={(e) => setMonthDay(Number(e.target.value))}>
+                  {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                    <option key={d} value={d}>{ordinal(d)}{d >= 29 ? " (or last day of shorter months)" : ""}</option>
+                  ))}
+                </select>
+              </Field>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Starts">
+                <input className="input" type="date" required value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+              </Field>
+              <Field label="Time (optional)">
+                <input className="input" type="time" value={form.due_time} onChange={(e) => setForm({ ...form, due_time: e.target.value })} />
+              </Field>
+            </div>
+
+            <div>
+              <p className="label">Ends</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex cursor-pointer items-center gap-2 rounded-full border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink-2">
+                  <input type="radio" name="ends" checked={ends === "never"} onChange={() => setEnds("never")} />Never
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-full border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink-2">
+                  <input type="radio" name="ends" checked={ends === "on"} onChange={() => setEnds("on")} />On a date
+                </label>
+                {ends === "on" ? (
+                  <input className="input h-9 w-auto py-0 text-sm" type="date" min={startDate} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+                ) : null}
+              </div>
+            </div>
+
+            <p className="flex items-center gap-1.5 text-xs font-semibold text-ink-2">
+              <Repeat size={12} className="text-brand" />{preview || "Pick the days it repeats on"}
+            </p>
+            <p className="text-[11px] leading-relaxed text-ink-4">
+              Each day becomes its own task, so it can be ticked off on its own. The next week is always on the calendar.
+            </p>
+          </div>
+        ) : null}
+
+        <div className={classNames("grid gap-3", repeating ? "grid-cols-1" : "grid-cols-3")}>
+          {!repeating ? (
+            <Field label="Status">
+              <select className="input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                {WORK_STATUSES.map((s) => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+          ) : null}
           <Field label="Priority">
             <select className="input" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
               {["Urgent", "High", "Normal", "Low"].map((p) => <option key={p}>{p}</option>)}
             </select>
           </Field>
-          <Field label="Due"><input className="input" type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} /></Field>
+          {!repeating ? (
+            <Field label="Due">
+              <input className="input" type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+            </Field>
+          ) : null}
         </div>
+        {!repeating && form.due_date ? (
+          <Field label="Due time (optional)">
+            <input className="input w-36" type="time" value={form.due_time} onChange={(e) => setForm({ ...form, due_time: e.target.value })} />
+          </Field>
+        ) : null}
         <div>
           <p className="label">Assign to</p>
           <div className="flex flex-wrap gap-2">
@@ -4350,11 +4568,132 @@ function WorkTaskForm({ spaces, lists, people, initial, onClose, onSaved }: {
             })}
           </div>
         </div>
+        {series ? (
+          <p className="text-[11px] text-ink-4">Saving rebuilds the upcoming days that nobody has started. Anything already in progress or done stays as it is.</p>
+        ) : null}
         <div className="flex justify-end gap-3">
           <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Creating…" : "Create task"}</button>
+          <button type="submit" className="btn btn-primary" disabled={busy}>
+            {busy ? "Saving…" : series ? "Save changes" : repeating ? "Create repeating task" : "Create task"}
+          </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+// Every repeating task in one place: what it is, when it comes round next, and
+// the controls to pause, change or end it.
+function RecurringPanel({ isAdmin, spaces, lists, people, onClose, onChanged }: {
+  isAdmin: boolean; spaces: WorkSpace[]; lists: WorkList[]; people: WorkPerson[];
+  onClose: () => void; onChanged: () => void;
+}) {
+  const [items, setItems] = useState<WorkRecurrence[] | null>(null);
+  const [editing, setEditing] = useState<WorkRecurrence | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
+  const [me, setMe] = useState(0);
+
+  async function load() {
+    try {
+      const d = await api<{ recurrences: WorkRecurrence[] }>("/work/recurrences");
+      setItems(d.recurrences);
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not load repeating tasks"); }
+  }
+  useEffect(() => {
+    load();
+    api<{ user: { id: number } }>("/me").then((d) => setMe(d.user.id)).catch(() => undefined);
+  }, []);
+
+  const nameOf = (id: number) => people.find((p) => p.id === id)?.display_name ?? "—";
+  const canManage = (r: WorkRecurrence) => isAdmin || r.created_by === me;
+
+  async function setActive(r: WorkRecurrence, active: boolean) {
+    setError("");
+    try {
+      await api(`/work/recurrences/${r.id}`, { method: "PUT", body: JSON.stringify({ active }) });
+      await load(); onChanged();
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not update"); }
+  }
+
+  async function end(r: WorkRecurrence) {
+    if (!window.confirm(`Stop repeating “${r.title}”?\n\nUpcoming days nobody has started are removed. Past, in-progress and finished ones stay as normal tasks.`)) return;
+    setError("");
+    try {
+      await api(`/work/recurrences/${r.id}`, { method: "DELETE" });
+      await load(); onChanged();
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not end it"); }
+  }
+
+  if (editing || creating) {
+    return (
+      <WorkTaskForm spaces={spaces} lists={lists} people={people} series={editing ?? undefined}
+        initial={{ status: "To Do", listId: "", repeat: "weekly" }}
+        onClose={() => { setEditing(null); setCreating(false); }}
+        onSaved={async () => { setEditing(null); setCreating(false); await load(); onChanged(); }} />
+    );
+  }
+
+  return (
+    <div className="modal-scrim items-start justify-center overflow-y-auto p-4">
+      <div className="card my-8 w-full max-w-2xl p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-bold text-ink">Repeating tasks</h3>
+            <p className="mt-0.5 text-xs text-ink-3">Work that comes round on a schedule. Each day it is due appears on the board as its own task.</p>
+          </div>
+          <button type="button" aria-label="Close" className="rounded-lg p-1.5 text-ink-4 hover:bg-sunk" onClick={onClose}><X size={20} /></button>
+        </div>
+        {error ? <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
+
+        <div className="mt-4 space-y-2">
+          {items === null ? <p className="py-8 text-center text-sm text-ink-4">Loading…</p> : null}
+          {items && !items.length ? (
+            <div className="rounded-xl border border-dashed border-line py-10 text-center">
+              <Repeat size={20} className="mx-auto text-ink-4" />
+              <p className="mt-2 text-sm font-semibold text-ink-2">No repeating tasks yet</p>
+              <p className="mt-0.5 text-xs text-ink-4">For things like a daily report, Mon–Sat at 10:00.</p>
+            </div>
+          ) : null}
+          {items?.map((r) => (
+            <div key={r.id} className={classNames("rounded-xl border border-line p-3", r.active ? "bg-white" : "bg-sunk/60")}>
+              <div className="flex flex-wrap items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <PriorityTag priority={r.priority} compact />
+                    <p className={classNames("font-semibold", r.active ? "text-ink" : "text-ink-3")}>{r.title}</p>
+                    {!r.active ? <span className="badge bg-amber-100 text-amber-700">Paused</span> : null}
+                  </div>
+                  <p className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-ink-2">
+                    <Repeat size={12} className="text-brand" />{describeRepeat(r)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-ink-4">
+                    {r.space_name} › {r.list_name}
+                    {r.assignee_ids.length ? ` · ${r.assignee_ids.map(nameOf).join(", ")}` : ""}
+                    {r.active && r.next_date ? ` · next ${r.next_date === today ? "today" : prettyDate(r.next_date)}` : ""}
+                    {r.made_count ? ` · ${r.done_count} of ${r.made_count} done` : ""}
+                  </p>
+                </div>
+                {canManage(r) ? (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button type="button" className="btn btn-ghost px-2 py-1 text-xs" onClick={() => setActive(r, !r.active)}
+                      title={r.active ? "Pause: stops new days and removes upcoming ones nobody has started" : "Resume from today"}>
+                      {r.active ? <><Pause size={13} />Pause</> : <><Play size={13} />Resume</>}
+                    </button>
+                    <button type="button" className="btn btn-ghost px-2 py-1 text-xs" onClick={() => setEditing(r)}><Pencil size={13} />Edit</button>
+                    <button type="button" className="btn btn-ghost px-2 py-1 text-xs text-rose-600" onClick={() => end(r)}><Trash2 size={13} />End</button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-5 flex justify-between gap-3">
+          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={15} />New repeating task</button>
+          <button type="button" className="btn btn-soft" onClick={onClose}>Close</button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -135,7 +135,8 @@ async function currentUser(context: Context): Promise<AppUser | null> {
 
 async function meta(db: D1Database) {
   const [departments, designations] = await Promise.all([
-    db.prepare("SELECT id, name FROM departments ORDER BY name").all(),
+    // The shift fields come along so the department editor opens with what was saved.
+    db.prepare("SELECT id, name, shift_min_hours, half_day_min_hours, late_mark_time FROM departments ORDER BY name").all(),
     db.prepare("SELECT id, name FROM designations ORDER BY name").all(),
   ]);
   return { departments: departments.results, designations: designations.results };
@@ -263,7 +264,8 @@ async function employeeSummary(db: D1Database, user: AppUser) {
     "SELECT attendance_date FROM attendance WHERE employee_id = ? AND missed_checkout = 1 AND attendance_date >= ? ORDER BY attendance_date DESC",
   ).bind(employee.id, addDaysYmd(today, -7)).all<{ attendance_date: string }>()).results.map((r) => r.attendance_date);
   if (todayAttendance) await attachBreaks(db, [todayAttendance as Record<string, unknown>]);
-  return json({ summary: { todayAttendance, monthAttendance, leaveBalance: paidLeave, recentLeaves: recentLeaves.results, currentSalary, latestSalary, upcomingLeaves: upcomingLeaves.results, upcomingHolidays: upcomingHolidays.results, missedDays } });
+  return json({ summary: { todayAttendance, monthAttendance, leaveBalance: paidLeave, recentLeaves: recentLeaves.results, currentSalary, latestSalary, upcomingLeaves: upcomingLeaves.results, upcomingHolidays: upcomingHolidays.results, missedDays,
+    shift: await effectiveShift(db, employee as Record<string, unknown>) } });
 }
 
 async function employeesList(db: D1Database) {
@@ -435,9 +437,10 @@ async function settleMissedCheckouts(db: D1Database) {
 async function checkIn(db: D1Database, user: AppUser, body: Record<string, unknown>) {
   await settleMissedCheckouts(db);
   const employee = await employeeForUser(db, user);
-  const settings = await companySettings(db);
+  // The department's late time if it has one, otherwise the company's.
+  const shift = await effectiveShift(db, employee as Record<string, unknown>);
   const time = timeOnly();
-  const status = time > settings.late_mark_time ? "Late" : "Present";
+  const status = time > shift.late_mark_time ? "Late" : "Present";
   const reason = text(body.late_checkin_reason) || null;
   const result = await db.prepare("INSERT OR IGNORE INTO attendance (employee_id, attendance_date, check_in, status, late_checkin_reason) VALUES (?, ?, ?, ?, ?)")
     .bind(employee.id, dateOnly(), time, status, reason).run();
@@ -450,14 +453,14 @@ async function checkOut(db: D1Database, user: AppUser, body: Record<string, unkn
   const current = await db.prepare("SELECT * FROM attendance WHERE employee_id = ? AND attendance_date = ?").bind(employee.id, dateOnly()).first<Record<string, string>>();
   if (!current?.check_in) return json({ error: "Check in first" }, 400);
   if (current.check_out) return json({ error: "You have already checked out today" }, 400);
-  const settings = await companySettings(db);
+  const shift = await effectiveShift(db, employee as Record<string, unknown>);
   const checkOutTime = timeOnly();
   // If a break is still open, close it at checkout time.
   await db.prepare("UPDATE attendance_breaks SET break_end = ? WHERE attendance_id = ? AND break_end IS NULL").bind(checkOutTime, current.id).run();
   // Worked hours = span minus every break taken today.
   const breakHours = await breakHoursFor(db, current);
   const hours = Math.max(0, hoursBetween(current.check_in, checkOutTime) - breakHours);
-  const status = hours < settings.half_day_min_hours ? "Half Day" : current.status;
+  const status = hours < shift.half_day_min_hours ? "Half Day" : current.status;
   const reason = text(body.early_checkout_reason) || null;
   await db.prepare("UPDATE attendance SET check_out = ?, total_hours = ?, status = ?, early_checkout_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(checkOutTime, hours, status, reason, current.id).run();

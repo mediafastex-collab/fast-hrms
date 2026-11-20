@@ -176,6 +176,7 @@ type EmployeeSummary = {
   upcomingLeaves?: LeaveRequest[];
   upcomingHolidays?: Holiday[];
   missedDays?: string[];
+  shift?: { late_mark_time: string; shift_min_hours: number; half_day_min_hours: number };
 };
 
 const currency = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
@@ -761,12 +762,15 @@ function EmployeeDashboard({ onView }: { onView: (view: View) => void }) {
   function checkIn() {
     const now = new Date();
     const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    if (settings && hhmm > settings.late_mark_time) setPrompt("check-in");
+    // The employee's own department rules, falling back to the company's.
+    const lateAfter = summary?.shift?.late_mark_time ?? settings?.late_mark_time;
+    if (lateAfter && hhmm > lateAfter) setPrompt("check-in");
     else punch("check-in");
   }
 
   function checkOut() {
-    if (settings && elapsed / 3600 < settings.shift_min_hours) setPrompt("check-out");
+    const fullDay = summary?.shift?.shift_min_hours ?? settings?.shift_min_hours;
+    if (fullDay && elapsed / 3600 < fullDay) setPrompt("check-out");
     else punch("check-out");
   }
 

@@ -1182,172 +1182,158 @@ function EmployeeModal({
   );
 }
 
+// Departments carry the shift rules; designations are just job titles.
+// Everything edits in one small dialog that reports what went wrong.
 function Departments() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [designations, setDesignations] = useState<Designation[]>([]);
-  const [departmentName, setDepartmentName] = useState("");
-  const [designationName, setDesignationName] = useState("");
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [newDept, setNewDept] = useState("");
+  const [newTitle, setNewTitle] = useState("");
+  const [editing, setEditing] = useState<{ kind: "departments" | "designations"; row: Department } | null>(null);
   const [message, setMessage] = useState("");
-  const [editingDept, setEditingDept] = useState<Department | null>(null);
-  const [checkingEmployeesDept, setCheckingEmployeesDept] = useState<Department | null>(null);
-  const [allEmployees, setAllEmployees] = useState<Employee[]>([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   async function load() {
-    const data = await api<{ departments: Department[]; designations: Designation[] }>("/meta");
-    setDepartments(data.departments);
-    setDesignations(data.designations);
+    const [m, e] = await Promise.all([
+      api<{ departments: Department[]; designations: Designation[] }>("/meta"),
+      api<{ employees: Employee[] }>("/employees"),
+    ]);
+    setDepartments(m.departments);
+    setDesignations(m.designations);
+    setEmployees(e.employees);
   }
 
-  useEffect(() => {
-    load().catch(console.error);
-  }, []);
+  useEffect(() => { load().catch((err) => setMessage(err.message)); }, []);
 
-  useEffect(() => {
-    if (checkingEmployeesDept && allEmployees.length === 0) {
-      api<{ employees: Employee[] }>("/employees").then(d => setAllEmployees(d.employees)).catch(console.error);
-    }
-  }, [checkingEmployeesDept, allEmployees.length]);
+  const countIn = (field: "department_id" | "designation_id", id: number) =>
+    employees.filter((e) => e[field] === id && e.employment_status === "Active").length;
 
   async function create(kind: "departments" | "designations", name: string) {
-    setMessage("");
+    if (!name.trim()) return;
+    setMessage(""); setBusy(true);
     try {
-      await api(`/${kind}`, { method: "POST", body: JSON.stringify({ name }) });
-      setDepartmentName("");
-      setDesignationName("");
+      await api(`/${kind}`, { method: "POST", body: JSON.stringify({ name: name.trim() }) });
+      if (kind === "departments") setNewDept(""); else setNewTitle("");
       await load();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Unable to save");
+      setMessage(err instanceof Error ? err.message : "Could not add");
+    }
+    setBusy(false);
+  }
+
+  async function remove(kind: "departments" | "designations", row: Department) {
+    if (!window.confirm(`Delete "${row.name}"?`)) return;
+    setMessage("");
+    try {
+      await api(`/${kind}/${row.id}`, { method: "DELETE" });
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not delete");
     }
   }
 
-  async function remove(kind: "departments" | "designations", id: number) {
-    setMessage("");
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    setError(""); setBusy(true);
     try {
-      await api(`/${kind}/${id}`, { method: "DELETE" });
+      await api(`/${editing.kind}/${editing.row.id}`, { method: "PUT", body: JSON.stringify(editing.row) });
+      setEditing(null);
       await load();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Unable to delete");
+      setError(err instanceof Error ? err.message : "Could not save");
     }
+    setBusy(false);
   }
 
-  return (
-    <section className="space-y-5">
-      {message ? <div className="rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ManagerList title="Departments" value={departmentName} onValue={setDepartmentName} rows={departments} onCreate={() => create("departments", departmentName)} onDelete={(id) => remove("departments", id)} onEdit={setEditingDept} onCheckEmployees={setCheckingEmployeesDept} />
-        <ManagerList title="Designations" value={designationName} onValue={setDesignationName} rows={designations} onCreate={() => create("designations", designationName)} onDelete={(id) => remove("designations", id)} onEdit={(row) => {
-          const newName = window.prompt("Edit designation name:", row.name);
-          if (newName && newName.trim() !== "") {
-            api(`/designations/${row.id}`, { method: "PUT", body: JSON.stringify({ name: newName.trim() }) }).then(load).catch(err => alert(err.message));
-          }
-        }} />
+  function shiftLine(d: Department) {
+    const parts = [
+      d.late_mark_time ? `Late after ${d.late_mark_time.slice(0, 5)}` : null,
+      d.shift_min_hours ? `${d.shift_min_hours}h full day` : null,
+      d.half_day_min_hours ? `${d.half_day_min_hours}h half day` : null,
+    ].filter(Boolean);
+    return parts.length ? parts.join(" · ") : "Company rules";
+  }
+
+  const section = (kind: "departments" | "designations", title: string, rows: Department[], value: string, setValue: (v: string) => void, placeholder: string) => (
+    <div className="card">
+      <div className="border-b border-line px-5 py-4">
+        <h3 className="text-[19px] text-ink">{title}</h3>
+        <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); create(kind, value); }}>
+          <input className="input" value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder} />
+          <button className="btn btn-primary shrink-0" disabled={busy || !value.trim()}><Plus size={16} />Add</button>
+        </form>
       </div>
-
-      {editingDept && (
-        <div className="modal-scrim items-center justify-center p-4">
-          <div className="card w-full max-w-md p-6 space-y-4">
-            <h3 className="text-lg font-bold text-ink">Edit Department</h3>
-            <p className="text-xs text-ink-3">Update {editingDept.name} and its shift hours. Leave shift fields blank to use the company default.</p>
-            <Field label="Name">
-              <input className="input" value={editingDept.name} onChange={(e) => setEditingDept({ ...editingDept, name: e.target.value })} />
-            </Field>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Full day hours">
-                <input className="input" type="number" step="0.5" min="0" placeholder="e.g. 8" value={editingDept.shift_min_hours ?? ""} onChange={(e) => setEditingDept({ ...editingDept, shift_min_hours: e.target.value === "" ? null : Number(e.target.value) })} />
-              </Field>
-              <Field label="Half day hours">
-                <input className="input" type="number" step="0.5" min="0" placeholder="e.g. 4" value={editingDept.half_day_min_hours ?? ""} onChange={(e) => setEditingDept({ ...editingDept, half_day_min_hours: e.target.value === "" ? null : Number(e.target.value) })} />
-              </Field>
+      <div className="divide-y divide-line">
+        {rows.map((row) => {
+          const people = countIn(kind === "departments" ? "department_id" : "designation_id", row.id);
+          return (
+            <div key={row.id} className="flex items-center gap-3 px-5 py-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[14px] font-semibold text-ink">{row.name}</p>
+                <p className="truncate text-[12px] text-ink-3">
+                  {people} {people === 1 ? "person" : "people"}{kind === "departments" ? ` · ${shiftLine(row)}` : ""}
+                </p>
+              </div>
+              <button type="button" className="btn btn-ghost shrink-0 px-2.5 py-1.5 text-xs" onClick={() => { setError(""); setEditing({ kind, row: { ...row } }); }}>
+                <Pencil size={13} />Edit
+              </button>
+              <button type="button" aria-label={`Delete ${row.name}`} className="btn btn-ghost shrink-0 px-2 py-1.5 text-xs text-rose-600" onClick={() => remove(kind, row)}>
+                <Trash2 size={13} />
+              </button>
             </div>
-            <Field label="Late mark time">
-              <input className="input" type="time" value={editingDept.late_mark_time ?? ""} onChange={(e) => setEditingDept({ ...editingDept, late_mark_time: e.target.value || null })} />
-            </Field>
-            <div className="flex justify-end gap-3 pt-2">
-              <button type="button" className="btn btn-soft" onClick={() => setEditingDept(null)}>Cancel</button>
-              <button type="button" className="btn btn-primary" onClick={async () => {
-                await api(`/departments/${editingDept.id}`, { method: "PUT", body: JSON.stringify(editingDept) });
-                setEditingDept(null);
-                await load();
-              }}>Save</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {checkingEmployeesDept && (
-        <div className="modal-scrim items-center justify-center p-4">
-          <div className="card w-full max-w-md p-6 space-y-4">
-            <h3 className="text-lg font-bold text-ink">{checkingEmployeesDept.name} Employees</h3>
-            <p className="text-xs text-ink-3">All employees in the {checkingEmployeesDept.name} department</p>
-            <div className="max-h-96 overflow-y-auto">
-              {allEmployees.length === 0 ? (
-                <div className="p-4 text-center text-ink-3">Loading...</div>
-              ) : (
-                <div className="space-y-2">
-                  {allEmployees.filter((e) => e.department_id === checkingEmployeesDept.id).length === 0 ? (
-                    <div className="p-4 text-center text-ink-3">No employees found in this department.</div>
-                  ) : (
-                    allEmployees.filter((e) => e.department_id === checkingEmployeesDept.id).map((emp) => {
-                      const desig = designations.find(d => d.id === emp.designation_id)?.name || "Unknown Designation";
-                      return (
-                        <div key={emp.id} className="flex items-center justify-between rounded-lg border border-line bg-sunk p-3">
-                          <div className="font-semibold text-ink">{emp.full_name}</div>
-                          <div className="text-sm text-ink-3">{desig}</div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="mt-4 flex justify-end">
-              <button type="button" className="btn btn-soft" onClick={() => setCheckingEmployeesDept(null)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
+          );
+        })}
+        {!rows.length ? <p className="px-5 py-6 text-center text-[13px] text-ink-3">None yet.</p> : null}
+      </div>
+    </div>
   );
-}
 
-function ManagerList({
-  title,
-  value,
-  onValue,
-  rows,
-  onCreate,
-  onDelete,
-  onEdit,
-  onCheckEmployees,
-}: {
-  title: string;
-  value: string;
-  onValue: (value: string) => void;
-  rows: Department[];
-  onCreate: () => void;
-  onDelete: (id: number) => void;
-  onEdit?: (row: any) => void;
-  onCheckEmployees?: (row: any) => void;
-}) {
   return (
-    <div className="card p-4">
-      <h3 className="font-bold text-ink">{title}</h3>
-      <div className="mt-4 flex gap-2">
-        <input className="input" value={value} onChange={(event) => onValue(event.target.value)} placeholder={`Add ${title.toLowerCase()}`} />
-        <button className="btn btn-primary" onClick={onCreate} disabled={!value.trim()}><Plus size={17} /></button>
+    <div className="space-y-4">
+      {message ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {section("departments", "Departments", departments, newDept, setNewDept, "New department")}
+        {section("designations", "Designations", designations, newTitle, setNewTitle, "New designation")}
       </div>
-      <div className="mt-4 divide-y divide-line">
-        {rows.map((row) => (
-          <div key={row.id} className="flex items-center justify-between gap-3 py-3">
-            <span className="font-semibold text-ink-2">{row.name}</span>
-            <div className="flex shrink-0 gap-2">
-              {onCheckEmployees ? <button type="button" className="btn btn-soft" onClick={() => onCheckEmployees(row)}>Employees</button> : null}
-              {onEdit ? <button type="button" className="btn btn-soft" onClick={() => onEdit(row)}>Edit</button> : null}
-              <button type="button" className="btn btn-soft" onClick={() => onDelete(row.id)}>Delete</button>
+
+      {editing ? (
+        <div className="modal-scrim items-center justify-center p-4">
+          <form onSubmit={save} className="card w-full max-w-md space-y-4 p-6">
+            <h3 className="text-xl text-ink">Edit {editing.kind === "departments" ? "department" : "designation"}</h3>
+            {error ? <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
+            <Field label="Name">
+              <input required autoFocus className="input" value={editing.row.name}
+                onChange={(e) => setEditing({ ...editing, row: { ...editing.row, name: e.target.value } })} />
+            </Field>
+            {editing.kind === "departments" ? (
+              <>
+                <p className="text-[12px] text-ink-3">Leave these empty to use the company rules from Settings.</p>
+                <Field label="Late after">
+                  <input className="input" type="time" value={editing.row.late_mark_time?.slice(0, 5) ?? ""}
+                    onChange={(e) => setEditing({ ...editing, row: { ...editing.row, late_mark_time: e.target.value || null } })} />
+                </Field>
+                <div className="grid grid-cols-2 gap-4">
+                  <Field label="Full day = hours">
+                    <input className="input" type="number" step="0.5" min="0" placeholder="e.g. 8" value={editing.row.shift_min_hours ?? ""}
+                      onChange={(e) => setEditing({ ...editing, row: { ...editing.row, shift_min_hours: e.target.value === "" ? null : Number(e.target.value) } })} />
+                  </Field>
+                  <Field label="Half day = hours">
+                    <input className="input" type="number" step="0.5" min="0" placeholder="e.g. 4" value={editing.row.half_day_min_hours ?? ""}
+                      onChange={(e) => setEditing({ ...editing, row: { ...editing.row, half_day_min_hours: e.target.value === "" ? null : Number(e.target.value) } })} />
+                  </Field>
+                </div>
+              </>
+            ) : null}
+            <div className="flex justify-end gap-3 pt-1">
+              <button type="button" className="btn btn-soft" onClick={() => setEditing(null)}>Cancel</button>
+              <button className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
             </div>
-          </div>
-        ))}
-      </div>
+          </form>
+        </div>
+      ) : null}
     </div>
   );
 }

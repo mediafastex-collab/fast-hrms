@@ -70,6 +70,7 @@ async function route(context: Context) {
   if (method === "POST" && path === "/designations") return createNamed(db, user, "designations", await readBody(context.request));
   if (method === "PUT" && path.startsWith("/departments/")) return updateDepartment(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/departments/")) return deleteNamed(db, "departments", "department_id", Number(path.split("/").pop()));
+  if (method === "PUT" && path.match(/^\/designations\/\d+$/)) return renameDesignation(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/designations/")) return deleteNamed(db, "designations", "designation_id", Number(path.split("/").pop()));
   if (method === "POST" && path === "/attendance/manual") return manualAttendance(db, user, await readBody(context.request));
   if (method === "POST" && path === "/attendance/day-override") return saveDayOverride(db, user, await readBody(context.request));
@@ -316,33 +317,39 @@ async function updateEmployee(db: D1Database, actor: AppUser, id: number, body: 
 async function createNamed(db: D1Database, actor: AppUser, table: "departments" | "designations", body: Record<string, unknown>) {
   const name = text(body.name);
   if (!name) return json({ error: "Name is required" }, 400);
+  const clash = await db.prepare(`SELECT 1 FROM ${table} WHERE LOWER(name) = LOWER(?)`).bind(name).first();
+  if (clash) return json({ error: `"${name}" already exists` }, 400);
   const result = await db.prepare(`INSERT INTO ${table} (name) VALUES (?)`).bind(name).run();
   await audit(db, actor, `${table.slice(0, -1)} added`, table, result.meta.last_row_id, name);
   return json({ ok: true });
 }
 
+async function renameDesignation(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
+  const name = text(body.name);
+  if (!name) return json({ error: "Name is required" }, 400);
+  const clash = await db.prepare("SELECT 1 FROM designations WHERE LOWER(name) = LOWER(?) AND id != ?").bind(name, id).first();
+  if (clash) return json({ error: `"${name}" already exists` }, 400);
+  await db.prepare("UPDATE designations SET name = ? WHERE id = ?").bind(name, id).run();
+  await audit(db, actor, "Designation renamed", "designations", id, name);
+  return json({ ok: true });
+}
+
 async function updateDepartment(db: D1Database, user: AppUser, id: number, body: Record<string, unknown>) {
   requireAdmin(user);
-  const name = typeof body.name === "string" ? body.name.trim() : "";
-  if (!name) throw new Error("Department name is required.");
-  const shift_min = numOrNull(body.shift_min_hours);
-  const half_day = numOrNull(body.half_day_min_hours);
-  const late_time = typeof body.late_mark_time === "string" && body.late_mark_time ? body.late_mark_time : null;
-  
-  try {
-    await db.prepare("UPDATE departments SET name = ?, shift_min_hours = ?, half_day_min_hours = ?, late_mark_time = ? WHERE id = ?")
-      .bind(name, shift_min, half_day, late_time, id)
-      .run();
-    return json({ ok: true });
-  } catch (err: any) {
-    if (err.message.includes("UNIQUE")) throw new Error("A department with this name already exists.");
-    throw err;
-  }
+  const name = text(body.name);
+  if (!name) return json({ error: "Department name is required" }, 400);
+  const clash = await db.prepare("SELECT 1 FROM departments WHERE LOWER(name) = LOWER(?) AND id != ?").bind(name, id).first();
+  if (clash) return json({ error: `"${name}" already exists` }, 400);
+  const lateTime = /^\d{2}:\d{2}$/.test(text(body.late_mark_time)) ? text(body.late_mark_time) : null;
+  await db.prepare("UPDATE departments SET name = ?, shift_min_hours = ?, half_day_min_hours = ?, late_mark_time = ? WHERE id = ?")
+    .bind(name, numOrNull(body.shift_min_hours), numOrNull(body.half_day_min_hours), lateTime, id).run();
+  await audit(db, user, "Department edited", "departments", id, name);
+  return json({ ok: true });
 }
 
 async function deleteNamed(db: D1Database, table: "departments" | "designations", field: "department_id" | "designation_id", id: number) {
   const used = await scalar(db, `SELECT COUNT(*) FROM employees WHERE ${field} = ?`, id);
-  if (used) return json({ error: "Cannot delete while employees are using it" }, 400);
+  if (used) return json({ error: `${used} employee${used === 1 ? " is" : "s are"} still in it. Move them first.` }, 400);
   await db.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(id).run();
   return json({ ok: true });
 }

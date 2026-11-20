@@ -69,19 +69,8 @@ async function route(context: Context) {
   if (method === "PUT" && path.match(/^\/work\/tasks\/\d+$/)) return updateWorkTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "GET" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return workComments(db, user, Number(path.split("/")[3]));
   if (method === "POST" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return addWorkComment(db, user, Number(path.split("/")[3]), await readBody(context.request));
-  if (method === "GET" && path === "/notifications") { await touchPresence(db, user.id); return notificationsList(db, user); }
+  if (method === "GET" && path === "/notifications") return notificationsList(db, user);
   if (method === "POST" && path === "/notifications/read-all") return markNotificationsRead(db, user);
-  if (method === "GET" && path === "/chat/channels") { await touchPresence(db, user.id); return chatChannels(db, user); }
-  if (method === "POST" && path === "/chat/channels") return createChatChannel(db, user, await readBody(context.request));
-  if (method === "GET" && path === "/chat/directory") return chatDirectory(db, user);
-  if (method === "GET" && path.match(/^\/chat\/channels\/\d+\/mentionable$/)) return chatMentionable(db, user, Number(path.split("/")[3]));
-  if (method === "GET" && path.match(/^\/chat\/channels\/\d+\/messages$/)) return chatMessages(db, user, Number(path.split("/")[3]), url);
-  if (method === "POST" && path.match(/^\/chat\/channels\/\d+\/messages$/)) return sendChatMessage(db, user, Number(path.split("/")[3]), await readBody(context.request));
-  if (method === "POST" && path.match(/^\/chat\/channels\/\d+\/read$/)) return markChatRead(db, user, Number(path.split("/")[3]), await readBody(context.request));
-  if (method === "POST" && path.match(/^\/chat\/channels\/\d+\/typing$/)) return chatTyping(db, user, Number(path.split("/")[3]));
-  if (method === "POST" && path.match(/^\/chat\/messages\/\d+\/reactions$/)) return toggleReaction(db, user, Number(path.split("/")[3]), await readBody(context.request));
-  if (method === "PUT" && path.match(/^\/chat\/messages\/\d+$/)) return editChatMessage(db, user, Number(path.split("/").pop()), await readBody(context.request));
-  if (method === "DELETE" && path.match(/^\/chat\/messages\/\d+$/)) return deleteChatMessage(db, user, Number(path.split("/").pop()));
 
   requireAdmin(user);
 
@@ -882,11 +871,11 @@ async function workMeta(db: D1Database, user: AppUser) {
        WHERE ${visible.replace(/status/g, "l.status").replace(/requested_by/g, "l.requested_by")}
        ORDER BY s.name, l.name`,
     ).bind(...bind).all(),
-    db.prepare(`${chatUserSelect} WHERE u.is_active = 1 ORDER BY display_name`).all(),
+    db.prepare(`${peopleSelect} WHERE u.is_active = 1 ORDER BY display_name`).all(),
   ]);
   // Former employees, for the admin's assignee filter only — never to assign work to.
   const formerPeople = isAdmin
-    ? (await db.prepare(`${chatUserSelect} WHERE u.is_active = 0 AND u.role = 'Employee' ORDER BY display_name`).all()).results
+    ? (await db.prepare(`${peopleSelect} WHERE u.is_active = 0 AND u.role = 'Employee' ORDER BY display_name`).all()).results
     : [];
   return json({ spaces: spaces.results, lists: lists.results, people: people.results, formerPeople, statuses: workStatuses, priorities: workPriorities, isAdmin });
 }
@@ -1054,9 +1043,7 @@ async function workTasks(db: D1Database, user: AppUser, url: URL) {
   return json({ tasks: await decorateWorkTasks(db, rows.results) });
 }
 
-
 // Renaming to an existing client's name merges the two (fixes brand-name drift).
-
 
 async function createWorkTask(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
   const listId = number(body.list_id);
@@ -1416,9 +1403,7 @@ async function addWorkComment(db: D1Database, user: AppUser, taskId: number, bod
   return json({ ok: true });
 }
 
-// ---- Team chat ----
-// Public channels are open to everyone in the org; DMs are private to their two
-// members. Membership rows double as the read cursor for unread counts.
+// ---- People ----
 
 // Someone without an employee record used to show up as their whole email
 // address. Fall back to a capitalised handle instead: "Aagam", not
@@ -1427,325 +1412,9 @@ function nameSql(userAlias = "u", employeeAlias = "e") {
   return `COALESCE(${employeeAlias}.full_name, UPPER(SUBSTR(${userAlias}.email, 1, 1)) || SUBSTR(${userAlias}.email, 2, INSTR(${userAlias}.email, '@') - 2))`;
 }
 
-// Presence is read off the heartbeat the polling endpoints leave behind, except
-// for a break: that is something the person deliberately started, so it beats
-// whatever the heartbeat says. Scoped to today so a break nobody ended cannot
-// follow them into tomorrow.
-//
-// Attendance dates are kept in IST while SQLite's now() is UTC, so the day has
-// to be shifted before comparing.
-function onBreakSql(userAlias = "u") {
-  return `EXISTS (
-    SELECT 1 FROM attendance_breaks ab
-    JOIN attendance att ON att.id = ab.attendance_id
-    JOIN employees emp ON emp.id = att.employee_id
-    WHERE emp.user_id = ${userAlias}.id
-      AND ab.break_end IS NULL
-      AND att.attendance_date = date('now', '+5 hours', '+30 minutes')
-  )`;
-}
-
-function presenceSql(userAlias = "u") {
-  return `CASE
-    WHEN ${onBreakSql(userAlias)} THEN 'break'
-    WHEN ${userAlias}.last_seen_at IS NULL THEN 'offline'
-    WHEN (julianday('now') - julianday(${userAlias}.last_seen_at)) * 86400 < 90 THEN 'online'
-    WHEN (julianday('now') - julianday(${userAlias}.last_seen_at)) * 86400 < 600 THEN 'away'
-    ELSE 'offline' END`;
-}
-
-// Clients poll every few seconds; stamping the clock that often would be a lot
-// of writes for no extra accuracy, so only refresh a stamp older than a minute.
-async function touchPresence(db: D1Database, userId: number) {
-  await db.prepare(
-    `UPDATE users SET last_seen_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND (last_seen_at IS NULL OR (julianday('now') - julianday(last_seen_at)) * 86400 > 60)`,
-  ).bind(userId).run();
-}
-
-const chatUserSelect = `SELECT u.id, u.email, u.role, ${nameSql()} AS display_name, ${presenceSql()} AS presence,
-    u.last_seen_at
+// Name and role for anyone with a login, for assignee pickers.
+const peopleSelect = `SELECT u.id, u.email, u.role, ${nameSql()} AS display_name
   FROM users u LEFT JOIN employees e ON e.user_id = u.id`;
-
-async function chatDirectory(db: D1Database, user: AppUser) {
-  const rows = await db.prepare(`${chatUserSelect} WHERE u.is_active = 1 AND u.id != ? ORDER BY display_name`).bind(user.id).all();
-  return json({ people: rows.results });
-}
-
-async function chatChannels(db: D1Database, user: AppUser) {
-  // Public channels (everyone) + DMs this user belongs to.
-  //
-  // This runs on a timer for every open tab, so it is written to touch as few
-  // rows as it can. The five facts about the newest message used to be five
-  // correlated subqueries per channel, and the four about the other side of a
-  // DM another four; both are now a single join.
-  const rows = await db.prepare(
-    `SELECT c.id, c.name, c.kind,
-       COALESCE(m.last_read_message_id, 0) AS last_read_message_id,
-       (SELECT COUNT(*) FROM chat_messages msg
-         WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL
-           AND msg.id > COALESCE(m.last_read_message_id, 0) AND msg.user_id != ?) AS unread,
-       lm.body AS last_body,
-       lm.created_at AS last_at,
-       lm.user_id AS last_user_id,
-       lm.id AS last_message_id,
-       CASE WHEN lm.id IS NULL THEN NULL ELSE ${nameSql("lu", "le")} END AS last_author,
-       -- "Peer" only means something in a DM; a public channel has no single other side.
-       CASE WHEN c.kind = 'dm' THEN ${nameSql("pu", "pe")} END AS peer_name,
-       CASE WHEN c.kind = 'dm' THEN pu.id END AS peer_id,
-       CASE WHEN c.kind = 'dm' THEN ${presenceSql("pu")} END AS peer_presence,
-       CASE WHEN c.kind = 'dm' THEN pu.last_seen_at END AS peer_last_seen
-     FROM chat_channels c
-     LEFT JOIN chat_members m ON m.channel_id = c.id AND m.user_id = ?
-     -- MAX over the (channel_id, deleted_at, id) index is a seek, so this reads
-     -- a couple of rows per channel. Grouping the whole table instead would
-     -- scan every message in it on every poll, and grow with the history.
-     LEFT JOIN chat_messages lm ON lm.id =
-       (SELECT MAX(x.id) FROM chat_messages x WHERE x.channel_id = c.id AND x.deleted_at IS NULL)
-     LEFT JOIN users lu ON lu.id = lm.user_id
-     LEFT JOIN employees le ON le.user_id = lu.id
-     LEFT JOIN chat_members pm ON pm.channel_id = c.id AND pm.user_id != ? AND c.kind = 'dm'
-     LEFT JOIN users pu ON pu.id = pm.user_id
-     LEFT JOIN employees pe ON pe.user_id = pu.id
-     WHERE c.kind = 'channel' OR m.id IS NOT NULL
-     ORDER BY c.kind ASC, last_at DESC NULLS LAST, c.name ASC`,
-  ).bind(user.id, user.id, user.id).all();
-  return json({ channels: rows.results });
-}
-
-async function createChatChannel(db: D1Database, user: AppUser, body: Record<string, unknown>) {
-  const kind = text(body.kind) === "dm" ? "dm" : "channel";
-  if (kind === "dm") {
-    const peerId = number(body.user_id);
-    if (!peerId || peerId === user.id) return json({ error: "Choose someone to message" }, 400);
-    // Reuse an existing DM between these two people.
-    const existing = await db.prepare(
-      `SELECT c.id FROM chat_channels c
-       JOIN chat_members a ON a.channel_id = c.id AND a.user_id = ?
-       JOIN chat_members b ON b.channel_id = c.id AND b.user_id = ?
-       WHERE c.kind = 'dm' LIMIT 1`,
-    ).bind(user.id, peerId).first<{ id: number }>();
-    if (existing) return json({ ok: true, id: existing.id });
-    const created = await db.prepare("INSERT INTO chat_channels (kind, created_by) VALUES ('dm', ?)").bind(user.id).run();
-    const channelId = Number(created.meta.last_row_id);
-    await db.prepare("INSERT INTO chat_members (channel_id, user_id) VALUES (?, ?), (?, ?)").bind(channelId, user.id, channelId, peerId).run();
-    return json({ ok: true, id: channelId });
-  }
-  const name = text(body.name).replace(/^#/, "").trim().toLowerCase().replace(/\s+/g, "-");
-  if (!name) return json({ error: "Channel name is required" }, 400);
-  const dupe = await db.prepare("SELECT id FROM chat_channels WHERE kind = 'channel' AND name = ?").bind(name).first();
-  if (dupe) return json({ error: "A channel with that name already exists" }, 400);
-  const created = await db.prepare("INSERT INTO chat_channels (name, kind, created_by) VALUES (?, 'channel', ?)").bind(name, user.id).run();
-  return json({ ok: true, id: Number(created.meta.last_row_id) });
-}
-
-// Confirms the user may read/write this channel (public channels are open to all).
-async function chatChannelFor(db: D1Database, user: AppUser, channelId: number) {
-  const channel = await db.prepare("SELECT * FROM chat_channels WHERE id = ?").bind(channelId).first<Record<string, unknown>>();
-  if (!channel) return null;
-  if (channel.kind === "channel") return channel;
-  const member = await db.prepare("SELECT id FROM chat_members WHERE channel_id = ? AND user_id = ?").bind(channelId, user.id).first();
-  return member ? channel : null;
-}
-
-async function chatMessages(db: D1Database, user: AppUser, channelId: number, url: URL) {
-  const channel = await chatChannelFor(db, user, channelId);
-  if (!channel) return json({ error: "Channel not found" }, 404);
-  const after = Number(url.searchParams.get("after")) || 0;
-  const rows = await db.prepare(
-    `SELECT m.id, m.channel_id, m.user_id, m.body, m.reply_to_id, m.attachment, m.attachment_name, m.deleted_at, m.edited_at, m.created_at,
-       ${nameSql()} AS author_name,
-       (SELECT ${nameSql("u2", "e2")} FROM chat_messages p
-          JOIN users u2 ON u2.id = p.user_id LEFT JOIN employees e2 ON e2.user_id = u2.id
-          WHERE p.id = m.reply_to_id) AS reply_to_author,
-       (SELECT p.body FROM chat_messages p WHERE p.id = m.reply_to_id) AS reply_to_body
-     FROM chat_messages m
-     JOIN users u ON u.id = m.user_id LEFT JOIN employees e ON e.user_id = u.id
-     WHERE m.channel_id = ? AND m.id > ?
-     ORDER BY m.id ASC LIMIT 200`,
-  ).bind(channelId, after).all();
-
-  // Reactions and edits can land on messages the cursor has already passed, so
-  // these are returned for the whole thread rather than only for what is new.
-  const [reactions, typing, edited] = await Promise.all([
-    db.prepare(
-      `SELECT r.message_id, r.emoji, COUNT(*) AS count,
-         MAX(CASE WHEN r.user_id = ? THEN 1 ELSE 0 END) AS mine,
-         GROUP_CONCAT(${nameSql()}, ', ') AS who
-       FROM chat_reactions r
-       JOIN chat_messages m ON m.id = r.message_id
-       JOIN users u ON u.id = r.user_id LEFT JOIN employees e ON e.user_id = u.id
-       WHERE m.channel_id = ?
-       GROUP BY r.message_id, r.emoji ORDER BY r.message_id, MIN(r.id)`,
-    ).bind(user.id, channelId).all(),
-    db.prepare(
-      `SELECT t.user_id, ${nameSql()} AS display_name FROM chat_typing t
-       JOIN users u ON u.id = t.user_id LEFT JOIN employees e ON e.user_id = u.id
-       WHERE t.channel_id = ? AND t.user_id != ?
-         AND (julianday('now') - julianday(t.updated_at)) * 86400 < 6`,
-    ).bind(channelId, user.id).all(),
-    db.prepare(
-      `SELECT id, body, edited_at, deleted_at FROM chat_messages
-       WHERE channel_id = ?
-         AND (edited_at > datetime('now', '-2 minutes') OR deleted_at > datetime('now', '-2 minutes'))`,
-    ).bind(channelId).all(),
-  ]);
-
-  return json({
-    messages: rows.results,
-    channel,
-    reactions: reactions.results,
-    typing: typing.results,
-    edited: edited.results,
-  });
-}
-
-// A heartbeat while someone is composing; six seconds of silence and it lapses.
-async function chatTyping(db: D1Database, user: AppUser, channelId: number) {
-  const channel = await chatChannelFor(db, user, channelId);
-  if (!channel) return json({ error: "Channel not found" }, 404);
-  await db.prepare(
-    `INSERT INTO chat_typing (channel_id, user_id, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(channel_id, user_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP`,
-  ).bind(channelId, user.id).run();
-  return json({ ok: true });
-}
-
-// Reactions toggle: the same emoji from the same person twice removes it.
-async function toggleReaction(db: D1Database, user: AppUser, messageId: number, body: Record<string, unknown>) {
-  const emoji = text(body.emoji);
-  if (!emoji || emoji.length > 8) return json({ error: "Pick an emoji" }, 400);
-  const row = await db.prepare("SELECT channel_id FROM chat_messages WHERE id = ?").bind(messageId).first<{ channel_id: number }>();
-  if (!row || !(await chatChannelFor(db, user, Number(row.channel_id)))) return json({ error: "Message not found" }, 404);
-
-  const existing = await db.prepare("SELECT id FROM chat_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?")
-    .bind(messageId, user.id, emoji).first<{ id: number }>();
-  if (existing) await db.prepare("DELETE FROM chat_reactions WHERE id = ?").bind(existing.id).run();
-  else await db.prepare("INSERT INTO chat_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)").bind(messageId, user.id, emoji).run();
-  return json({ ok: true, reacted: !existing });
-}
-
-// You can rewrite what you said; nobody else can.
-async function editChatMessage(db: D1Database, user: AppUser, messageId: number, body: Record<string, unknown>) {
-  const next = text(body.body);
-  if (!next) return json({ error: "Message cannot be empty" }, 400);
-  const row = await db.prepare("SELECT user_id, deleted_at FROM chat_messages WHERE id = ?").bind(messageId).first<{ user_id: number; deleted_at: string | null }>();
-  if (!row) return json({ error: "Message not found" }, 404);
-  if (Number(row.user_id) !== user.id) return json({ error: "You can only edit your own messages" }, 403);
-  if (row.deleted_at) return json({ error: "That message was deleted" }, 400);
-  await db.prepare("UPDATE chat_messages SET body = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ?").bind(next, messageId).run();
-  return json({ ok: true });
-}
-
-async function sendChatMessage(db: D1Database, user: AppUser, channelId: number, body: Record<string, unknown>) {
-  const channel = await chatChannelFor(db, user, channelId);
-  if (!channel) return json({ error: "Channel not found" }, 404);
-  const message = text(body.body);
-  const attachment = body.attachment ? docOrNull(body.attachment) : null;
-  if (!message && !attachment) return json({ error: "Write a message first" }, 400);
-
-  const result = await db.prepare(
-    "INSERT INTO chat_messages (channel_id, user_id, body, reply_to_id, attachment, attachment_name) VALUES (?, ?, ?, ?, ?, ?)",
-  ).bind(channelId, user.id, message || null, numOrNull(body.reply_to_id), attachment, text(body.attachment_name) || null).run();
-  const messageId = Number(result.meta.last_row_id);
-
-  // Sender has implicitly read their own message.
-  await db.prepare(
-    `INSERT INTO chat_members (channel_id, user_id, last_read_message_id) VALUES (?, ?, ?)
-     ON CONFLICT(channel_id, user_id) DO UPDATE SET last_read_message_id = excluded.last_read_message_id`,
-  ).bind(channelId, user.id, messageId).run();
-
-  const senderName = displayNameOf(user);
-
-  // Who did this message call out? Ids picked from the composer's @ menu are
-  // authoritative; the text scan still catches names typed out by hand.
-  const picked = Array.isArray(body.mentions) ? body.mentions.map(Number).filter(Boolean) : [];
-  const people = await db.prepare(`${chatUserSelect} WHERE u.is_active = 1 AND u.id != ?`).bind(user.id).all<{ id: number; display_name: string; email: string }>();
-  const mentioned = new Set<number>();
-  // "@everyone" / "@channel" reaches the whole channel at once, the way Slack
-  // does it. In a DM it means nothing beyond the person already there.
-  const callsEveryone = !!message && /@(everyone|channel|here)(?![\w.\-])/i.test(message);
-  for (const person of people.results) {
-    const id = Number(person.id);
-    if (callsEveryone || picked.includes(id) || (message && mentionsPerson(message, person))) mentioned.add(id);
-  }
-
-  // A DM only ever notifies the people in it, whoever the message names.
-  const members = new Set(
-    (await db.prepare("SELECT user_id FROM chat_members WHERE channel_id = ?").bind(channelId).all<{ user_id: number }>())
-      .results.map((r) => Number(r.user_id)),
-  );
-
-  if (channel.kind === "dm") {
-    for (const peerId of members) {
-      if (peerId === user.id) continue;
-      if (mentioned.has(peerId)) await notify(db, peerId, `${senderName} mentioned you`, (message || "").slice(0, 140));
-      else await notify(db, peerId, "New message", `${senderName}: ${(message || "sent an attachment").slice(0, 120)}`);
-    }
-  } else {
-    const label = callsEveryone
-      ? `${senderName} messaged everyone in #${channel.name}`
-      : `${senderName} mentioned you in #${channel.name}`;
-    for (const id of mentioned) {
-      await notify(db, id, label, (message || "sent an attachment").slice(0, 140));
-    }
-  }
-  return json({ ok: true, id: messageId });
-}
-
-function escapeRegex(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// "@Khushboo Das", "@Khushboo" and "@khushboo.das" all reach the same person.
-function mentionsPerson(message: string, person: { display_name: string; email: string }) {
-  const name = String(person.display_name).toLowerCase();
-  const candidates = [name, name.split(" ")[0], String(person.email).split("@")[0].toLowerCase()];
-  const haystack = message.toLowerCase();
-  return candidates.some((c) => c && new RegExp(`@${escapeRegex(c)}(?![\\w.\\-])`).test(haystack));
-}
-
-// Who you are allowed to @ here — everyone for a public channel, and only the
-// other person in a DM, so a mention can never leak a private thread.
-async function chatMentionable(db: D1Database, user: AppUser, channelId: number) {
-  const channel = await chatChannelFor(db, user, channelId);
-  if (!channel) return json({ error: "Channel not found" }, 404);
-  const rows = channel.kind === "dm"
-    ? await db.prepare(
-        `${chatUserSelect} JOIN chat_members cm ON cm.user_id = u.id AND cm.channel_id = ?
-         WHERE u.is_active = 1 AND u.id != ? ORDER BY display_name`,
-      ).bind(channelId, user.id).all()
-    : await db.prepare(`${chatUserSelect} WHERE u.is_active = 1 AND u.id != ? ORDER BY display_name`).bind(user.id).all();
-  return json({ people: rows.results, everyone: channel.kind === "channel" ? rows.results.length : 0 });
-}
-
-async function markChatRead(db: D1Database, user: AppUser, channelId: number, body: Record<string, unknown>) {
-  const channel = await chatChannelFor(db, user, channelId);
-  if (!channel) return json({ error: "Channel not found" }, 404);
-  const lastId = number(body.last_message_id);
-  await db.prepare(
-    `INSERT INTO chat_members (channel_id, user_id, last_read_message_id) VALUES (?, ?, ?)
-     ON CONFLICT(channel_id, user_id) DO UPDATE SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id)`,
-  ).bind(channelId, user.id, lastId).run();
-  return json({ ok: true });
-}
-
-async function deleteChatMessage(db: D1Database, user: AppUser, id: number) {
-  const message = await db.prepare("SELECT user_id FROM chat_messages WHERE id = ?").bind(id).first<{ user_id: number }>();
-  if (!message) return json({ error: "Message not found" }, 404);
-  // Authors can remove their own messages; admins can remove any.
-  if (message.user_id !== user.id && user.role !== "Superadmin") return json({ error: "Not allowed" }, 403);
-  await db.prepare("UPDATE chat_messages SET deleted_at = CURRENT_TIMESTAMP, body = NULL, attachment = NULL WHERE id = ?").bind(id).run();
-  return json({ ok: true });
-}
-
-// ---- Daily task management ----
-
-const taskPriorities = ["High", "Medium", "Low"];
-const taskStatuses = ["Pending", "In Progress", "Completed"];
-
-
-
 
 // Delete is admin-only (route sits after the requireAdmin gate).
 

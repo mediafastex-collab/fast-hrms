@@ -2,29 +2,23 @@ import {
   Banknote,
   Bell,
   BriefcaseBusiness,
-  Building2,
   CalendarCheck,
   CheckCircle2,
   Clock3,
   Download,
   FileText,
-  History,
   Menu,
   Settings,
-  Sparkles,
   LayoutDashboard,
   LogOut,
   Plus,
-  RefreshCcw,
   Search,
-  ShieldCheck,
   UserRound,
   UsersRound,
   Coffee,
   X,
   Image as ImageIcon,
   ClipboardList,
-  MessageSquare,
   Trash2,
   Pencil,
   ChevronDown,
@@ -34,7 +28,7 @@ import {
   Pause,
   Play,
 } from "lucide-react";
-import { Fragment, FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Role = "Superadmin" | "Employee";
 type View =
@@ -42,7 +36,6 @@ type View =
   | "employees"
   | "attendance"
   | "tasks"
-  | "chat"
   | "leave"
   | "payroll"
   | "reports"
@@ -83,20 +76,6 @@ type Designation = { id: number; name: string };
 type LeaveType = { id: number; name: string; is_paid: number; monthly_balance: number; yearly_balance: number };
 type Holiday = { id: number; name: string; holiday_date: string; description?: string };
 type AuditLog = { id: number; action: string; entity_type: string; entity_id?: number; details?: string; actor_email?: string; created_at: string };
-type Task = {
-  id: number;
-  employee_id: number;
-  employee_name?: string;
-  employee_code?: string;
-  task_date: string;
-  title: string;
-  company?: string | null;
-  priority: "High" | "Medium" | "Low";
-  status: "Pending" | "In Progress" | "Completed";
-  notes?: string | null;
-  assigned_by_admin?: number;
-  deadline?: string | null;
-};
 type CompanySettings = {
   company_name: string;
   company_logo_url?: string;
@@ -250,26 +229,6 @@ function workedHMS(row: AttendanceRecord): string {
   const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
   return `${h}h ${m}m ${s}s`;
-}
-
-// Break cell for logs: every break of the day, plus total time.
-function BreaksCell({ row }: { row: AttendanceRecord }) {
-  const breaks = row.breaks && row.breaks.length
-    ? row.breaks
-    : row.break_start ? [{ id: 0, break_start: row.break_start, break_end: row.break_end ?? null }] : [];
-  if (!breaks.length) return <span>-</span>;
-  const totalSec = closedBreakSeconds(row);
-  const totalMin = Math.round(totalSec / 60);
-  return (
-    <div className="space-y-0.5">
-      {breaks.map((b, i) => (
-        <div key={b.id || i} className="whitespace-nowrap">
-          {b.break_start} - {b.break_end ?? <span className="font-semibold text-amber-600">on break</span>}
-        </div>
-      ))}
-      {totalSec > 0 && <div className="text-[10px] text-ink-3">{breaks.length} break{breaks.length > 1 ? "s" : ""} · {Math.floor(totalMin / 60) ? `${Math.floor(totalMin / 60)}h ` : ""}{totalMin % 60}m</div>}
-    </div>
-  );
 }
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -450,30 +409,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   const isAdmin = user.role === "Superadmin";
   const [mobileOpen, setMobileOpen] = useState(false);
   // Collapsed rail vs. full-width nav, remembered between visits.
-  const [chatTarget, setChatTarget] = useState<number | null>(null);
-  // Polled once for the whole app so messages reach you on any screen.
   const newVersion = useNewVersionAvailable();
-  const [activeChatId, setActiveChatId] = useState<number | null>(null);
-  const { channels: chatChannels, incoming: chatIncoming } = useChatPulse(user.id, view === "chat" ? activeChatId : null);
-  const [toast, setToast] = useState<{ channelId: number; title: string; body: string } | null>(null);
-
-  // The browser tab itself carries the count, the way Gmail and WhatsApp Web do.
-  const unreadTotal = chatChannels.reduce((n, c) => n + (c.unread || 0), 0);
-  useEffect(() => { document.title = unreadTotal ? `(${unreadTotal}) Fast HRMS` : "Fast HRMS"; }, [unreadTotal]);
-
-  // On the chat screen the dock is hidden, so the preview shows as a toast.
-  useEffect(() => {
-    if (!chatIncoming) return;
-    const c = chatChannels.find((x) => x.id === chatIncoming.channelId);
-    if (!c) return;
-    setToast({
-      channelId: c.id,
-      title: channelLabel(c),
-      body: `${c.last_author ? `${c.last_author}: ` : ""}${c.last_body || "sent an attachment"}`,
-    });
-    const timer = setTimeout(() => setToast(null), 7000);
-    return () => clearTimeout(timer);
-  }, [chatIncoming?.messageId]);
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("fast_hrms_nav") !== "collapsed");
   useEffect(() => { localStorage.setItem("fast_hrms_nav", navOpen ? "open" : "collapsed"); }, [navOpen]);
   // One short list, in the order a day actually runs. Holidays, leave types,
@@ -486,7 +422,6 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
       { id: "leave" as View, label: "Leave", icon: FileText, show: true },
       { id: "payroll" as View, label: isAdmin ? "Payroll" : "Payslips", icon: Banknote, show: true },
       { id: "tasks" as View, label: "Tasks", icon: ClipboardList, show: true },
-      { id: "chat" as View, label: "Chat", icon: MessageSquare, show: true },
       { id: "reports" as View, label: "Reports", icon: Download, show: isAdmin },
       { id: "settings" as View, label: "Settings", icon: Settings, show: isAdmin },
       { id: "profile" as View, label: "My profile", icon: UserRound, show: !isAdmin },
@@ -604,7 +539,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
             only thing that needs floating here is the bell. The page title below
             becomes the top of the page, the way a document starts with its title. */}
         <header className="sticky top-0 z-10 bg-[var(--canvas)]/80 backdrop-blur-xl">
-          <div className={classNames("mx-auto flex items-center gap-2 px-5 pb-1 pt-3", view === "chat" ? "max-w-none" : "max-w-7xl")}>
+          <div className={classNames("mx-auto flex items-center gap-2 px-5 pb-1 pt-3", "max-w-7xl")}>
             <button className="btn btn-soft px-2.5 lg:hidden" onClick={() => setMobileOpen((open) => !open)} title="Menu">
               <Menu size={17} />
             </button>
@@ -632,12 +567,11 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
           </nav>
         </header>
 
-        <main key={view} className={classNames("view-enter mx-auto px-5 pb-10 pt-3", view === "chat" ? "max-w-none" : "max-w-7xl")}>
+        <main key={view} className={classNames("view-enter mx-auto px-5 pb-10 pt-3", "max-w-7xl")}>
           {view === "dashboard" ? user.role === "Superadmin" ? <AdminDashboard onView={choose} /> : <EmployeeDashboard onView={choose} /> : null}
           {view === "employees" && isAdmin ? <Employees /> : null}
           {view === "attendance" ? <Attendance isAdmin={isAdmin} /> : null}
           {view === "tasks" ? <Tasks isAdmin={isAdmin} /> : null}
-          {view === "chat" ? <Chat currentUserId={user.id} initialChannelId={chatTarget} onActiveChannel={setActiveChatId} /> : null}
           {view === "leave" ? <Leave isAdmin={isAdmin} /> : null}
           {view === "payroll" ? <Payroll isAdmin={isAdmin} /> : null}
           {view === "reports" && isAdmin ? <Reports /> : null}
@@ -646,16 +580,6 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
         </main>
       </div>
 
-      {view === "chat" && toast ? (
-        <ChatToast title={toast.title} body={toast.body}
-          onOpen={() => { setChatTarget(toast.channelId); setToast(null); }}
-          onClose={() => setToast(null)} />
-      ) : null}
-
-      {/* The dock stands in for chat everywhere except the chat screen itself. */}
-      {view !== "chat" ? (
-        <MessengerDock channels={chatChannels} incoming={chatIncoming} onOpen={(id) => { setChatTarget(id); choose("chat"); }} />
-      ) : null}
     </div>
   );
 }
@@ -1972,118 +1896,8 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-type ChatChannel = {
-  id: number; name: string | null; kind: "channel" | "dm"; unread: number;
-  last_body?: string | null; last_at?: string | null; last_author?: string | null;
-  last_user_id?: number | null; last_message_id?: number | null;
-  peer_name?: string | null; peer_id?: number | null; peer_presence?: string | null;
-  peer_last_seen?: string | null;
-};
-type ChatMessage = {
-  id: number; channel_id: number; user_id: number; body: string | null;
-  reply_to_id?: number | null; reply_to_author?: string | null; reply_to_body?: string | null;
-  attachment?: string | null; attachment_name?: string | null; deleted_at?: string | null;
-  edited_at?: string | null; created_at: string; author_name: string;
-};
-type ChatReaction = { message_id: number; emoji: string; count: number; mine: number; who?: string | null };
-type TypingPerson = { user_id: number; display_name: string };
-
-const REACTION_CHOICES = ["👍", "❤️", "🎉", "😄", "✅", "👀"];
-
-// A stable colour per person, so several people in a channel stay apart at a
-// glance rather than all sharing one tint.
-const AVATAR_TONES = [
-  "bg-orange-100 text-orange-700",
-  "bg-sky-100 text-sky-700",
-  "bg-emerald-100 text-emerald-700",
-  "bg-violet-100 text-violet-700",
-  "bg-rose-100 text-rose-700",
-  "bg-amber-100 text-amber-800",
-  "bg-teal-100 text-teal-700",
-  "bg-fuchsia-100 text-fuchsia-700",
-];
-const NAME_TONES = [
-  "text-orange-700", "text-sky-700", "text-emerald-700", "text-violet-700",
-  "text-rose-700", "text-amber-800", "text-teal-700", "text-fuchsia-700",
-];
-
-function toneIndex(key: string | number) {
-  const text = String(key);
-  let hash = 0;
-  for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
-  return hash % AVATAR_TONES.length;
-}
-
-// Turn bare URLs into links; everything else stays plain text.
-function linkify(nodes: React.ReactNode[]): React.ReactNode[] {
-  return nodes.flatMap((node, outer) => {
-    if (typeof node !== "string") return [node];
-    return node.split(/(https?:\/\/[^\s<]+)/g).map((part, i) => (
-      /^https?:\/\//.test(part)
-        ? <a key={`l${outer}-${i}`} href={part} target="_blank" rel="noreferrer noopener" className="underline decoration-slate-300 underline-offset-2 hover:text-brand">{part}</a>
-        : part
-    ));
-  });
-}
-type ChatPerson = { id: number; email: string; role: string; display_name: string; presence?: string | null; last_seen_at?: string | null };
-
-// Green / amber / grey, the way every chat app signals presence — plus a cup
-// for someone on a break, which is a different thing from merely being idle.
-function PresenceDot({ status, className }: { status?: string | null; className?: string }) {
-  if (status === "break") {
-    return (
-      <span title={presenceLabel(status)}
-        className={classNames("inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-sky-500 ring-2 ring-white", className)}>
-        <Coffee size={8} className="text-white" strokeWidth={3} />
-      </span>
-    );
-  }
-  const tone = status === "online" ? "bg-emerald-500" : status === "away" ? "bg-amber-400" : "bg-ink-4";
-  return <span title={presenceLabel(status)} className={classNames("inline-block h-2.5 w-2.5 rounded-full ring-2 ring-white", tone, className)} />;
-}
-
-function presenceLabel(status?: string | null) {
-  if (status === "break") return "On break";
-  return status === "online" ? "Online" : status === "away" ? "Away" : "Offline";
-}
-
-// A short two-tone ping, synthesised so there is no audio file to ship. Browsers
-// only allow audio after the user has interacted with the page, which by the
-// time a message arrives they have.
-let audioContext: AudioContext | null = null;
-function soundEnabled() {
-  return localStorage.getItem("fast_hrms_sound") !== "off";
-}
-function playPing() {
-  if (!soundEnabled()) return;
-  try {
-    audioContext ??= new (window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-    if (audioContext.state === "suspended") void audioContext.resume();
-    const now = audioContext.currentTime;
-    const osc = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    osc.connect(gain); gain.connect(audioContext.destination);
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(880, now);
-    osc.frequency.setValueAtTime(1170, now + 0.08);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
-    osc.start(now); osc.stop(now + 0.32);
-  } catch { /* no audio device, or blocked — the toast still shows */ }
-}
-
-// Every poll in this app costs database reads, and they run for as long as a tab
-// stays open. These are deliberately slower than "feels instant" would suggest:
-// chat still updates within a few seconds, while a tab left open on a second
-// monitor all day costs a fraction of what it used to.
-const POLL = {
-  messages: 4000,      // the open conversation
-  chatRail: 20000,     // unread badges in the conversation list
-  pulseVisible: 10000, // app-wide chat check: drives the dock and the alerts
-  pulseHidden: 60000,  // slower, but still running — that is what raises alerts
-  notifications: 60000,
-};
+// The bell polls about once a minute; nothing else in the app polls.
+const POLL = { notifications: 60000 };
 
 // Runs `fn` on a timer, at a slower cadence once the tab is out of sight, and
 // catches up the moment it comes back. A hiddenMs of 0 means "stop while hidden".
@@ -2110,47 +1924,6 @@ function usePolling(fn: () => void, visibleMs: number, hiddenMs = 0) {
   }, [visibleMs, hiddenMs]);
 }
 
-// Registered once, on load. Notifications posted through the registration reach
-// macOS Notification Center reliably; `new Notification()` from the page often
-// does not, which is why alerts appeared to vanish even with permission granted.
-let swRegistration: ServiceWorkerRegistration | null = null;
-if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js")
-    .then((reg) => { swRegistration = reg; })
-    .catch(() => { /* fall back to the page-level notification */ });
-}
-
-async function notifyBrowser(title: string, body: string, tag: string, channelId?: number) {
-  if (typeof Notification === "undefined" || Notification.permission !== "granted") return "blocked";
-  // A tag per message, plus renotify, so a second message alerts again rather
-  // than silently replacing the first.
-  const options: NotificationOptions & { renotify?: boolean } = {
-    body: body.slice(0, 140),
-    tag: `chat-${tag}`,
-    renotify: true,
-    icon: "/notification-icon.png",
-    badge: "/notification-icon.png",
-    data: { channelId },
-  };
-  try {
-    const reg = swRegistration ?? (await navigator.serviceWorker?.ready);
-    if (reg) {
-      await reg.showNotification(title, options);
-      // If Chrome accepted it, it is listed as displayed. An empty list means
-      // something below the browser refused it — almost always macOS.
-      const shown = await reg.getNotifications({ tag: options.tag });
-      return shown.length ? "service worker" : "service worker, but macOS did not display it";
-    }
-  } catch { /* fall through to the page-level constructor */ }
-  try {
-    const n = new Notification(title, options);
-    n.onclick = () => { window.focus(); n.close(); };
-    return "browser";
-  } catch { return "failed"; }
-}
-
-// A tab left open all day keeps running the bundle it first loaded, so a fix can
-// ship without ever reaching it. Compare the served bundle against ours.
 function useNewVersionAvailable() {
   const [stale, setStale] = useState(false);
 
@@ -2178,249 +1951,7 @@ function useNewVersionAvailable() {
   return stale;
 }
 
-// The in-app version of the same alert. macOS and Chrome can both swallow a
-// desktop notification without telling the page, so the preview also shows here.
-function ChatToast({ title, body, onOpen, onClose }: { title: string; body: string; onOpen: () => void; onClose: () => void }) {
-  return (
-    <div className="no-print fixed bottom-6 right-6 z-50 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-line bg-white shadow-xl">
-      <div className="flex items-start gap-3 p-3">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">
-          {initialsOf(title.replace(/^#/, ""))}
-        </span>
-        <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
-          <span className="block truncate text-sm font-semibold text-ink">{title}</span>
-          <span className="mt-0.5 block truncate text-xs text-ink-3">{body}</span>
-        </button>
-        <button type="button" aria-label="Dismiss" className="shrink-0 text-ink-4 hover:text-ink" onClick={onClose}><X size={15} /></button>
-      </div>
-    </div>
-  );
-}
-
-// One poll for the whole app: it feeds the messenger dock and raises a desktop
-// notification whenever someone else's message lands.
-function useChatPulse(currentUserId: number, mutedChannelId: number | null) {
-  const [channels, setChannels] = useState<ChatChannel[]>([]);
-  const [incoming, setIncoming] = useState<{ channelId: number; messageId: number } | null>(null);
-  const mutedRef = useRef(mutedChannelId);
-  const seen = useRef(new Map<number, number>());
-  const primed = useRef(false);
-  mutedRef.current = mutedChannelId;
-
-  useEffect(() => {
-    let alive = true;
-    async function tick() {
-      try {
-        const d = await api<{ channels: ChatChannel[] }>("/chat/channels");
-        if (!alive) return;
-        setChannels(d.channels);
-        for (const c of d.channels) {
-          const last = Number(c.last_message_id ?? 0);
-          const before = seen.current.get(c.id);
-          seen.current.set(c.id, last);
-          // Never announce the backlog that was already there when the tab opened.
-          if (!primed.current || before === undefined || last <= before) continue;
-          if (Number(c.last_user_id) === currentUserId) continue;
-          // Reading the chat screen right now is its own notification.
-          // The thread you are looking at right now announces itself.
-          // Quiet only for the thread genuinely in front of you — another window
-          // on top means you are not reading it.
-          if (mutedRef.current === c.id && document.visibilityState === "visible" && document.hasFocus()) continue;
-          setIncoming({ channelId: c.id, messageId: last });
-          playPing();
-          notifyBrowser(channelLabel(c), `${c.last_author ?? "Someone"}: ${c.last_body || "sent an attachment"}`, `${c.id}-${last}`, c.id);
-        }
-        primed.current = true;
-      } catch { /* logged out or offline — try again next tick */ }
-    }
-    tick();
-    // Keeps running while hidden — that is how a message reaches you when you
-    // are not looking — but a minute apart rather than every few seconds.
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const schedule = () => {
-      if (timer) clearInterval(timer);
-      const hidden = document.visibilityState !== "visible";
-      timer = setInterval(tick, hidden ? POLL.pulseHidden : POLL.pulseVisible);
-    };
-    const onVisible = () => { if (document.visibilityState === "visible") tick(); schedule(); };
-    schedule();
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", onVisible);
-    return () => {
-      alive = false;
-      if (timer) clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", onVisible);
-    };
-  }, [currentUserId]);
-
-  return { channels, incoming };
-}
-
-// Asking for notification permission has to come from a click, so this is a
-// button rather than something the app does on load.
-function SoundToggle() {
-  const [on, setOn] = useState(soundEnabled());
-  return (
-    <button type="button"
-      onClick={() => { const next = !on; localStorage.setItem("fast_hrms_sound", next ? "on" : "off"); setOn(next); if (next) playPing(); }}
-      className="text-xs font-semibold text-ink-3 hover:text-brand">
-      Sound {on ? "on" : "off"}
-    </button>
-  );
-}
-
-function NotificationOptIn({ compact }: { compact?: boolean }) {
-  const [permission, setPermission] = useState(typeof Notification === "undefined" ? "unsupported" : Notification.permission);
-  const [tested, setTested] = useState("");
-  if (permission === "unsupported") return null;
-
-  // Permission can read as granted while macOS or Chrome quietly drops the
-  // notification, so give people a one-click way to find out which it is.
-  if (permission === "granted") {
-    return (
-      <button type="button"
-        onClick={async () => {
-          const via = await notifyBrowser("Fast HRMS", "Test notification — desktop alerts are working.", `test-${Date.now()}`);
-          setTested(via === "failed"
-            ? "Could not post a notification from this browser."
-            : `Sent via ${via}. If no banner appeared, open macOS Notification Center — if it is listed there, set Chrome's alert style to Banners in System Settings → Notifications → Google Chrome.`);
-        }}
-        className={classNames("max-w-md text-left text-xs font-semibold text-ink-3 hover:text-brand", compact && "w-full px-4 py-2")}>
-        {tested || "Send a test notification"}
-      </button>
-    );
-  }
-
-  if (permission === "denied") {
-    return (
-      <p className={classNames("text-xs text-ink-3", compact && "px-4 py-2")}>
-        Desktop notifications are blocked for this site. Turn them back on in your browser's site settings (the icon beside the address bar).
-      </p>
-    );
-  }
-
-  return (
-    <button type="button" onClick={async () => setPermission(await Notification.requestPermission())}
-      className={classNames(
-        "flex items-center gap-2 text-xs font-semibold text-brand",
-        compact ? "w-full border-b border-line bg-orange-50 px-4 py-2 text-left" : "rounded-full border border-brand/40 bg-orange-50 px-3 py-1.5",
-      )}>
-      <Bell size={13} />Turn on desktop notifications
-    </button>
-  );
-}
-
-// Messenger-style dock: a bubble with the unread count that opens a preview of
-// recent conversations and drops you into the full chat screen.
-function MessengerDock({ channels, incoming, onOpen }: {
-  channels: ChatChannel[]; incoming: { channelId: number; messageId: number } | null; onOpen: (id: number) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  // A new message pops the panel open by itself.
-  useEffect(() => { if (incoming) setOpen(true); }, [incoming?.messageId]);
-  const unread = channels.reduce((n, c) => n + (c.unread || 0), 0);
-  const recent = [...channels]
-    .filter((c) => c.last_at)
-    .sort((a, b) => String(b.last_at).localeCompare(String(a.last_at)))
-    .slice(0, 6);
-
-  return (
-    <div className="no-print fixed bottom-6 right-6 z-40">
-      {open ? (
-        <div className="mb-3 w-80 max-w-[90vw] overflow-hidden rounded-2xl border border-line bg-white shadow-xl">
-          <div className="flex items-center justify-between border-b border-line px-4 py-3">
-            <h3 className="font-bold text-ink">Messages</h3>
-            <button type="button" aria-label="Close messages" className="text-ink-4 hover:text-ink" onClick={() => setOpen(false)}><X size={16} /></button>
-          </div>
-          <NotificationOptIn compact />
-          <div className="max-h-80 overflow-y-auto">
-            {recent.length ? recent.map((c) => (
-              <button key={c.id} type="button" onClick={() => { setOpen(false); onOpen(c.id); }}
-                className="flex w-full items-start gap-3 border-b border-line px-4 py-3 text-left last:border-0 hover:bg-sunk">
-                <span className="relative shrink-0">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">
-                    {c.kind === "dm" ? initialsOf(c.peer_name || "?") : "#"}
-                  </span>
-                  {c.kind === "dm" ? <PresenceDot status={c.peer_presence} className="absolute -bottom-0.5 -right-0.5" /> : null}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="truncate text-sm font-semibold text-ink">{channelLabel(c)}</span>
-                    {c.unread ? <span className="ml-auto shrink-0 rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{c.unread}</span> : null}
-                  </span>
-                  <span className="mt-0.5 block truncate text-xs text-ink-3">
-                    {c.last_author ? `${c.last_author}: ` : ""}{c.last_body || "Attachment"}
-                  </span>
-                  <span className="mt-0.5 block text-[10px] text-ink-4">{c.last_at ? chatTime(c.last_at) : ""}</span>
-                </span>
-              </button>
-            )) : <p className="px-4 py-8 text-center text-sm text-ink-3">No conversations yet.</p>}
-          </div>
-        </div>
-      ) : null}
-      <button type="button" onClick={() => setOpen((v) => !v)} title="Messages"
-        className="relative flex h-14 w-14 items-center justify-center rounded-full bg-brand text-white shadow-lg transition hover:opacity-90">
-        <MessageSquare size={22} />
-        {unread ? <span className="absolute -right-0.5 -top-0.5 flex h-6 min-w-6 items-center justify-center rounded-full bg-rose-500 px-1 text-[11px] font-bold text-white ring-2 ring-white">{unread > 9 ? "9+" : unread}</span> : null}
-      </button>
-    </div>
-  );
-}
-
-function channelLabel(c: ChatChannel) {
-  return c.kind === "dm" ? (c.peer_name || "Direct message") : `#${c.name}`;
-}
-
-// Stored as UTC "YYYY-MM-DD HH:MM:SS".
-function parseTs(ts: string) {
-  const d = new Date(ts.replace(" ", "T") + "Z");
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function clockTime(ts: string) {
-  return parseTs(ts)?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) ?? ts.slice(11, 16);
-}
-
-// Which day a message belongs to, in the reader's own timezone.
-function dayKey(ts: string) {
-  return parseTs(ts)?.toDateString() ?? ts.slice(0, 10);
-}
-
-function dayLabel(ts: string) {
-  const d = parseTs(ts);
-  if (!d) return ts.slice(0, 10);
-  const today = new Date();
-  const yesterday = new Date(today.getTime() - 86400000);
-  if (d.toDateString() === today.toDateString()) return "Today";
-  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-  return d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
-}
-
-// "just now" / "12m ago" / "3h ago" / "yesterday 4:30 PM" / "3 Sep 4:30 PM"
-function sinceLabel(ts?: string | null) {
-  const d = ts ? parseTs(ts) : null;
-  if (!d) return "a while ago";
-  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const today = new Date();
-  const yesterday = new Date(today.getTime() - 86400000);
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  if (d.toDateString() === today.toDateString()) return `${Math.floor(mins / 60)}h ago`;
-  if (d.toDateString() === yesterday.toDateString()) return `yesterday ${time}`;
-  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
-}
-
-// Online while the heartbeat is fresh; otherwise say when they were last around.
-function lastSeenLabel(presence?: string | null, lastSeenAt?: string | null) {
-  if (presence === "break") return "On break";
-  if (presence === "online") return "Online";
-  if (!lastSeenAt) return "Offline";
-  return `Last seen ${sinceLabel(lastSeenAt)}`;
-}
-
-function chatTime(ts: string) {
+function shortTime(ts: string) {
   // Stored as UTC "YYYY-MM-DD HH:MM:SS"; render in the viewer's local time.
   const d = new Date(ts.replace(" ", "T") + "Z");
   if (Number.isNaN(d.getTime())) return ts.slice(11, 16);
@@ -2435,7 +1966,7 @@ function initialsOf(name: string) {
 
 type AppNotification = { id: number; title: string; message: string; is_read: number; created_at: string };
 
-// Header bell — surfaces @mentions, DMs, leave decisions and salary updates.
+// Header bell — leave decisions, salary updates, task assignments, missed check-outs.
 function NotificationBell() {
   const [items, setItems] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
@@ -2485,779 +2016,6 @@ function NotificationBell() {
   );
 }
 
-// People without a full name fall back to their email, and "@aagam" reads a lot
-// better than "@aagam@fastexmedia.com" — the server matches the handle either way.
-function mentionToken(displayName: string) {
-  return displayName.includes("@") ? displayName.split("@")[0] : displayName;
-}
-
-// Tint any "@Name" that matches a real teammate, so a mention is obvious in the
-// thread and a mistyped one visibly isn't one.
-function highlightMentions(body: string, people: ChatPerson[], onBrand = false) {
-  const names = [
-    "everyone", "channel", "here",
-    ...people.flatMap((p) => [p.display_name, mentionToken(p.display_name), p.display_name.split(" ")[0]]),
-  ].filter(Boolean);
-  const unique = [...new Set(names)].sort((a, b) => b.length - a.length).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const parts = body.split(new RegExp(`(@(?:${unique.join("|")})(?![\\w.\\-]))`, "gi"));
-  return linkify(parts.map((part, i) => (part.startsWith("@")
-    ? <span key={i} className={classNames("rounded px-1 font-semibold", onBrand ? "bg-white/25 text-white" : "bg-orange-100 text-orange-700")}>{part}</span>
-    : part)));
-}
-
-// Resize to something a chat bubble can actually use and re-encode as JPEG.
-// Screenshots come off the clipboard several megabytes large; this brings a
-// typical one to a couple of hundred KB without a visible loss at display size.
-function shrinkImage(file: File, maxEdge = 1600, quality = 0.85): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) { reject(new Error("no canvas")); return; }
-      // JPEG has no alpha, so paint a white ground first — otherwise anything
-      // transparent comes out black.
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL("image/jpeg", quality));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("unreadable image")); };
-    img.src = url;
-  });
-}
-
-function Chat({ currentUserId, initialChannelId, onActiveChannel }: {
-  currentUserId: number; initialChannelId?: number | null; onActiveChannel?: (id: number | null) => void;
-}) {
-  const [channels, setChannels] = useState<ChatChannel[]>([]);
-  const [people, setPeople] = useState<ChatPerson[]>([]);
-  const [activeId, setActiveId] = useState<number | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [draft, setDraft] = useState("");
-  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
-  const [file, setFile] = useState<{ data: string; name: string } | null>(null);
-  const [newChannelOpen, setNewChannelOpen] = useState(false);
-  const [newChannelName, setNewChannelName] = useState("");
-  const [dmOpen, setDmOpen] = useState(false);
-  const [message, setMessage] = useState("");
-  const [sending, setSending] = useState(false);
-  // @mention state: who can be named here, what's being typed after the "@",
-  // and the ids picked from the menu so the server never has to guess.
-  const [mentionable, setMentionable] = useState<ChatPerson[]>([]);
-  const [canMentionEveryone, setCanMentionEveryone] = useState(0);
-  const [reactions, setReactions] = useState<ChatReaction[]>([]);
-  const [typing, setTyping] = useState<TypingPerson[]>([]);
-  const [editing, setEditing] = useState<{ id: number; body: string } | null>(null);
-  const [pickerFor, setPickerFor] = useState<number | null>(null);
-  const lastTypingPing = useRef(0);
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-  const [mentionIdx, setMentionIdx] = useState(0);
-  const [mentionIds, setMentionIds] = useState<number[]>([]);
-  const endRef = useRef<HTMLDivElement | null>(null);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const draftRef = useRef<HTMLTextAreaElement | null>(null);
-  // Opening a thread should land at the live end of it, not scroll there from
-  // the top; and a new message should not yank you down while you read history.
-  const jumpOnNextRender = useRef(true);
-  const [atBottom, setAtBottom] = useState(true);
-  const atBottomRef = useRef(true);
-  const [unseenBelow, setUnseenBelow] = useState(false);
-  const [search, setSearch] = useState("");
-  const [mobilePane, setMobilePane] = useState<"list" | "thread">("list");
-  const activeIdRef = useRef<number | null>(null);
-  const messagesRef = useRef<ChatMessage[]>([]);
-  activeIdRef.current = activeId;
-  messagesRef.current = messages;
-
-  // The @ menu: everyone-at-once first in a channel, then the people in it.
-  const mentionMatches = useMemo(() => {
-    if (mentionQuery === null) return [];
-    const q = mentionQuery.toLowerCase();
-    const everyone = canMentionEveryone && "everyone".startsWith(q)
-      ? [{ id: -1, display_name: "everyone", email: "", role: "", hint: `Notify all ${canMentionEveryone} members` }]
-      : [];
-    const people = mentionable
-      .filter((p) => p.display_name.toLowerCase().includes(q))
-      .map((p) => ({ ...p, hint: undefined as string | undefined }));
-    return [...everyone, ...people].slice(0, 6);
-  }, [mentionQuery, mentionable, canMentionEveryone]);
-
-  // Tell the server we are composing, at most once every couple of seconds.
-  function pingTyping() {
-    const now = Date.now();
-    if (!activeId || now - lastTypingPing.current < 2500) return;
-    lastTypingPing.current = now;
-    api(`/chat/channels/${activeId}/typing`, { method: "POST" }).catch(() => undefined);
-  }
-
-  async function toggleReaction(messageId: number, emoji: string) {
-    setPickerFor(null);
-    // Show it straight away; the next poll confirms it.
-    setReactions((prev) => {
-      const found = prev.find((r) => r.message_id === messageId && r.emoji === emoji);
-      if (!found) return [...prev, { message_id: messageId, emoji, count: 1, mine: 1 }];
-      const count = found.count + (found.mine ? -1 : 1);
-      return count <= 0
-        ? prev.filter((r) => r !== found)
-        : prev.map((r) => (r === found ? { ...r, count, mine: found.mine ? 0 : 1 } : r));
-    });
-    await api(`/chat/messages/${messageId}/reactions`, { method: "POST", body: JSON.stringify({ emoji }) }).catch(() => undefined);
-    if (activeId) await loadMessages(activeId, true);
-  }
-
-  async function saveEdit() {
-    if (!editing?.body.trim()) { setEditing(null); return; }
-    const { id, body } = editing;
-    setEditing(null);
-    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, body, edited_at: new Date().toISOString() } : m)));
-    await api(`/chat/messages/${id}`, { method: "PUT", body: JSON.stringify({ body }) }).catch(() => undefined);
-  }
-
-  function onDraftChange(value: string, caret: number) {
-    setDraft(value);
-    if (value.trim()) pingTyping();
-    const token = value.slice(0, caret).match(/@([\w.\-]*)$/);
-    setMentionQuery(token ? token[1] : null);
-    setMentionIdx(0);
-  }
-
-  function insertMention(person: ChatPerson) {
-    const area = draftRef.current;
-    const caret = area?.selectionStart ?? draft.length;
-    const before = draft.slice(0, caret).replace(/@([\w.\-]*)$/, `@${mentionToken(person.display_name)} `);
-    setDraft(before + draft.slice(caret));
-    // "@everyone" is resolved from the text on the server, not from an id.
-    if (person.id > 0) setMentionIds((ids) => (ids.includes(person.id) ? ids : [...ids, person.id]));
-    setMentionQuery(null);
-    requestAnimationFrame(() => { area?.focus(); area?.setSelectionRange(before.length, before.length); });
-  }
-
-  async function loadChannels() {
-    try {
-      const d = await api<{ channels: ChatChannel[] }>("/chat/channels");
-      setChannels(d.channels);
-      if (!activeIdRef.current && d.channels.length) setActiveId(d.channels[0].id);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to load channels");
-    }
-  }
-
-  async function loadMessages(channelId: number, incremental = false) {
-    try {
-      // Read the cursor from the ref, not from a render-time closure: the 3s poll
-      // and the load right after sending used to compute the same "after" and
-      // each append the same row, which is why a sent message appeared twice.
-      const current = messagesRef.current;
-      const after = incremental && current.length ? current[current.length - 1].id : 0;
-      const d = await api<{ messages: ChatMessage[]; reactions?: ChatReaction[]; typing?: TypingPerson[]; edited?: ChatMessage[] }>(
-        `/chat/channels/${channelId}/messages?after=${after}`,
-      );
-      setReactions(d.reactions ?? []);
-      setTyping(d.typing ?? []);
-      // Edits and deletions land on messages the cursor has already passed.
-      if (d.edited?.length) {
-        const patches = new Map(d.edited.map((m) => [m.id, m]));
-        setMessages((prev) => prev.map((m) => {
-          const patch = patches.get(m.id);
-          return patch && (patch.body !== m.body || patch.edited_at !== m.edited_at || patch.deleted_at !== m.deleted_at)
-            ? { ...m, body: patch.body, edited_at: patch.edited_at, deleted_at: patch.deleted_at }
-            : m;
-        }));
-      }
-      if (!d.messages.length) return;
-      setMessages((prev) => {
-        if (!incremental) return d.messages;
-        const known = new Set(prev.map((m) => m.id));
-        const fresh = d.messages.filter((m) => !known.has(m.id));
-        return fresh.length ? [...prev, ...fresh] : prev;
-      });
-      const lastId = d.messages[d.messages.length - 1].id;
-      await api(`/chat/channels/${channelId}/read`, { method: "POST", body: JSON.stringify({ last_message_id: lastId }) }).catch(() => undefined);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to load messages");
-    }
-  }
-
-  useEffect(() => {
-    loadChannels();
-    api<{ people: ChatPerson[] }>("/chat/directory").then((d) => setPeople(d.people)).catch(() => undefined);
-  }, []);
-
-  // Opened from the messenger dock or a toast — jump straight to that conversation.
-  useEffect(() => { if (initialChannelId) setActiveId(initialChannelId); }, [initialChannelId]);
-
-  // Tell the shell which thread is open so it stays quiet about that one only.
-  useEffect(() => { onActiveChannel?.(activeId); return () => onActiveChannel?.(null); }, [activeId]);
-
-  useEffect(() => {
-    if (!activeId) return;
-    setMessages([]);
-    setMentionIds([]); setMentionQuery(null);
-    jumpOnNextRender.current = true;
-    setUnseenBelow(false);
-    loadMessages(activeId);
-    setReactions([]); setTyping([]); setEditing(null); setPickerFor(null);
-    api<{ people: ChatPerson[]; everyone?: number }>(`/chat/channels/${activeId}/mentionable`)
-      .then((d) => { setMentionable(d.people); setCanMentionEveryone(d.everyone ?? 0); })
-      .catch(() => { setMentionable([]); setCanMentionEveryone(0); });
-  }, [activeId]);
-
-  // The open conversation is what has to feel live. The rail only carries unread
-  // badges, and the shell's own pulse already watches for new messages, so it
-  // can tick far less often — it was the single most expensive poll in the app.
-  usePolling(() => { if (activeIdRef.current) loadMessages(activeIdRef.current, true); }, POLL.messages);
-  usePolling(loadChannels, POLL.chatRail);
-
-  function scrollToEnd(smooth: boolean) {
-    const box = scrollRef.current;
-    if (!box) return;
-    box.scrollTo({ top: box.scrollHeight, behavior: smooth ? "smooth" : "auto" });
-    if (!smooth) return;
-    // Smooth scrolling is a no-op in some browsers and whenever the reader has
-    // asked for reduced motion, so make sure we land at the bottom regardless.
-    window.setTimeout(() => {
-      // Don't fight the reader: if they scrolled away in the meantime, leave them be.
-      if (!atBottomRef.current) return;
-      if (box.scrollHeight - box.scrollTop - box.clientHeight > 8) box.scrollTo({ top: box.scrollHeight, behavior: "auto" });
-    }, 400);
-  }
-
-  // Layout effect, not a plain one: the jump has to happen after the DOM is
-  // laid out but before the browser paints, or you see it travel from the top.
-  useLayoutEffect(() => {
-    if (!messages.length) return;
-    if (jumpOnNextRender.current) {
-      jumpOnNextRender.current = false;
-      atBottomRef.current = true;
-      scrollToEnd(false);
-      // Images and fonts can settle a frame later and change the height.
-      requestAnimationFrame(() => scrollToEnd(false));
-      setUnseenBelow(false);
-      return;
-    }
-    const mine = messages[messages.length - 1]?.user_id === currentUserId;
-    if (mine || atBottom) { scrollToEnd(true); setUnseenBelow(false); }
-    else setUnseenBelow(true);
-  }, [messages.length]);
-
-  function onScroll() {
-    const box = scrollRef.current;
-    if (!box) return;
-    const near = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
-    atBottomRef.current = near;
-    setAtBottom(near);
-    if (near) setUnseenBelow(false);
-  }
-
-  async function send(e: FormEvent) {
-    e.preventDefault();
-    if (!activeId || (!draft.trim() && !file)) return;
-    setSending(true);
-    // Only send ids whose @name survived any later editing of the draft.
-    const mentions = mentionIds.filter((id) => {
-      const p = mentionable.find((x) => x.id === id);
-      return p && draft.toLowerCase().includes(`@${mentionToken(p.display_name).toLowerCase()}`);
-    });
-    try {
-      await api(`/chat/channels/${activeId}/messages`, {
-        method: "POST",
-        body: JSON.stringify({ body: draft, mentions, reply_to_id: replyTo?.id ?? null, attachment: file?.data ?? null, attachment_name: file?.name ?? null }),
-      });
-      setDraft(""); setReplyTo(null); setFile(null);
-      setMentionIds([]); setMentionQuery(null);
-      await loadMessages(activeId, true);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to send");
-    }
-    setSending(false);
-  }
-
-  // A screenshot off the clipboard is routinely 2-5MB of PNG, which the old
-  // flat size check simply rejected. Images are resized and re-encoded instead,
-  // so pasting one just works; anything that is not an image still has to fit.
-  async function pickFile(f?: File | null) {
-    setMessage("");
-    if (!f) return;
-    if (!f.type.startsWith("image/")) {
-      if (f.size > 1.5 * 1024 * 1024) { setMessage("Files must be under 1.5MB. Images are compressed automatically."); return; }
-      const reader = new FileReader();
-      reader.onload = () => setFile({ data: String(reader.result), name: f.name });
-      reader.readAsDataURL(f);
-      return;
-    }
-    try {
-      setFile({ data: await shrinkImage(f), name: f.name || "image.jpg" });
-    } catch {
-      setMessage("That image could not be read.");
-    }
-  }
-
-  // Drag anywhere over the thread to attach; the counter guards against the
-  // dragleave that fires when the cursor crosses a child element.
-  const dragDepth = useRef(0);
-  const [dragActive, setDragActive] = useState(false);
-
-  function onDragEnter(e: React.DragEvent) {
-    if (!e.dataTransfer.types.includes("Files")) return;
-    e.preventDefault();
-    dragDepth.current += 1;
-    setDragActive(true);
-  }
-  function onDragLeave(e: React.DragEvent) {
-    if (!e.dataTransfer.types.includes("Files")) return;
-    dragDepth.current -= 1;
-    if (dragDepth.current <= 0) { dragDepth.current = 0; setDragActive(false); }
-  }
-  function onDrop(e: React.DragEvent) {
-    if (!e.dataTransfer.files?.length) return;
-    e.preventDefault();
-    dragDepth.current = 0;
-    setDragActive(false);
-    pickFile(e.dataTransfer.files[0]);
-  }
-
-  // Cmd+V of a screenshot, or of an image copied from anywhere else.
-  function onPaste(e: React.ClipboardEvent) {
-    const item = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === "file" && i.type.startsWith("image/"));
-    if (!item) return;
-    const blob = item.getAsFile();
-    if (!blob) return;
-    e.preventDefault();
-    // A clipboard bitmap arrives unnamed or as a generic "image.png"; give it a
-    // dated name so the thread is readable, but keep a real filename if there is one.
-    const generic = !blob.name || /^image\.\w+$/i.test(blob.name);
-    const name = generic ? `screenshot-${new Date().toISOString().slice(0, 16).replace("T", " ")}.jpg` : blob.name;
-    pickFile(new File([blob], name, { type: blob.type }));
-  }
-
-  async function startDm(userId: number) {
-    const res = await api<{ id: number }>("/chat/channels", { method: "POST", body: JSON.stringify({ kind: "dm", user_id: userId }) });
-    setDmOpen(false);
-    await loadChannels();
-    setActiveId(res.id);
-  }
-
-  async function createChannel(e: FormEvent) {
-    e.preventDefault();
-    if (!newChannelName.trim()) return;
-    try {
-      const res = await api<{ id: number }>("/chat/channels", { method: "POST", body: JSON.stringify({ kind: "channel", name: newChannelName }) });
-      setNewChannelOpen(false); setNewChannelName("");
-      await loadChannels();
-      setActiveId(res.id);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to create channel");
-    }
-  }
-
-  async function removeMessage(id: number) {
-    if (!window.confirm("Delete this message?")) return;
-    await api(`/chat/messages/${id}`, { method: "DELETE" });
-    if (activeId) { setMessages([]); await loadMessages(activeId); }
-  }
-
-  const active = channels.find((c) => c.id === activeId) ?? null;
-  const groupChannels = channels.filter((c) => c.kind === "channel");
-  const dms = channels.filter((c) => c.kind === "dm");
-
-  // Slack groups a run of messages from one person under a single heading.
-  const rows = useMemo(() => {
-    const out: Array<{ kind: "day"; key: string; label: string } | { kind: "msg"; key: string; message: ChatMessage; grouped: boolean }> = [];
-    let previous: ChatMessage | null = null;
-    for (const m of messages) {
-      if (!previous || dayKey(previous.created_at) !== dayKey(m.created_at)) {
-        out.push({ kind: "day", key: `day-${m.id}`, label: dayLabel(m.created_at) });
-        previous = null;
-      }
-      const gap = previous ? (parseTs(m.created_at)?.getTime() ?? 0) - (parseTs(previous.created_at)?.getTime() ?? 0) : Infinity;
-      const grouped = !!previous && previous.user_id === m.user_id && gap < 5 * 60 * 1000 && !m.reply_to_id;
-      out.push({ kind: "msg", key: `m-${m.id}`, message: m, grouped });
-      previous = m;
-    }
-    return out;
-  }, [messages]);
-
-  const filtered = (list: ChatChannel[]) => {
-    const q = search.trim().toLowerCase();
-    if (!q) return list;
-    return list.filter((c) => (c.kind === "dm" ? c.peer_name ?? "" : c.name ?? "").toLowerCase().includes(q));
-  };
-
-  function openChannel(id: number) {
-    setActiveId(id);
-    setMobilePane("thread");
-  }
-
-  return (
-    <section className="space-y-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-ink">Chat</h1>
-          <p className="mt-1 hidden text-sm text-ink-3 sm:block">Talk to your team — channels for topics, direct messages for one-to-one.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 sm:justify-end"><SoundToggle /><NotificationOptIn /></div>
-      </div>
-      {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
-
-      <div className="grid gap-4 lg:grid-cols-[290px_minmax(0,1fr)]">
-        {/* Conversations. On a phone this is the whole screen until you pick one. */}
-        <div className={classNames(
-          "card h-[calc(100dvh-13.5rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-11.5rem)]",
-          mobilePane === "thread" ? "hidden lg:flex" : "flex",
-        )}>
-          <div className="border-b border-line p-3">
-            <div className="relative">
-              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
-              <input className="input h-9 py-0 pl-8 text-sm" placeholder="Search conversations" value={search} onChange={(e) => setSearch(e.target.value)} />
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-2 py-2">
-            <div className="flex items-center justify-between px-2 py-1">
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-ink-4">Channels</h3>
-              <button type="button" className="rounded p-0.5 text-ink-4 hover:text-brand" title="New channel" onClick={() => setNewChannelOpen(true)}><Plus size={14} /></button>
-            </div>
-            {filtered(groupChannels).map((c) => (
-              <button key={c.id} type="button" onClick={() => openChannel(c.id)}
-                className={classNames("flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition",
-                  c.id === activeId ? "bg-orange-50 font-bold text-brand" : "font-semibold text-ink-2 hover:bg-sunk")}>
-                <span className="text-ink-4">#</span>
-                <span className="min-w-0 flex-1 truncate">{c.name}</span>
-                {c.unread > 0 ? <span className="shrink-0 rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{c.unread}</span> : null}
-              </button>
-            ))}
-
-            <div className="mt-4 flex items-center justify-between px-2 py-1">
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-ink-4">Direct messages</h3>
-              <button type="button" className="rounded p-0.5 text-ink-4 hover:text-brand" title="New message" onClick={() => setDmOpen(true)}><Plus size={14} /></button>
-            </div>
-            {filtered(dms).map((c) => (
-              <button key={c.id} type="button" onClick={() => openChannel(c.id)}
-                className={classNames("flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition",
-                  c.id === activeId ? "bg-orange-50 font-bold text-brand" : "font-semibold text-ink-2 hover:bg-sunk")}>
-                <span className="relative shrink-0">
-                  <span className={classNames("flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold", AVATAR_TONES[toneIndex(c.peer_id ?? c.peer_name ?? "?")])}>
-                    {initialsOf(c.peer_name || "?")}
-                  </span>
-                  <PresenceDot status={c.peer_presence} className="absolute -bottom-0.5 -right-0.5" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{c.peer_name}</span>
-                  <span className="block truncate text-[10px] font-medium text-ink-4">{lastSeenLabel(c.peer_presence, c.peer_last_seen)}</span>
-                </span>
-                {c.unread > 0 ? <span className="shrink-0 rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{c.unread}</span> : null}
-              </button>
-            ))}
-            {!dms.length ? <p className="px-2 py-2 text-xs text-ink-4">No conversations yet.</p> : null}
-          </div>
-        </div>
-
-        {/* The thread */}
-        <div
-          onDragEnter={onDragEnter}
-          onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
-          className={classNames(
-            "card relative h-[calc(100dvh-13.5rem)] min-h-[420px] flex-col overflow-hidden sm:h-[calc(100dvh-11.5rem)]",
-            mobilePane === "list" ? "hidden lg:flex" : "flex",
-          )}>
-          {dragActive && active ? (
-            <div className="pointer-events-none absolute inset-2 z-40 flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-brand bg-orange-50/90">
-              <ImageIcon size={28} className="text-brand" />
-              <p className="text-sm font-bold text-brand">Drop to attach</p>
-              <p className="text-xs text-ink-3">Images are resized automatically</p>
-            </div>
-          ) : null}
-          <div className="flex items-center gap-3 border-b border-line px-4 py-3">
-            <button type="button" onClick={() => setMobilePane("list")}
-              className="rounded-lg p-1 text-ink-4 hover:bg-sunk lg:hidden" aria-label="Back to conversations">
-              <ChevronLeft size={18} />
-            </button>
-            {active?.kind === "dm" ? (
-              <span className="relative shrink-0">
-                <span className={classNames("flex h-9 w-9 items-center justify-center rounded-full text-[11px] font-bold", AVATAR_TONES[toneIndex(active.peer_id ?? active.peer_name ?? "?")])}>
-                  {initialsOf(active.peer_name || "?")}
-                </span>
-                <PresenceDot status={active.peer_presence} className="absolute -bottom-0.5 -right-0.5" />
-              </span>
-            ) : null}
-            <div className="min-w-0">
-              <h3 className="truncate font-bold text-ink">{active ? channelLabel(active) : "Select a conversation"}</h3>
-              {active?.kind === "channel" ? <p className="text-xs text-ink-3">Everyone in the team can see this channel. Use @name to notify someone.</p> : null}
-              {active?.kind === "dm" ? <p className="text-xs text-ink-3">{lastSeenLabel(active.peer_presence, active.peer_last_seen)}</p> : null}
-            </div>
-          </div>
-
-          <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-2 py-3 sm:px-4">
-            {rows.length ? rows.map((row) => {
-              if (row.kind === "day") {
-                return (
-                  <div key={row.key} className="my-3 flex items-center gap-3">
-                    <span className="h-px flex-1 bg-line" />
-                    <span className="rounded-full border border-line bg-white px-3 py-0.5 text-[11px] font-bold text-ink-3">{row.label}</span>
-                    <span className="h-px flex-1 bg-line" />
-                  </div>
-                );
-              }
-              const m = row.message;
-              const mine = m.user_id === currentUserId;
-              const tone = toneIndex(m.user_id);
-              const mineEdit = editing?.id === m.id;
-              const mine_reactions = reactions.filter((r) => r.message_id === m.id);
-              return (
-                <div key={row.key} className={classNames(
-                  "group relative flex gap-3 rounded-lg px-2 transition",
-                  row.grouped ? "py-0.5" : "mt-2 py-1",
-                  // Your own lines carry a faint brand rail so the two sides of a
-                  // conversation are never mistaken for one another.
-                  mine ? "border-l-2 border-brand/60 bg-orange-50/40 hover:bg-orange-50/70" : "border-l-2 border-transparent hover:bg-sunk/70",
-                )}>
-                  {row.grouped ? (
-                    <span className="w-9 shrink-0 pt-0.5 text-right text-[10px] text-transparent group-hover:text-ink-4">{clockTime(m.created_at)}</span>
-                  ) : (
-                    <span className={classNames("flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[11px] font-bold", AVATAR_TONES[tone])}>
-                      {initialsOf(m.author_name)}
-                    </span>
-                  )}
-
-                  <div className="min-w-0 flex-1">
-                    {!row.grouped ? (
-                      <p className="flex flex-wrap items-baseline gap-2">
-                        <span className={classNames("text-sm font-bold", mine ? "text-brand" : NAME_TONES[tone])}>{mine ? "You" : m.author_name}</span>
-                        <span className="text-[11px] text-ink-4">{clockTime(m.created_at)}</span>
-                      </p>
-                    ) : null}
-
-                    {m.reply_to_id && !m.deleted_at ? (
-                      <div className="mb-1 rounded-r-lg border-l-2 border-brand/50 bg-sunk px-2 py-1 text-[11px] text-ink-3">
-                        <span className="font-semibold text-ink-2">{m.reply_to_author}</span>: {(m.reply_to_body || "attachment").slice(0, 90)}
-                      </div>
-                    ) : null}
-
-                    {m.deleted_at ? (
-                      <p className="text-sm italic text-ink-4">Message deleted</p>
-                    ) : mineEdit ? (
-                      <div className="mt-1">
-                        <textarea autoFocus className="input min-h-[60px] w-full resize-none text-sm"
-                          value={editing.body}
-                          onChange={(e) => setEditing({ id: m.id, body: e.target.value })}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEdit(); }
-                            if (e.key === "Escape") { e.preventDefault(); setEditing(null); }
-                          }} />
-                        <div className="mt-1 flex gap-2">
-                          <button type="button" className="btn btn-primary px-3 py-1 text-xs" onClick={saveEdit}>Save</button>
-                          <button type="button" className="btn btn-soft px-3 py-1 text-xs" onClick={() => setEditing(null)}>Cancel</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        {m.body ? (
-                          <p className="whitespace-pre-wrap break-words text-sm text-ink">
-                            {highlightMentions(m.body, people)}
-                            {m.edited_at ? <span className="ml-1 text-[10px] text-ink-4">(edited)</span> : null}
-                          </p>
-                        ) : null}
-                        {m.attachment ? (
-                          m.attachment.startsWith("data:image")
-                            ? <img src={m.attachment} alt={m.attachment_name ?? "attachment"} className="mt-1 max-h-64 rounded-xl border border-line" />
-                            : <a href={m.attachment} download={m.attachment_name ?? "file"} className="mt-1 inline-flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-xs font-semibold text-brand hover:bg-orange-50"><Download size={13} />{m.attachment_name}</a>
-                        ) : null}
-                      </>
-                    )}
-
-                    {/* Reactions people have already left */}
-                    {mine_reactions.length ? (
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {mine_reactions.map((r) => (
-                          <button key={r.emoji} type="button" title={r.who ?? undefined}
-                            onClick={() => toggleReaction(m.id, r.emoji)}
-                            className={classNames("flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition",
-                              r.mine ? "border-brand bg-orange-50 text-brand" : "border-line bg-white text-ink-2 hover:border-line-strong")}>
-                            <span>{r.emoji}</span><span className="font-semibold">{r.count}</span>
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {!m.deleted_at && !mineEdit ? (
-                    <div className="absolute right-2 top-0 hidden items-center gap-0.5 rounded-lg border border-line bg-white p-0.5 shadow-sm group-hover:flex">
-                      <button type="button" aria-label="Add reaction" className="rounded px-1.5 py-0.5 text-sm hover:bg-sunk"
-                        onClick={() => setPickerFor(pickerFor === m.id ? null : m.id)}>🙂</button>
-                      <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-ink-3 hover:text-brand" onClick={() => setReplyTo(m)}>Reply</button>
-                      {mine ? <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-ink-3 hover:text-brand" onClick={() => setEditing({ id: m.id, body: m.body ?? "" })}>Edit</button> : null}
-                      {mine ? <button type="button" className="rounded px-2 py-0.5 text-[11px] font-semibold text-ink-3 hover:text-rose-600" onClick={() => removeMessage(m.id)}>Delete</button> : null}
-                    </div>
-                  ) : null}
-
-                  {pickerFor === m.id ? (
-                    <>
-                      <div className="fixed inset-0 z-20" onClick={() => setPickerFor(null)} />
-                      <div className="absolute right-2 top-7 z-30 flex gap-1 rounded-xl border border-line bg-white p-1 shadow-lg">
-                        {REACTION_CHOICES.map((emoji) => (
-                          <button key={emoji} type="button" className="rounded-lg px-1.5 py-1 text-lg hover:bg-sunk"
-                            onClick={() => toggleReaction(m.id, emoji)}>{emoji}</button>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
-                </div>
-              );
-            }) : (
-              <p className="py-10 text-center text-sm text-ink-4">
-                {active ? "No messages yet — say hello." : "Pick a conversation to start."}
-              </p>
-            )}
-            <div ref={endRef} />
-          </div>
-
-          {/* Reading history when something lands below — say so instead of jumping. */}
-          {unseenBelow ? (
-            <button type="button" onClick={() => { atBottomRef.current = true; setAtBottom(true); scrollToEnd(false); setUnseenBelow(false); }}
-              className="absolute bottom-24 left-1/2 z-10 -translate-x-1/2 rounded-full bg-brand px-4 py-1.5 text-xs font-bold text-white shadow-lg">
-              New messages ↓
-            </button>
-          ) : null}
-
-          {typing.length ? (
-            <div className="flex items-center gap-2 border-t border-line px-4 py-1.5 text-xs text-ink-3">
-              <span className="flex gap-0.5">
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-3 [animation-delay:-0.3s]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-3 [animation-delay:-0.15s]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-3" />
-              </span>
-              {typing.length === 1
-                ? `${typing[0].display_name} is typing…`
-                : typing.length === 2
-                  ? `${typing[0].display_name} and ${typing[1].display_name} are typing…`
-                  : `${typing.length} people are typing…`}
-            </div>
-          ) : null}
-
-          {active ? (
-            <form onSubmit={send} className={classNames("border-line p-3", typing.length ? "" : "border-t")}>
-              {replyTo ? (
-                <div className="mb-2 flex items-center justify-between rounded-lg bg-sunk px-3 py-2 text-xs">
-                  <span className="truncate text-ink-3">Replying to <b>{replyTo.author_name}</b>: {(replyTo.body || "attachment").slice(0, 60)}</span>
-                  <button type="button" onClick={() => setReplyTo(null)}><X size={14} /></button>
-                </div>
-              ) : null}
-              {file ? (
-                <div className="mb-2 flex items-center gap-3 rounded-xl border border-line bg-sunk p-2">
-                  {file.data.startsWith("data:image") ? (
-                    <img src={file.data} alt="" className="h-14 w-14 shrink-0 rounded-lg border border-line object-cover" />
-                  ) : (
-                    <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg border border-line bg-white text-xl">📎</span>
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs font-semibold text-ink">{file.name}</span>
-                    <span className="tnum block text-[11px] text-ink-4">{Math.round((file.data.length * 0.75) / 1024)} KB · ready to send</span>
-                  </span>
-                  <button type="button" aria-label="Remove attachment" className="shrink-0 rounded-lg p-1 text-ink-4 hover:bg-sunk hover:text-ink" onClick={() => setFile(null)}><X size={15} /></button>
-                </div>
-              ) : null}
-
-              {/* One bordered composer, the way Slack frames its input. */}
-              <div className="relative rounded-2xl border border-line focus-within:border-brand">
-                {mentionMatches.length ? (
-                  <div className="absolute bottom-full left-2 z-20 mb-2 w-64 overflow-hidden rounded-xl border border-line bg-white shadow-lg">
-                    {mentionMatches.map((p, i) => (
-                      <button key={p.id} type="button" onMouseDown={(e) => { e.preventDefault(); insertMention(p); }}
-                        onMouseEnter={() => setMentionIdx(i)}
-                        className={classNames("flex w-full items-center gap-2 px-3 py-2 text-left text-sm", i === mentionIdx ? "bg-orange-50 text-brand" : "text-ink-2")}>
-                        <span className={classNames("flex h-6 w-6 items-center justify-center rounded-full text-[9px] font-bold",
-                          p.id === -1 ? "bg-brand text-white" : AVATAR_TONES[toneIndex(p.id)])}>
-                          {p.id === -1 ? "@" : initialsOf(p.display_name)}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate font-semibold">{p.display_name}</span>
-                          {p.hint ? <span className="block truncate text-[10px] font-medium text-ink-4">{p.hint}</span> : null}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-
-                <textarea
-                  ref={draftRef}
-                  className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-3 pt-3 text-sm text-ink outline-none placeholder:text-ink-4"
-                  rows={2}
-                  placeholder={active.kind === "dm" ? `Message ${active.peer_name} — @ to notify` : `Message #${active.name} — @ to notify`}
-                  value={draft}
-                  onChange={(e) => onDraftChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
-                  onPaste={onPaste}
-                  onBlur={() => setMentionQuery(null)}
-                  onKeyDown={(e) => {
-                    if (mentionMatches.length) {
-                      if (e.key === "ArrowDown") { e.preventDefault(); setMentionIdx((i) => (i + 1) % mentionMatches.length); return; }
-                      if (e.key === "ArrowUp") { e.preventDefault(); setMentionIdx((i) => (i - 1 + mentionMatches.length) % mentionMatches.length); return; }
-                      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); insertMention(mentionMatches[mentionIdx]); return; }
-                      if (e.key === "Escape") { e.preventDefault(); setMentionQuery(null); return; }
-                    }
-                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as unknown as FormEvent); }
-                  }}
-                />
-
-                <div className="flex items-center gap-2 px-2 pb-2">
-                  <label className="cursor-pointer rounded-lg p-1.5 text-ink-4 transition hover:bg-sunk hover:text-brand" title="Attach a file">
-                    <Plus size={16} />
-                    <input type="file" className="hidden" accept="image/*,application/pdf" onChange={(e) => pickFile(e.target.files?.[0])} />
-                  </label>
-                  <span className="hidden text-[11px] text-ink-4 sm:inline">Enter to send · paste or drop an image to attach</span>
-                  <button type="submit" className="btn btn-primary ml-auto px-4 py-1.5" disabled={sending || (!draft.trim() && !file)}>Send</button>
-                </div>
-              </div>
-            </form>
-          ) : null}
-        </div>
-      </div>
-
-      {newChannelOpen && (
-        <div className="modal-scrim items-center justify-center p-4">
-          <form onSubmit={createChannel} className="card w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-lg font-bold text-ink">New channel</h3>
-            <Field label="Channel name"><input autoFocus required className="input" value={newChannelName} onChange={(e) => setNewChannelName(e.target.value)} placeholder="e.g. design" /></Field>
-            <p className="text-xs text-ink-3">Channels are visible to everyone in the team.</p>
-            <div className="flex justify-end gap-3">
-              <button type="button" className="btn btn-soft" onClick={() => setNewChannelOpen(false)}>Cancel</button>
-              <button type="submit" className="btn btn-primary">Create</button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {dmOpen && (
-        <div className="modal-scrim items-center justify-center p-4">
-          <div className="card w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-lg font-bold text-ink">Start a conversation</h3>
-            <div className="max-h-72 space-y-1 overflow-y-auto">
-              {people.map((p) => (
-                <button key={p.id} type="button" onClick={() => startDm(p.id)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-sunk">
-                  <span className="relative shrink-0">
-                    <span className={classNames("flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-bold", AVATAR_TONES[toneIndex(p.id)])}>{initialsOf(p.display_name)}</span>
-                    <PresenceDot status={p.presence} className="absolute -bottom-0.5 -right-0.5" />
-                  </span>
-                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{p.display_name}</span><span className="block truncate text-xs text-ink-3">{p.role} · {lastSeenLabel(p.presence, p.last_seen_at)}</span></span>
-                </button>
-              ))}
-              {!people.length ? <p className="py-4 text-center text-sm text-ink-4">No other team members yet.</p> : null}
-            </div>
-            <div className="flex justify-end"><button type="button" className="btn btn-soft" onClick={() => setDmOpen(false)}>Close</button></div>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
 type WorkSpace = { id: number; name: string; color: string; status: string; requested_by?: number | null; list_count: number; task_count: number };
 type WorkList = { id: number; space_id: number; name: string; space_name: string; status: string; requested_by?: number | null; task_count: number; done_count: number };
 type WorkAssignee = { user_id: number; display_name: string };
@@ -3279,7 +2037,6 @@ type WorkRecurrence = {
 };
 type WorkPerson = { id: number; display_name: string; role: string };
 type WorkComment = { id: number; body: string; created_at: string; user_id: number; author_name: string };
-type WorkScope = { kind: "all" | "space" | "list"; id: number };
 
 const WORK_STATUSES = ["To Do", "In Progress", "In Review", "Done"];
 
@@ -4171,7 +2928,7 @@ function WorkTaskModal({ task, isAdmin, people, spaces, lists, onClose, onChange
               <div key={c.id} className="flex gap-2">
                 <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[10px] font-bold text-orange-700">{initialsOf(c.author_name)}</span>
                 <div>
-                  <p className="text-[11px] text-ink-4"><span className="font-semibold text-ink-2">{c.author_name}</span> · {chatTime(c.created_at)}</p>
+                  <p className="text-[11px] text-ink-4"><span className="font-semibold text-ink-2">{c.author_name}</span> · {shortTime(c.created_at)}</p>
                   <p className="whitespace-pre-wrap text-sm text-ink">{c.body}</p>
                 </div>
               </div>

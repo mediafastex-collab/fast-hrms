@@ -447,12 +447,12 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
         "fixed inset-y-0 left-0 z-20 hidden flex-col px-3 pb-3 pt-4 lg:flex",
         "transition-[width] duration-200 ease-premium",
         navOpen ? "w-[244px]" : "w-[72px]",
-      )} style={{ background: "var(--rail)" }}>
+      )} style={{ background: "var(--rail)", borderRight: "1px solid var(--rail-edge)" }}>
         <div className={classNames("flex items-center gap-2.5 px-1.5 pb-5", !navOpen && "justify-center px-0")}>
-          <span className="text-[var(--paper)]"><BrandMark size={26} /></span>
+          <span className="text-ink"><BrandMark size={26} /></span>
           {navOpen ? (
             <span className="min-w-0 leading-tight">
-              <span className="block truncate text-[12.5px] font-bold uppercase tracking-[0.06em] text-[var(--paper)]">Fastex Media</span>
+              <span className="block truncate text-[12.5px] font-bold uppercase tracking-[0.06em] text-ink">Fastex Media</span>
               <span className="block text-[10.5px] font-medium uppercase tracking-[0.12em] text-[var(--rail-text)]">HRMS</span>
             </span>
           ) : null}
@@ -480,7 +480,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
                 className={classNames(
                   "group relative flex w-full items-center rounded-lg py-[7px] text-[13px] transition-colors duration-150 ease-premium",
                   navOpen ? "gap-3 px-2.5" : "justify-center px-0",
-                  active ? "font-semibold text-white" : "font-medium text-[var(--rail-text)] hover:text-white",
+                  active ? "font-semibold text-ink" : "font-medium text-[var(--rail-text)] hover:text-ink",
                 )}
                 style={active ? { background: "var(--rail-active)" } : undefined}
                 onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--rail-hover)"; }}
@@ -506,13 +506,13 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
             </span>
             {navOpen ? (
               <span className="min-w-0 flex-1 leading-tight">
-                <span className="block truncate text-[12.5px] font-semibold text-white">{user.displayName ?? user.employeeName ?? user.email}</span>
+                <span className="block truncate text-[12.5px] font-semibold text-ink">{user.displayName ?? user.employeeName ?? user.email}</span>
                 <span className="block truncate text-[10.5px] text-[var(--rail-text)]">{user.role}</span>
               </span>
             ) : null}
             {navOpen ? (
               <button type="button" onClick={onLogout} title="Logout"
-                className="shrink-0 rounded-md p-1.5 text-[var(--rail-text)] transition-colors duration-150 hover:bg-[var(--rail-hover)] hover:text-white">
+                className="shrink-0 rounded-md p-1.5 text-[var(--rail-text)] transition-colors duration-150 hover:bg-[var(--rail-hover)] hover:text-ink">
                 <LogOut size={15} />
               </button>
             ) : null}
@@ -523,7 +523,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
             onClick={() => setNavOpen((open) => !open)}
             title={navOpen ? "Collapse menu" : "Expand menu"}
             className={classNames(
-              "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--rail-text)] transition-colors duration-150 hover:bg-[var(--rail-hover)] hover:text-white",
+              "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--rail-text)] transition-colors duration-150 hover:bg-[var(--rail-hover)] hover:text-ink",
               !navOpen && "justify-center px-0",
             )}
           >
@@ -535,7 +535,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
 
       <div className={navOpen ? "lg:pl-[244px]" : "lg:pl-[72px]"}>
         {newVersion ? (
-          <div className="flex flex-wrap items-center justify-center gap-3 bg-ink px-4 py-2 text-sm font-medium text-[var(--paper)]">
+          <div className="flex flex-wrap items-center justify-center gap-3 bg-brand-tint px-4 py-2 text-sm font-medium text-ink">
             A newer version of Fast HRMS is ready.
             <button type="button" className="rounded-full bg-white/20 px-3 py-1 hover:bg-white/30" onClick={() => window.location.reload()}>
               Reload
@@ -3096,7 +3096,7 @@ function WorkTaskForm({ spaces, lists, people, initial, series, onClose, onSaved
                     return (
                       <button key={d} type="button" aria-pressed={on} aria-label={WEEKDAY_SHORT[d]} title={WEEKDAY_SHORT[d]} onClick={() => toggleDay(d)}
                         className={classNames("flex h-9 flex-1 items-center justify-center rounded-lg border text-xs font-bold transition",
-                          on ? "border-ink bg-ink text-[var(--paper)]" : "border-line bg-white text-ink-3 hover:border-line-strong")}>
+                          on ? "border-brand bg-brand text-ink" : "border-line bg-white text-ink-3 hover:border-line-strong")}>
                         {WEEKDAY_LETTER[d]}
                       </button>
                     );

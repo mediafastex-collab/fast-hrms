@@ -32,12 +32,12 @@
   --brand-tint:    #FFF1E6;
   --brand-line:    #FFD3B0;
 
-  /* The navigation rail is Ink, like the brand's dark sections. */
-  --rail:          #0D0D0D;
-  --rail-edge:     #222224;
-  --rail-text:     #A3A3AB;
-  --rail-hover:    rgba(251, 250, 248, 0.06);
-  --rail-active:   rgba(251, 250, 248, 0.10);
+  /* A light rail: white, set off from the paper page by a hairline. */
+  --rail:          #FFFFFF;
+  --rail-edge:     #E7E4DE;
+  --rail-text:     #63636B;
+  --rail-hover:    #F5F3EF;
+  --rail-active:   #FFF1E6;
 
   --ok:            #15803d;
   --ok-tint:       #effaf2;
@@ -173,10 +173,11 @@ button, input, select, textarea { font: inherit; }
   }
   .btn:disabled { @apply cursor-not-allowed opacity-40; }
 
-  /* Brand rule: the primary button is an ink pill with paper text. */
-  .btn-primary { background: var(--ink); color: var(--paper); }
-  .btn-primary:hover:not(:disabled) { background: #2a2a2d; }
-  .btn-primary:active:not(:disabled) { background: #000; }
+  /* Orange pill with ink text — the kit's accessible pairing (6.6:1). White
+     on orange fails contrast, so the label stays ink. */
+  .btn-primary { background: var(--brand); color: var(--ink); }
+  .btn-primary:hover:not(:disabled) { background: var(--brand-hover); }
+  .btn-primary:active:not(:disabled) { background: var(--brand-press); color: var(--paper); }
 
   .btn-soft {
     background: var(--surface);

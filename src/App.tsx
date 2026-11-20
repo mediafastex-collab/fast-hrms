@@ -1769,6 +1769,12 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
   const [openDay, setOpenDay] = useState<string | null>(null);
   const [editing, setEditing] = useState<AttendanceRecord | null>(null);
   const [form, setForm] = useState({ employee_id: 0, attendance_date: "", check_in: "", check_out: "", break_start: "", break_end: "", status: "Present" });
+  // Calendar for the shape of the month, list for reading times row by row.
+  // Whichever you last used opens next time.
+  const [layout, setLayout] = useState<"calendar" | "list">(() => {
+    try { return localStorage.getItem("fast_hrms_attendance_view") === "list" ? "list" : "calendar"; } catch { return "calendar"; }
+  });
+  useEffect(() => { try { localStorage.setItem("fast_hrms_attendance_view", layout); } catch { /* private mode */ } }, [layout]);
 
   const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
   const monthEnd = `${year}-${String(month).padStart(2, "0")}-${new Date(year, month, 0).getDate()}`;
@@ -1830,13 +1836,24 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
     <section className="space-y-5">
       <PageTitle
         title="Attendance"
-        description={isAdmin ? "Click any day to see who was in, and to fix a record." : "Your month at a glance. Click a day for its times."}
+        description={layout === "list"
+          ? (isAdmin ? "Every check-in this month. Edit a row to fix it." : "Every day you checked in this month.")
+          : (isAdmin ? "Click any day to see who was in, and to fix a record." : "Your month at a glance. Click a day for its times.")}
       />
 
       <div className="card flex flex-wrap items-center gap-3 p-3">
         <MonthStepper month={month} year={year} max={{ month: now.getMonth() + 1, year: now.getFullYear() }}
           onChange={(m, y) => { setMonth(m); setYear(y); }} />
         {isAdmin ? <PersonPicker value={employeeId} onChange={setEmployeeId} people={employees} /> : null}
+        <div className="flex gap-1 rounded-full bg-sunk p-1">
+          {(["calendar", "list"] as const).map((v) => (
+            <button key={v} type="button" onClick={() => setLayout(v)}
+              className={classNames("rounded-full px-3 py-1 text-xs font-semibold capitalize transition",
+                layout === v ? "bg-white text-ink shadow-sm" : "text-ink-3 hover:text-ink")}>
+              {v}
+            </button>
+          ))}
+        </div>
         <p className="tnum ml-auto text-[12.5px] text-ink-3">
           {single
             ? `${tally.Present + tally.Late} present · ${tally.Late} late · ${tally["Half Day"]} half · ${tally["On Leave"]} leave · ${tally.Absent} absent`
@@ -1848,7 +1865,54 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
         <p className="text-[12.5px] font-medium text-ink-3">Showing a former employee.</p>
       ) : null}
 
-      <AttendanceCalendar year={year} month={month} byDay={byDay} headcount={activePeople.length || 1} single={single} onDay={setOpenDay} />
+      {layout === "calendar" ? (
+        <AttendanceCalendar year={year} month={month} byDay={byDay} headcount={activePeople.length || 1} single={single} onDay={setOpenDay} />
+      ) : (
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left text-sm">
+              <thead className="table-header">
+                <tr>
+                  <th className="whitespace-nowrap px-5 py-2.5">Date</th>
+                  {isAdmin ? <th className="whitespace-nowrap px-5 py-2.5">Employee</th> : null}
+                  <th className="whitespace-nowrap px-5 py-2.5">Check in</th>
+                  <th className="whitespace-nowrap px-5 py-2.5">Check out</th>
+                  <th className="whitespace-nowrap px-5 py-2.5">Worked</th>
+                  <th className="whitespace-nowrap px-5 py-2.5">Status</th>
+                  {isAdmin ? <th className="whitespace-nowrap px-5 py-2.5" /> : null}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {rows.length ? [...rows].sort((a, b) => b.attendance_date.localeCompare(a.attendance_date) || (a.employee_name ?? "").localeCompare(b.employee_name ?? "")).map((r) => (
+                  <tr key={r.id} className="bg-white hover:bg-[var(--surface-sunk)]">
+                    <td className="tnum whitespace-nowrap px-5 py-3 text-ink-2">
+                      {new Date(`${r.attendance_date}T00:00:00`).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" })}
+                    </td>
+                    {isAdmin ? <td className="px-5 py-3 font-semibold text-ink">{r.employee_name}</td> : null}
+                    <td className="tnum px-5 py-3 text-ink-2">
+                      {r.check_in?.slice(0, 5) ?? "—"}
+                      {r.late_checkin_reason ? <span className="block text-[11px] text-amber-700">{r.late_checkin_reason}</span> : null}
+                    </td>
+                    <td className="tnum px-5 py-3 text-ink-2">
+                      {r.check_out?.slice(0, 5) ?? (r.missed_checkout ? <span className="text-rose-600">Missed</span> : "—")}
+                      {r.early_checkout_reason ? <span className="block text-[11px] text-amber-700">{r.early_checkout_reason}</span> : null}
+                    </td>
+                    <td className="tnum px-5 py-3 text-ink-2">{r.check_in && r.check_out ? workedHMS(r) : "—"}</td>
+                    <td className="px-5 py-3"><Badge value={attendanceLabel(r)} /></td>
+                    {isAdmin ? (
+                      <td className="px-5 py-3 text-right">
+                        <button type="button" className="btn btn-ghost px-2 py-1 text-xs" onClick={() => startEdit(r)}><Pencil size={13} />Edit</button>
+                      </td>
+                    ) : null}
+                  </tr>
+                )) : (
+                  <tr><td colSpan={isAdmin ? 7 : 5} className="px-5 py-12 text-center text-[13.5px] text-ink-3">Nothing recorded this month.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <DayRequests isAdmin={isAdmin} />
 

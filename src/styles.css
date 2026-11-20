@@ -257,7 +257,9 @@ button, input, select, textarea { font: inherit; }
 .animate-pop     { animation: popIn 160ms var(--ease) both; }
 
 /* Each screen settles in rather than snapping. */
-.view-enter { animation: riseIn 240ms var(--ease) both; }
+/* "backwards", not "both": a transform left on <main> after the animation
+   would trap every fixed pop-up inside it instead of covering the screen. */
+.view-enter { animation: riseIn 240ms var(--ease) backwards; }
 
 /* ─────────────────────────────────────────────────────────────────────────
    Print. "Download PDF" is the browser's own Save as PDF, which means the

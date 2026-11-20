@@ -40,16 +40,13 @@ type Role = "Superadmin" | "Employee";
 type View =
   | "dashboard"
   | "employees"
-  | "departments"
   | "attendance"
   | "tasks"
   | "chat"
   | "leave"
   | "payroll"
-  | "holidays"
   | "reports"
   | "settings"
-  | "audit"
   | "profile";
 
 type User = {
@@ -122,6 +119,7 @@ type AttendanceRecord = {
   attendance_date: string;
   check_in?: string;
   check_out?: string;
+  missed_checkout?: number;
   break_start?: string;
   break_end?: string;
   breaks?: AttendanceBreak[];
@@ -191,17 +189,21 @@ type DashboardSummary = {
   taskDone?: number;
   taskOngoing?: number;
   taskPending?: number;
+  onLeaveToday?: number;
+  pendingCorrections?: number;
+  missedCheckouts?: number;
 };
 
 type EmployeeSummary = {
   todayAttendance?: AttendanceRecord;
-  monthAttendance: { present: number; late: number; halfDay: number; absent: number };
+  monthAttendance: { present: number; late: number; halfDay: number; absent: number; leave?: number };
   leaveBalance: number;
   recentLeaves: LeaveRequest[];
   currentSalary?: Salary;
   latestSalary?: Salary;
   upcomingLeaves?: LeaveRequest[];
   upcomingHolidays?: Holiday[];
+  missedDays?: string[];
 };
 
 const currency = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
@@ -474,33 +476,20 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   }, [chatIncoming?.messageId]);
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("fast_hrms_nav") !== "collapsed");
   useEffect(() => { localStorage.setItem("fast_hrms_nav", navOpen ? "open" : "collapsed"); }, [navOpen]);
-  // Thirteen flat items is a list to read, not a structure to navigate. Grouped
-  // by what someone is actually trying to do, it becomes four short lists.
+  // One short list, in the order a day actually runs. Holidays, leave types,
+  // departments and the audit log live inside the page they belong to.
   const navGroups: Array<{ group: string; items: Array<{ id: View; label: string; icon: typeof UsersRound; show: boolean }> }> = [
     { group: "", items: [
-      { id: "dashboard" as View, label: "Dashboard", icon: LayoutDashboard, show: true },
-    ] },
-    { group: "People", items: [
-      { id: "employees" as View, label: "Employees", icon: UsersRound, show: isAdmin },
-      { id: "departments" as View, label: "Departments", icon: Building2, show: isAdmin },
-      { id: "profile" as View, label: "My profile", icon: UserRound, show: !isAdmin },
-    ] },
-    { group: "Time", items: [
+      { id: "dashboard" as View, label: "Home", icon: LayoutDashboard, show: true },
+      { id: "employees" as View, label: "People", icon: UsersRound, show: isAdmin },
       { id: "attendance" as View, label: "Attendance", icon: CalendarCheck, show: true },
       { id: "leave" as View, label: "Leave", icon: FileText, show: true },
-      { id: "holidays" as View, label: "Holidays", icon: Sparkles, show: true },
-    ] },
-    { group: "Work", items: [
+      { id: "payroll" as View, label: isAdmin ? "Payroll" : "Payslips", icon: Banknote, show: true },
       { id: "tasks" as View, label: "Tasks", icon: ClipboardList, show: true },
       { id: "chat" as View, label: "Chat", icon: MessageSquare, show: true },
-    ] },
-    { group: "Finance", items: [
-      { id: "payroll" as View, label: "Payroll", icon: Banknote, show: true },
       { id: "reports" as View, label: "Reports", icon: Download, show: isAdmin },
-    ] },
-    { group: "Admin", items: [
       { id: "settings" as View, label: "Settings", icon: Settings, show: isAdmin },
-      { id: "audit" as View, label: "Audit log", icon: History, show: isAdmin },
+      { id: "profile" as View, label: "My profile", icon: UserRound, show: !isAdmin },
     ] },
   ].map((g) => ({ ...g, items: g.items.filter((i) => i.show) })).filter((g) => g.items.length);
 
@@ -644,18 +633,15 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
         </header>
 
         <main key={view} className={classNames("view-enter mx-auto px-5 pb-10 pt-3", view === "chat" ? "max-w-none" : "max-w-7xl")}>
-          {view === "dashboard" ? user.role === "Superadmin" ? <AdminDashboard /> : <EmployeeDashboard /> : null}
+          {view === "dashboard" ? user.role === "Superadmin" ? <AdminDashboard onView={choose} /> : <EmployeeDashboard onView={choose} /> : null}
           {view === "employees" && isAdmin ? <Employees /> : null}
-          {view === "departments" && isAdmin ? <Departments /> : null}
           {view === "attendance" ? <Attendance isAdmin={isAdmin} /> : null}
           {view === "tasks" ? <Tasks isAdmin={isAdmin} /> : null}
           {view === "chat" ? <Chat currentUserId={user.id} initialChannelId={chatTarget} onActiveChannel={setActiveChatId} /> : null}
           {view === "leave" ? <Leave isAdmin={isAdmin} /> : null}
           {view === "payroll" ? <Payroll isAdmin={isAdmin} /> : null}
-          {view === "holidays" ? <Holidays isAdmin={isAdmin} /> : null}
           {view === "reports" && isAdmin ? <Reports /> : null}
           {view === "settings" && isAdmin ? <SettingsPage /> : null}
-          {view === "audit" && isAdmin ? <AuditLogs /> : null}
           {view === "profile" && !isAdmin ? <Profile /> : null}
         </main>
       </div>
@@ -674,7 +660,20 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
   );
 }
 
-function AdminDashboard() {
+// A row on Home that says what needs doing and takes you there in one click.
+function ActionRow({ count, label, onClick, tone = "warn" }: { count: number; label: string; onClick: () => void; tone?: "warn" | "bad" }) {
+  return (
+    <button type="button" onClick={onClick}
+      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors duration-150 hover:bg-[var(--surface-sunk)]">
+      <span className={classNames("tnum flex h-7 min-w-7 items-center justify-center rounded-full px-2 text-[12px] font-bold",
+        tone === "bad" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700")}>{count}</span>
+      <span className="flex-1 text-[13.5px] font-medium text-ink">{label}</span>
+      <ChevronRight size={15} className="text-ink-4" />
+    </button>
+  );
+}
+
+function AdminDashboard({ onView }: { onView: (view: View) => void }) {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState("");
 
@@ -685,304 +684,259 @@ function AdminDashboard() {
   }, []);
 
   if (error) return <EmptyState title={error} />;
-  if (!summary) return <EmptyState title="Loading dashboard..." />;
+  if (!summary) return <EmptyState title="Loading…" />;
+
+  const notIn = Math.max(0, summary.absentToday - (summary.onLeaveToday ?? 0));
+  const todo = [
+    { count: summary.pendingLeaveRequests, label: `Leave request${summary.pendingLeaveRequests === 1 ? "" : "s"} to approve`, view: "leave" as View, tone: "warn" as const },
+    { count: summary.pendingCorrections ?? 0, label: `Attendance correction${summary.pendingCorrections === 1 ? "" : "s"} to review`, view: "attendance" as View, tone: "warn" as const },
+    { count: summary.missedCheckouts ?? 0, label: "Missed check-outs this week, counted as leave", view: "attendance" as View, tone: "bad" as const },
+  ].filter((t) => t.count > 0);
 
   return (
     <section className="space-y-5">
-      <PageTitle title="Dashboard" description="Today's attendance and last month's payroll at a glance." />
+      <PageTitle title="Home" description={new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })} />
 
-      {/* Headline: what is still to go out, not what the month cost. */}
-      <div className="card overflow-hidden border-l-[3px] border-l-brand p-6" style={{ background: "var(--brand-tint)" }}>
-        <p className="text-xs font-semibold uppercase tracking-wider text-brand">Outstanding · {summary.lastMonthLabel ?? "last month"}</p>
-        <p className="tnum mt-1 text-4xl font-extrabold text-ink">{currency.format(summary.lastMonthOutstanding ?? summary.lastMonthPayable ?? 0)}</p>
-        <p className="mt-1 text-sm text-ink-3">
-          Still to pay after attendance deductions.
-          {summary.lastMonthPaid ? ` ${currency.format(summary.lastMonthPaid)} already paid of ${currency.format(summary.lastMonthPayable ?? 0)}.` : ` Across ${summary.totalEmployees} active employee${summary.totalEmployees === 1 ? "" : "s"}.`}
-        </p>
-      </div>
+      <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
+        {/* Today, in three numbers. */}
+        <div className="card p-5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Today</p>
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            {[
+              ["In", summary.presentToday, "text-emerald-600"],
+              ["Not in yet", notIn, "text-ink"],
+              ["On leave", summary.onLeaveToday ?? 0, "text-ink-3"],
+            ].map(([label, value, tone]) => (
+              <div key={label as string}>
+                <p className={classNames("tnum text-[30px] font-bold leading-none tracking-[-0.03em]", tone as string)}>{value}</p>
+                <p className="mt-1.5 text-[12.5px] text-ink-3">{label}</p>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="mt-4 text-[12.5px] font-semibold text-brand hover:underline" onClick={() => onView("attendance")}>
+            Open attendance →
+          </button>
+        </div>
 
-      {/* Work at a glance */}
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-4">Tasks</p>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard icon={ClipboardList} label="Total tasks" value={summary.taskTotal ?? 0} />
-          <StatCard icon={CheckCircle2} label="Completed" value={summary.taskDone ?? 0} />
-          <StatCard icon={RefreshCcw} label="Ongoing" value={summary.taskOngoing ?? 0} />
-          <StatCard icon={Clock3} label="Pending" value={summary.taskPending ?? 0} />
+        {/* Money still to go out. */}
+        <div className="card p-5" style={{ background: "var(--brand-tint)" }}>
+          <p className="text-xs font-semibold uppercase tracking-wider text-brand">Salary to pay · {summary.lastMonthLabel ?? "last month"}</p>
+          <p className="tnum mt-2 text-[30px] font-bold leading-none tracking-[-0.03em] text-ink">{currency.format(summary.lastMonthOutstanding ?? 0)}</p>
+          <p className="mt-1.5 text-[12.5px] text-ink-3">
+            {summary.lastMonthPaid ? `${currency.format(summary.lastMonthPaid)} of ${currency.format(summary.lastMonthPayable ?? 0)} already paid` : "Nothing paid yet for this month"}
+          </p>
+          <button type="button" className="mt-4 text-[12.5px] font-semibold text-brand hover:underline" onClick={() => onView("payroll")}>
+            Open payroll →
+          </button>
         </div>
       </div>
 
-      {/* Today */}
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-4">Today</p>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <StatCard icon={UsersRound} label="Employees" value={summary.totalEmployees} />
-          <StatCard icon={CalendarCheck} label="Present" value={summary.presentToday} />
-          <StatCard icon={Clock3} label="Not marked" value={summary.absentToday} />
+      <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
+        <div className="card p-2">
+          <p className="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-ink-4">Needs you</p>
+          {todo.length ? todo.map((t) => (
+            <ActionRow key={t.label} count={t.count} label={t.label} tone={t.tone} onClick={() => onView(t.view)} />
+          )) : <p className="px-3 pb-4 pt-2 text-[13.5px] text-ink-3">Nothing waiting. All caught up.</p>}
         </div>
-      </div>
 
-      {/* Needs attention */}
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-4">Needs attention</p>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <StatCard icon={FileText} label="Leave requests pending" value={summary.pendingLeaveRequests} />
-          <StatCard icon={Banknote} label="Salaries unpaid" value={summary.pendingSalaries} />
-          <StatCard icon={CheckCircle2} label="Salaries paid" value={summary.salaryDoneCount} />
+        <div className="card p-5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Tasks</p>
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            {[
+              ["To do", summary.taskPending ?? 0],
+              ["In progress", summary.taskOngoing ?? 0],
+              ["Done", summary.taskDone ?? 0],
+            ].map(([label, value]) => (
+              <div key={label as string}>
+                <p className="tnum text-[22px] font-bold leading-none text-ink">{value}</p>
+                <p className="mt-1.5 text-[12.5px] text-ink-3">{label}</p>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="mt-4 text-[12.5px] font-semibold text-brand hover:underline" onClick={() => onView("tasks")}>
+            Open tasks →
+          </button>
         </div>
       </div>
     </section>
   );
 }
 
-// Everyday work motivation for the team — about doing good work, not building a business.
-const QUOTES = [
-  "Do the small things well and the big things follow.",
-  "Progress today beats perfection tomorrow.",
-  "Your effort today is someone's reason to trust you tomorrow.",
-  "Focus on one task at a time — that's where good work hides.",
-  "Consistency turns ordinary days into a strong career.",
-  "Ask the question. Clarity is faster than guessing.",
-  "Finish what you start — momentum is built, not found.",
-  "A calm hour of focus beats a busy day of noise.",
-  "Take the break. Rested minds do better work.",
-  "Being reliable is a skill. Practise it daily.",
-  "Learn one new thing today — it compounds.",
-  "Good teammates make good teams. Be one.",
-  "Done and shared beats perfect and hidden.",
-  "Celebrate the small wins; they add up by month-end.",
-];
-
-function EmployeeDashboard() {
+function EmployeeDashboard({ onView }: { onView: (view: View) => void }) {
   const [summary, setSummary] = useState<EmployeeSummary | null>(null);
-  const quote = useMemo(() => {
-    const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 1000 / 60 / 60 / 24);
-    return QUOTES[dayOfYear % QUOTES.length];
-  }, []);
   const [settings, setSettings] = useState<CompanySettings | null>(null);
-  const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [message, setMessage] = useState("");
-  
-  // Timer State
-  const [elapsed, setElapsed] = useState<number>(0);
-  
-  // Reason Prompts
-  const [promptCheckIn, setPromptCheckIn] = useState(false);
-  const [promptCheckOut, setPromptCheckOut] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  // Asked only when checking in late or leaving early.
+  const [prompt, setPrompt] = useState<"check-in" | "check-out" | null>(null);
   const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
 
   async function load() {
-    const data = await api<{ summary: EmployeeSummary }>("/employee/summary");
-    const settingsData = await api<{ settings: CompanySettings }>("/settings");
+    const [data, settingsData] = await Promise.all([
+      api<{ summary: EmployeeSummary }>("/employee/summary"),
+      api<{ settings: CompanySettings }>("/settings"),
+    ]);
     setSummary(data.summary);
     setSettings(settingsData.settings);
   }
 
+  useEffect(() => { load().catch((err) => setMessage(err.message)); }, []);
+
   useEffect(() => {
-    load().catch((err) => setMessage(err.message));
-  }, []);
-  
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval>;
     const att = summary?.todayAttendance;
-    if (att?.check_in && !att.check_out) {
-      const tick = () => {
-        const now = new Date();
-        const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-        let seconds = nowSec - (timeToSeconds(att.check_in) ?? 0);
-        // Subtract every finished break, plus the ongoing one if on a break now.
-        seconds -= closedBreakSeconds(att);
-        const open = openBreakOf(att);
-        if (open) seconds -= Math.max(0, nowSec - (timeToSeconds(open.break_start) ?? nowSec));
-        setElapsed(Math.max(0, seconds));
-      };
-      tick();
-      interval = setInterval(tick, 1000);
-    }
+    if (!att?.check_in || att.check_out) return;
+    const tick = () => {
+      const now = new Date();
+      const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+      let seconds = nowSec - (timeToSeconds(att.check_in) ?? 0) - closedBreakSeconds(att);
+      const open = openBreakOf(att);
+      if (open) seconds -= Math.max(0, nowSec - (timeToSeconds(open.break_start) ?? nowSec));
+      setElapsed(Math.max(0, seconds));
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [summary]);
 
-  function formatTime(s: number) {
-    const h = Math.floor(s / 3600).toString().padStart(2, "0");
-    const m = Math.floor((s % 3600) / 60).toString().padStart(2, "0");
-    const sec = (s % 60).toString().padStart(2, "0");
-    return `${h}:${m}:${sec}`;
-  }
-  
-  async function punch(action: "check-in" | "check-out" | "break-start" | "break-end", reasonData?: string) {
-    setMessage("");
+  async function punch(action: "check-in" | "check-out" | "break-start" | "break-end", why?: string) {
+    setMessage(""); setBusy(true);
     try {
-      const body = reasonData ? (action === "check-in" ? { late_checkin_reason: reasonData } : { early_checkout_reason: reasonData }) : {};
-      await api(`/attendance/${action}`, { method: "POST", body: Object.keys(body).length ? JSON.stringify(body) : undefined });
-      setPromptCheckIn(false);
-      setPromptCheckOut(false);
-      setReason("");
+      const body = why ? (action === "check-in" ? { late_checkin_reason: why } : { early_checkout_reason: why }) : null;
+      await api(`/attendance/${action}`, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+      setPrompt(null); setReason("");
       await load();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Attendance update failed");
+      setMessage(err instanceof Error ? err.message : "Could not update attendance");
     }
-  }
-  
-  function handleCheckInClick() {
-    if (settings) {
-       const now = new Date();
-       const current = `${now.getHours().toString().padStart(2,"0")}:${now.getMinutes().toString().padStart(2,"0")}`;
-       if (current > settings.late_mark_time) {
-         setPromptCheckIn(true);
-         return;
-       }
-    }
-    punch("check-in");
-  }
-  
-  function handleCheckOutClick() {
-    if (settings) {
-       const hoursWorked = elapsed / 3600;
-       if (hoursWorked < settings.shift_min_hours) {
-         setPromptCheckOut(true);
-         return;
-       }
-    }
-    punch("check-out");
+    setBusy(false);
   }
 
-  if (!summary) return <EmptyState title={message || "Loading dashboard..."} />;
+  function checkIn() {
+    const now = new Date();
+    const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    if (settings && hhmm > settings.late_mark_time) setPrompt("check-in");
+    else punch("check-in");
+  }
+
+  function checkOut() {
+    if (settings && elapsed / 3600 < settings.shift_min_hours) setPrompt("check-out");
+    else punch("check-out");
+  }
+
+  if (!summary) return <EmptyState title={message || "Loading…"} />;
+  const att = summary.todayAttendance;
   const isSunday = new Date().getDay() === 0;
-  const hasCheckedIn = Boolean(summary.todayAttendance?.check_in);
-  const hasCheckedOut = Boolean(summary.todayAttendance?.check_out);
-  const onBreak = Boolean(openBreakOf(summary.todayAttendance));
+  const checkedIn = Boolean(att?.check_in);
+  const checkedOut = Boolean(att?.check_out);
+  const onBreak = Boolean(openBreakOf(att));
+  const hms = [Math.floor(elapsed / 3600), Math.floor((elapsed % 3600) / 60), elapsed % 60].map((n) => String(n).padStart(2, "0")).join(":");
+
+  // Leave and holidays together, soonest first.
+  const coming = [
+    ...(summary.upcomingLeaves ?? []).map((l) => ({ key: `l${l.id}`, date: l.start_date, title: l.leave_type_name ?? "Leave", sub: l.start_date === l.end_date ? l.start_date : `${l.start_date} → ${l.end_date}` })),
+    ...(summary.upcomingHolidays ?? []).map((h) => ({ key: `h${h.id}`, date: h.holiday_date, title: h.name, sub: `${h.holiday_date} · Holiday` })),
+  ].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 5);
 
   return (
-    <section className="space-y-5 animate-fade-in">
-      <div className="card overflow-hidden border-l-[3px] border-l-brand p-6" style={{ background: "var(--brand-tint)" }}>
-        <div className="flex items-start gap-4">
-          <span className="select-none text-4xl font-serif leading-none text-brand/40">&ldquo;</span>
+    <section className="space-y-5">
+      <PageTitle title="Home" description={new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })} />
+      {message ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+
+      {summary.missedDays?.length ? (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-[13.5px] text-rose-700">
+          <span className="font-semibold">You didn't check out on {summary.missedDays.map(prettyDate).join(", ")}.</span>{" "}
+          {summary.missedDays.length === 1 ? "That day is" : "Those days are"} counted as leave. If you were working, raise a correction from Attendance.
+        </div>
+      ) : null}
+
+      {/* The one thing an employee comes here to do. */}
+      <div className="card p-6">
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-lg font-semibold italic leading-relaxed text-ink">{quote}</p>
-            <p className="mt-2 text-[11px] font-bold uppercase tracking-wider text-brand/70">Today&rsquo;s inspiration</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Today</p>
+            <p className="mt-2 text-[26px] font-bold leading-none tracking-[-0.03em] text-ink">
+              {isSunday ? "Weekly off" : !checkedIn ? "Not checked in" : checkedOut ? "Day done" : onBreak ? "On a break" : "Working"}
+            </p>
+            <p className="tnum mt-2 text-[13px] text-ink-3">
+              {checkedIn ? `In ${att?.check_in?.slice(0, 5)}${checkedOut ? ` · Out ${att?.check_out?.slice(0, 5)}` : ""}` : `Check in by ${settings?.late_mark_time ?? "—"} to be on time`}
+            </p>
           </div>
-        </div>
-      </div>
-      {promptCheckIn && (
-         <div className="modal-scrim items-center justify-center p-4">
-           <div className="card w-full max-w-md p-6">
-             <h3 className="text-lg font-bold text-ink">Late Check-in</h3>
-             <p className="mt-2 text-sm text-ink-3">You are checking in late. Please provide a reason.</p>
-             <input autoFocus className="input mt-4" placeholder="Traffic, transit delay, etc." value={reason} onChange={e => setReason(e.target.value)} />
-             <div className="mt-5 flex gap-3 justify-end">
-               <button className="btn btn-soft" onClick={() => setPromptCheckIn(false)}>Cancel</button>
-               <button className="btn btn-primary" disabled={!reason.trim()} onClick={() => punch("check-in", reason)}>Check in</button>
-             </div>
-           </div>
-         </div>
-      )}
-      {promptCheckOut && (
-         <div className="modal-scrim items-center justify-center p-4">
-           <div className="card w-full max-w-md p-6">
-             <h3 className="text-lg font-bold text-ink">Early Check-out</h3>
-             <p className="mt-2 text-sm text-ink-3">You haven't completed your minimum shift hours. Please provide a reason.</p>
-             <input autoFocus className="input mt-4" placeholder="Personal work, medical, etc." value={reason} onChange={e => setReason(e.target.value)} />
-             <div className="mt-5 flex gap-3 justify-end">
-               <button className="btn btn-soft" onClick={() => setPromptCheckOut(false)}>Cancel</button>
-               <button className="btn btn-primary" disabled={!reason.trim()} onClick={() => punch("check-out", reason)}>Check out</button>
-             </div>
-           </div>
-         </div>
-      )}
-      <PageTitle title="My Day" description="Mark your attendance and see what's coming up." />
-      {message ? <div className="rounded-md bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
-      <div className="grid gap-5 md:grid-cols-[1.2fr_0.8fr]">
-        <div className="card p-6 border-t-4 border-t-brand">
-          <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="label">Today attendance</p>
-              <h3 className="mt-2 text-[30px] font-bold leading-none tracking-[-0.035em] text-ink">{summary.todayAttendance?.status ?? "Not marked"}</h3>
-              <p className="mt-2 text-sm text-ink-3 flex gap-3 items-center">
-                <span><span className="font-medium">In:</span> {summary.todayAttendance?.check_in ?? "--"}</span>
-                <span className="h-4 w-px bg-ink-4 block"></span>
-                <span><span className="font-medium">Out:</span> {summary.todayAttendance?.check_out ?? "--"}</span>
-              </p>
-            </div>
-            
-            <div className="flex flex-col items-end gap-3">
-              {hasCheckedIn && !hasCheckedOut && (
-                <div className="text-2xl font-mono font-bold text-brand bg-brand/5 px-4 py-1.5 rounded-lg border border-brand/10">
-                  {formatTime(elapsed)}
-                </div>
+          <div className="flex flex-col items-start gap-3 sm:items-end">
+            {checkedIn && !checkedOut ? <p className="tnum font-mono text-[28px] font-bold text-brand">{hms}</p> : null}
+            <div className="flex gap-2">
+              {isSunday || checkedOut ? null : !checkedIn ? (
+                <button className="btn btn-primary min-h-[44px] px-8" disabled={busy} onClick={checkIn}><Clock3 size={18} />Check in</button>
+              ) : (
+                <>
+                  {onBreak
+                    ? <button className="btn btn-primary min-h-[44px]" disabled={busy} onClick={() => punch("break-end")}><CheckCircle2 size={18} />End break</button>
+                    : <button className="btn btn-soft min-h-[44px]" disabled={busy} onClick={() => punch("break-start")}><Coffee size={18} />Break</button>}
+                  <button className="btn btn-soft min-h-[44px] text-rose-600" disabled={busy} onClick={checkOut}>
+                    <LogOut size={18} />Check out
+                  </button>
+                </>
               )}
-              <div className="flex gap-2">
-                {isSunday ? (
-                   <span className="badge bg-sunk text-ink-2 px-4 py-2 text-sm border border-line">Weekend (No check-in)</span>
-                ) : !hasCheckedIn ? (
-                   <button className="btn btn-primary px-8" onClick={handleCheckInClick}><Clock3 size={18} /> Check in</button>
-                ) : !hasCheckedOut ? (
-                   <>
-                     {onBreak ? (
-                       <button className="btn btn-success" onClick={() => punch("break-end")}><CheckCircle2 size={18} /> End Break</button>
-                     ) : (
-                       <button className="btn btn-soft" onClick={() => punch("break-start")}><Coffee size={18} /> Take Break</button>
-                     )}
-                     <button className="btn btn-danger" onClick={handleCheckOutClick}><LogOut size={18} /> Check out</button>
-                   </>
-                ) : (
-                   <span className="badge bg-sunk text-ink-2 px-4 py-2 text-sm border border-line">Shift Completed</span>
-                )}
-              </div>
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-4">
-          <StatCard icon={CalendarCheck} label="Present" value={summary.monthAttendance.present} sub="This month" />
-          <StatCard icon={Clock3} label="Late" value={summary.monthAttendance.late} sub="This month" />
-        </div>
+        {checkedIn && !checkedOut ? (
+          <p className="mt-4 border-t border-line pt-3 text-[12px] text-ink-4">
+            Remember to check out before you leave — a day without a check-out is counted as leave.
+          </p>
+        ) : null}
       </div>
+
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="card p-5">
-          <div className="flex items-center gap-2">
-            <span className="rounded-lg bg-orange-50 p-2 text-brand"><FileText size={18} /></span>
-            <h3 className="font-bold text-ink">Upcoming leaves</h3>
-          </div>
-          <div className="mt-4 space-y-2">
-            {summary.upcomingLeaves && summary.upcomingLeaves.length ? summary.upcomingLeaves.map((leave) => (
-              <div key={leave.id} className="flex items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
-                <div>
-                  <p className="font-semibold text-ink">{leave.leave_type_name}</p>
-                  <p className="text-xs text-ink-3">{leave.start_date} → {leave.end_date} · {leave.days} day{leave.days === 1 ? "" : "s"}</p>
-                </div>
-                <Badge value="Approved" />
+          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">This month</p>
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            {[
+              ["Present", summary.monthAttendance.present + summary.monthAttendance.late],
+              ["Late", summary.monthAttendance.late],
+              ["Leave", summary.monthAttendance.leave ?? 0],
+            ].map(([label, value]) => (
+              <div key={label as string}>
+                <p className="tnum text-[22px] font-bold leading-none text-ink">{value}</p>
+                <p className="mt-1.5 text-[12.5px] text-ink-3">{label}</p>
               </div>
-            )) : <p className="text-sm text-ink-3">No approved upcoming leave.</p>}
+            ))}
           </div>
+          <button type="button" className="mt-4 text-[12.5px] font-semibold text-brand hover:underline" onClick={() => onView("attendance")}>
+            See my attendance →
+          </button>
         </div>
-        <div className="card p-5" style={{ background: "var(--warn-tint)", borderColor: "#f5dba8" }}>
-          <div className="flex items-center gap-2">
-            <span className="rounded-lg bg-amber-400 p-2 text-white shadow-sm"><Sparkles size={18} /></span>
-            <h3 className="font-bold text-ink">Upcoming holidays</h3>
-            {summary.upcomingHolidays && summary.upcomingHolidays.length ? (
-              <span className="badge bg-amber-400 text-white">{summary.upcomingHolidays.length}</span>
-            ) : null}
+
+        <div className="card p-5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Coming up</p>
+          <div className="mt-2 divide-y divide-line">
+            {coming.length ? coming.map((c) => (
+              <div key={c.key} className="flex items-center justify-between gap-3 py-2.5">
+                <p className="text-[13.5px] font-semibold text-ink">{c.title}</p>
+                <p className="tnum text-[12px] text-ink-3">{c.sub}</p>
+              </div>
+            )) : <p className="py-2.5 text-[13.5px] text-ink-3">No leave or holidays coming up.</p>}
           </div>
-          <div className="mt-4 space-y-2">
-            {summary.upcomingHolidays && summary.upcomingHolidays.length ? summary.upcomingHolidays.map((holiday) => {
-              const days = Math.round((Date.parse(holiday.holiday_date) - Date.parse(today)) / 86400000);
-              return (
-                <div key={holiday.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-white px-4 py-3 shadow-sm">
-                  <div>
-                    <p className="font-bold text-ink">{holiday.name}</p>
-                    {holiday.description ? <p className="text-xs text-ink-3">{holiday.description}</p> : null}
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <p className="text-sm font-bold text-amber-700">{holiday.holiday_date}</p>
-                    <p className="text-[11px] font-semibold text-amber-600">
-                      {days <= 0 ? "Today 🎉" : days === 1 ? "Tomorrow" : `in ${days} days`}
-                    </p>
-                  </div>
-                </div>
-              );
-            }) : <p className="text-sm text-ink-3">No upcoming holidays.</p>}
-          </div>
+          <button type="button" className="mt-3 text-[12.5px] font-semibold text-brand hover:underline" onClick={() => onView("leave")}>
+            Apply for leave →
+          </button>
         </div>
       </div>
+
+      {prompt ? (
+        <div className="modal-scrim items-center justify-center p-4">
+          <form className="card w-full max-w-md space-y-4 p-6" onSubmit={(e) => { e.preventDefault(); if (reason.trim()) punch(prompt, reason); }}>
+            <h3 className="text-lg font-bold text-ink">{prompt === "check-in" ? "Checking in late" : "Leaving early"}</h3>
+            <p className="text-sm text-ink-3">{prompt === "check-in" ? "Add a short reason for your admin." : "You haven't completed your hours yet. Add a short reason for your admin."}</p>
+            <input autoFocus className="input" value={reason} onChange={(e) => setReason(e.target.value)}
+              placeholder={prompt === "check-in" ? "e.g. Traffic" : "e.g. Doctor's appointment"} />
+            <div className="flex justify-end gap-3">
+              <button type="button" className="btn btn-soft" onClick={() => { setPrompt(null); setReason(""); }}>Cancel</button>
+              <button className="btn btn-primary" disabled={!reason.trim() || busy}>{prompt === "check-in" ? "Check in" : "Check out"}</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1058,6 +1012,9 @@ function Employees() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [designations, setDesignations] = useState<Designation[]>([]);
   const [query, setQuery] = useState("");
+  const [tab, setTab] = useState<"people" | "departments">("people");
+  // Former employees are out of sight unless asked for.
+  const [showFormer, setShowFormer] = useState(false);
   const [editing, setEditing] = useState<Employee | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -1068,14 +1025,16 @@ function Employees() {
     setDesignations(data.designations);
   }
 
-  useEffect(() => {
-    load().catch(console.error);
-  }, []);
+  useEffect(() => { load().catch(console.error); }, []);
 
+  const formerCount = employees.filter((e) => e.employment_status !== "Active").length;
   const filtered = useMemo(() => {
     const needle = query.toLowerCase();
-    return employees.filter((employee) => [employee.full_name, employee.email, employee.employee_code].join(" ").toLowerCase().includes(needle));
-  }, [employees, query]);
+    return employees
+      .filter((e) => showFormer || e.employment_status === "Active")
+      .filter((e) => [e.full_name, e.email, e.employee_code].join(" ").toLowerCase().includes(needle))
+      .sort((a, b) => Number(b.employment_status === "Active") - Number(a.employment_status === "Active") || a.full_name.localeCompare(b.full_name));
+  }, [employees, query, showFormer]);
 
   async function save(employee: Partial<Employee> & { password?: string }) {
     await api(editing ? `/employees/${editing.id}` : "/employees", {
@@ -1090,60 +1049,83 @@ function Employees() {
   return (
     <section className="space-y-5">
       <PageTitle
-        title="Employee Management"
-        description="Add people, assign departments and salaries, and manage login access."
-        action={
-          <button className="btn btn-primary" onClick={() => setOpen(true)}>
-            <Plus size={17} />
-            Add employee
+        title="People"
+        description="Everyone on the team, and how the company is organised."
+        action={tab === "people" ? (
+          <button className="btn btn-primary" onClick={() => { setEditing(null); setOpen(true); }}>
+            <Plus size={17} />Add employee
           </button>
-        }
+        ) : undefined}
       />
-      <div className="card p-3">
-        <div className="flex items-center gap-2">
-          <Search size={18} className="text-ink-4" />
-          <input className="input border-0 focus:ring-0" placeholder="Search employees" value={query} onChange={(event) => setQuery(event.target.value)} />
-        </div>
-      </div>
-      <DataTable
-        title="Employees"
-        rows={filtered}
-        columns={[
-          ["Employee", (row) => <div className="font-semibold text-ink">{row.full_name}<div className="code text-xs font-normal text-ink-3">{row.employee_code}</div></div>],
-          ["Email", (row) => row.email],
-          ["Department", (row) => row.department_name ?? "-"],
-          ["Designation", (row) => row.designation_name ?? "-"],
-          ["Salary", (row) => currency.format(row.monthly_salary)],
-          ["Status", (row) => <Badge value={row.employment_status} />],
-          [
-            "Action",
-            (row) => (
-              <button
-                className="btn btn-soft"
-                onClick={() => {
-                  setEditing(row);
-                  setOpen(true);
-                }}
-              >
-                Edit
+
+      <Tabs value={tab} onChange={setTab} options={[["people", "Employees"], ["departments", "Departments"]]} />
+
+      {tab === "people" ? (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative min-w-[14rem] flex-1">
+              <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
+              <input className="input pl-9" placeholder="Search by name, email or ID" value={query} onChange={(e) => setQuery(e.target.value)} />
+            </div>
+            {formerCount ? (
+              <label className="flex cursor-pointer items-center gap-2 text-[13px] font-medium text-ink-2">
+                <input type="checkbox" checked={showFormer} onChange={(e) => setShowFormer(e.target.checked)} />
+                Show former employees ({formerCount})
+              </label>
+            ) : null}
+          </div>
+
+          <div className="card divide-y divide-line">
+            {filtered.length ? filtered.map((row) => (
+              <button key={row.id} type="button" onClick={() => { setEditing(row); setOpen(true); }}
+                className={classNames("flex w-full items-center gap-4 px-5 py-3.5 text-left transition-colors duration-150 hover:bg-[var(--surface-sunk)]",
+                  row.employment_status !== "Active" && "opacity-60")}>
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">
+                  {initialsOf(row.full_name)}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[14px] font-semibold text-ink">{row.full_name}</span>
+                  <span className="block truncate text-[12.5px] text-ink-3">
+                    {[row.designation_name, row.department_name].filter(Boolean).join(" · ") || row.email}
+                  </span>
+                </span>
+                <span className="hidden text-right sm:block">
+                  <span className="tnum block text-[13.5px] font-semibold text-ink">{currency.format(row.monthly_salary)}</span>
+                  <span className="code block text-[11.5px] text-ink-4">{row.employee_code}</span>
+                </span>
+                {row.employment_status !== "Active" ? <Badge value="Former" /> : null}
+                <ChevronRight size={16} className="shrink-0 text-ink-4" />
               </button>
-            ),
-          ],
-        ]}
-      />
+            )) : <p className="px-5 py-10 text-center text-[13.5px] text-ink-3">No one matches that search.</p>}
+          </div>
+        </>
+      ) : <Departments />}
+
       {open ? (
         <EmployeeModal
           employee={editing}
           departments={departments}
           designations={designations}
-          onClose={() => {
-            setOpen(false);
-            setEditing(null);
-          }}
+          onClose={() => { setOpen(false); setEditing(null); }}
           onSave={save}
         />
       ) : null}
     </section>
+  );
+}
+
+// Two or three plain choices across the top of a page.
+function Tabs<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: Array<[T, string]> }) {
+  return (
+    <div className="flex gap-1 border-b border-line">
+      {options.map(([id, label]) => (
+        <button key={id} type="button" onClick={() => onChange(id)}
+          className={classNames("-mb-px border-b-2 px-3 py-2 text-[13.5px] font-semibold transition-colors duration-150",
+            value === id ? "border-brand text-ink" : "border-transparent text-ink-3 hover:text-ink")}>
+          {label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -1191,15 +1173,13 @@ function EmployeeModal({
 
   return (
     <div className="modal-scrim items-start justify-center overflow-y-auto p-4">
-      <form onSubmit={submit} className="card mx-auto max-w-3xl p-5">
+      <form onSubmit={submit} className="card my-8 w-full max-w-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-xl font-bold text-ink">{employee ? "Edit employee" : "Add employee"}</h2>
-            <p className="text-sm text-ink-3">Employee profile, salary, bank details, and login.</p>
+            <h2 className="text-xl font-bold text-ink">{employee ? employee.full_name : "Add employee"}</h2>
+            <p className="text-sm text-ink-3">{employee ? "Edit details, salary or login." : "They can sign in with this email and password."}</p>
           </div>
-          <button type="button" className="btn btn-soft" onClick={onClose}>
-            Close
-          </button>
+          <button type="button" aria-label="Close" className="rounded-lg p-1.5 text-ink-4 hover:bg-sunk" onClick={onClose}><X size={20} /></button>
         </div>
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
           <Field label="Employee ID"><input required className="input" value={form.employee_code} onChange={(e) => update("employee_code", e.target.value)} /></Field>
@@ -1218,21 +1198,26 @@ function EmployeeModal({
           </Field>
           <Field label="Joining date"><input type="date" className="input" value={form.joining_date} onChange={(e) => update("joining_date", e.target.value)} /></Field>
           <Field label="Monthly salary"><input type="number" className="input" value={form.monthly_salary} onChange={(e) => update("monthly_salary", Number(e.target.value))} /></Field>
-          <Field label="Employment status">
+          <Field label="Status">
             <select className="input" value={form.employment_status} onChange={(e) => update("employment_status", e.target.value)}>
-              <option>Active</option>
-              <option>Inactive</option>
+              <option value="Active">Working here</option>
+              <option value="Inactive">Left — hide everywhere</option>
             </select>
           </Field>
           <Field label={employee ? "Reset password" : "Login password"}><input className="input" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder={employee ? "Leave blank to keep current" : "password123"} /></Field>
-          <Field label="Bank name"><input className="input" value={form.bank_name} onChange={(e) => update("bank_name", e.target.value)} /></Field>
-          <Field label="Account number"><input className="input" value={form.account_number} onChange={(e) => update("account_number", e.target.value)} /></Field>
-          <Field label="IFSC code"><input className="input" value={form.ifsc_code} onChange={(e) => update("ifsc_code", e.target.value)} /></Field>
-          <Field label="Address"><textarea className="input min-h-24" value={form.address} onChange={(e) => update("address", e.target.value)} /></Field>
         </div>
+        <details className="mt-5 rounded-lg border border-line px-4 py-3">
+          <summary className="cursor-pointer text-[13px] font-semibold text-ink-2">Bank details and address</summary>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <Field label="Bank name"><input className="input" value={form.bank_name} onChange={(e) => update("bank_name", e.target.value)} /></Field>
+            <Field label="Account number"><input className="input" value={form.account_number} onChange={(e) => update("account_number", e.target.value)} /></Field>
+            <Field label="IFSC code"><input className="input" value={form.ifsc_code} onChange={(e) => update("ifsc_code", e.target.value)} /></Field>
+            <Field label="Address"><textarea className="input min-h-20" value={form.address} onChange={(e) => update("address", e.target.value)} /></Field>
+          </div>
+        </details>
         <div className="mt-5 flex justify-end gap-3">
           <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" disabled={busy}>{busy ? "Saving..." : "Save employee"}</button>
+          <button className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
         </div>
       </form>
     </div>
@@ -1289,7 +1274,6 @@ function Departments() {
 
   return (
     <section className="space-y-5">
-      <PageTitle title="Departments & Designations" description="Keep company structure simple and reusable." />
       {message ? <div className="rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
       <div className="grid gap-4 lg:grid-cols-2">
         <ManagerList title="Departments" value={departmentName} onValue={setDepartmentName} rows={departments} onCreate={() => create("departments", departmentName)} onDelete={(id) => remove("departments", id)} onEdit={setEditingDept} onCheckEmployees={setCheckingEmployeesDept} />
@@ -1423,7 +1407,7 @@ type GridResponse = {
 function dayTone(status: string) {
   if (["Present", "Holiday", "Paid leave", "Paid"].includes(status)) return "bg-emerald-50 text-emerald-700 border-emerald-200";
   if (["Half day", "No check-in", "Half Day"].includes(status)) return "bg-amber-50 text-amber-700 border-amber-200";
-  if (["Absent", "Unpaid leave", "Unpaid", "Not joined"].includes(status)) return "bg-rose-50 text-rose-700 border-rose-200";
+  if (["Absent", "Unpaid leave", "Unpaid", "Not joined", "Leave"].includes(status)) return "bg-rose-50 text-rose-700 border-rose-200";
   return "bg-sunk text-ink-2 border-line";
 }
 
@@ -1467,14 +1451,9 @@ function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloa
 
   return (
     <div className="card p-5">
-      <div>
-        <h3 className="font-bold text-ink">{showSalary ? "Salary day breakdown" : "Day-by-day attendance"}</h3>
-        <p className="text-xs text-ink-3">
-          {showSalary
-            ? "How each day affects this salary. Per-day rate = monthly salary ÷ days in month."
-            : "Every day of the month with its status. Sundays are paid weekly offs."}
-        </p>
-      </div>
+      <p className="text-xs text-ink-3">
+        Per-day rate = monthly salary ÷ days in the month. Sundays, holidays and paid leave cost nothing.
+      </p>
 
       {message ? <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
 
@@ -1520,7 +1499,7 @@ function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloa
               </button>
             ))}
           </div>
-          {isAdmin ? <p className="mt-3 text-[11px] text-ink-4">Click any day to override it as Paid / Half day / Unpaid.</p> : null}
+          {isAdmin ? <p className="mt-3 text-[11px] text-ink-4">Wrong? Click a day to count it as paid, half day or unpaid.</p> : null}
         </>
       ) : <p className="mt-4 text-sm text-ink-3">Select an employee to see the breakdown.</p>}
 
@@ -1607,18 +1586,21 @@ function DayRequests({ isAdmin }: { isAdmin: boolean }) {
   }
 
   const pending = requests.filter((r) => r.status === "Pending").length;
+  // Admins only need what is waiting on them; settled requests are history.
+  const shown = isAdmin ? requests.filter((r) => r.status === "Pending") : requests.slice(0, 5);
+  if (isAdmin && !shown.length) return null;
 
   return (
     <div className="card overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
         <h3 className="font-bold text-ink">
-          {isAdmin ? "Attendance correction requests" : "My correction requests"}
+          {isAdmin ? "Corrections to review" : "Something wrong with a day?"}
           {pending ? <span className="badge ml-2 bg-amber-50 text-amber-700">{pending} pending</span> : null}
         </h3>
-        {!isAdmin ? <button type="button" className="btn btn-primary" onClick={() => setOpen(true)}><Plus size={16} />Request correction</button> : null}
+        {!isAdmin ? <button type="button" className="btn btn-soft" onClick={() => setOpen(true)}><Plus size={16} />Request a correction</button> : null}
       </div>
       {message ? <div className="px-4 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
-      <div className="overflow-x-auto">
+      {shown.length ? <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="bg-sunk text-xs uppercase tracking-wide text-ink-3">
             <tr>
@@ -1632,7 +1614,7 @@ function DayRequests({ isAdmin }: { isAdmin: boolean }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {requests.length ? requests.map((r) => (
+            {shown.length ? shown.map((r) => (
               <tr key={r.id} className="bg-white">
                 {isAdmin ? <td className="px-4 py-3 font-semibold text-ink">{r.employee_name}</td> : null}
                 <td className="px-4 py-3">{r.attendance_date}</td>
@@ -1654,7 +1636,7 @@ function DayRequests({ isAdmin }: { isAdmin: boolean }) {
             )}
           </tbody>
         </table>
-      </div>
+      </div> : null}
 
       {open && (
         <div className="modal-scrim items-center justify-center p-4">
@@ -1664,7 +1646,7 @@ function DayRequests({ isAdmin }: { isAdmin: boolean }) {
             <Field label="Date"><input required className="input" type="date" value={form.attendance_date} onChange={(e) => setForm({ ...form, attendance_date: e.target.value })} /></Field>
             <Field label="What do you need?">
               <select className="input" value={form.request_type} onChange={(e) => setForm({ ...form, request_type: e.target.value })}>
-                <option value="Timing">Fix check-in / check-out timing</option>
+                <option value="Timing">Fix check-in / check-out time (also for a missed check-out)</option>
                 <option value="Half Day">Mark as half day</option>
                 <option value="Full Day">Mark as full day (present)</option>
               </select>
@@ -1708,11 +1690,12 @@ const STATUS_COLOUR: Record<string, string> = {
 // A month of attendance is a shape, not a list — so the month is drawn as a
 // month. The table underneath still carries every detail for anyone auditing a
 // particular day.
-function AttendanceCalendar({ year, month, byDay, headcount, single }: {
+function AttendanceCalendar({ year, month, byDay, headcount, single, onDay }: {
   year: number; month: number;
   byDay: Map<string, AttendanceRecord[]>;
   headcount: number;
   single: boolean;
+  onDay?: (date: string) => void;
 }) {
   const days = new Date(year, month, 0).getDate();
   const firstDow = new Date(year, month - 1, 1).getDay();
@@ -1732,10 +1715,10 @@ function AttendanceCalendar({ year, month, byDay, headcount, single }: {
           const one = single ? records[0] : null;
 
           return (
-            <div key={date}
-              title={records.length ? records.map((r) => `${r.employee_name ?? "You"}: ${r.status}`).join("\n") : undefined}
+            <button type="button" key={date} onClick={() => onDay?.(date)}
+              title={records.length ? records.map((r) => `${r.employee_name ?? "You"}: ${attendanceLabel(r)}`).join("\n") : undefined}
               className={classNames(
-                "min-h-[62px] rounded-lg border p-1.5 transition-colors duration-150",
+                "min-h-[62px] rounded-lg border p-1.5 text-left align-top transition-colors duration-150 hover:border-line-strong",
                 isToday ? "border-brand bg-brand-tint" : isSunday ? "border-line bg-sunk" : "border-line bg-white",
               )}>
               <div className="flex items-baseline justify-between">
@@ -1748,7 +1731,7 @@ function AttendanceCalendar({ year, month, byDay, headcount, single }: {
                   {/* A phone cell is ~38px wide — "Half Day" does not fit, so the
                       label gives way to the dot and the tooltip carries it. */}
                   <span className={classNames("badge hidden w-full justify-center !px-1 !text-[9px] sm:inline-flex", statusTone(one.status))}>
-                    {one.status}
+                    {one.missed_checkout ? "No check-out" : attendanceLabel(one)}
                   </span>
                   <span className="mx-auto block h-2 w-2 rounded-full sm:hidden"
                     style={{ background: STATUS_COLOUR[one.status] ?? VIZ.neutral }} />
@@ -1768,7 +1751,7 @@ function AttendanceCalendar({ year, month, byDay, headcount, single }: {
                   </p>
                 </div>
               ) : null}
-            </div>
+            </button>
           );
         })}
       </div>
@@ -1778,10 +1761,52 @@ function AttendanceCalendar({ year, month, byDay, headcount, single }: {
         {["Present", "Late", "Half Day", "Absent", "On Leave"].map((s) => (
           <span key={s} className="flex items-center gap-1.5 text-[11px] text-ink-3">
             <span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLOUR[s] ?? VIZ.neutral }} />
-            {s}
+            {s === "On Leave" ? "Leave" : s}
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+// What a record is called on screen. A missed check-out is stored as leave, and
+// says so.
+function attendanceLabel(r: Pick<AttendanceRecord, "status" | "missed_checkout">) {
+  if (r.status === "On Leave") return "Leave";
+  return r.status;
+}
+
+// One picker for "whose", with former employees kept apart at the bottom.
+function PersonPicker({ value, onChange, people, allLabel = "Everyone" }: {
+  value: string; onChange: (id: string) => void; people: Employee[]; allLabel?: string;
+}) {
+  const current = people.filter((p) => p.employment_status === "Active");
+  const former = people.filter((p) => p.employment_status !== "Active");
+  return (
+    <select className="input h-9 w-auto py-0 text-sm" value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">{allLabel}</option>
+      {current.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+      {former.length ? (
+        <optgroup label="Former employees">
+          {former.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+        </optgroup>
+      ) : null}
+    </select>
+  );
+}
+
+// Month stepper shared by Attendance and Payroll.
+function MonthStepper({ month, year, onChange, max }: { month: number; year: number; onChange: (m: number, y: number) => void; max: { month: number; year: number } }) {
+  const atMax = year * 12 + month >= max.year * 12 + max.month;
+  function step(by: number) {
+    const d = new Date(year, month - 1 + by, 1);
+    onChange(d.getMonth() + 1, d.getFullYear());
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <button type="button" aria-label="Previous month" className="btn btn-ghost px-2" onClick={() => step(-1)}><ChevronLeft size={17} /></button>
+      <span className="min-w-[8.5rem] text-center text-[14px] font-semibold tracking-[-0.02em] text-ink">{monthNames[month - 1]} {year}</span>
+      <button type="button" aria-label="Next month" className="btn btn-ghost px-2" disabled={atMax} onClick={() => step(1)}><ChevronRight size={17} /></button>
     </div>
   );
 }
@@ -1790,21 +1815,12 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
   const now = new Date();
   const [rows, setRows] = useState<AttendanceRecord[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
-  // One month selector drives the calendar, the history table and (for admin) the employee.
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [year, setYear] = useState(now.getFullYear());
   const [employeeId, setEmployeeId] = useState("");
-  const [reloadKey, setReloadKey] = useState(0);
-  const [editingAttendance, setEditingAttendance] = useState<AttendanceRecord | null>(null);
-  const [attendanceForm, setAttendanceForm] = useState({
-    employee_id: 0,
-    attendance_date: "",
-    check_in: "",
-    check_out: "",
-    break_start: "",
-    break_end: "",
-    status: "Present"
-  });
+  const [openDay, setOpenDay] = useState<string | null>(null);
+  const [editing, setEditing] = useState<AttendanceRecord | null>(null);
+  const [form, setForm] = useState({ employee_id: 0, attendance_date: "", check_in: "", check_out: "", break_start: "", break_end: "", status: "Present" });
 
   const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
   const monthEnd = `${year}-${String(month).padStart(2, "0")}-${new Date(year, month, 0).getDate()}`;
@@ -1817,204 +1833,141 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
     if (data.employees) setEmployees(data.employees);
   }
 
-  useEffect(() => {
-    load().catch(console.error);
-  }, [month, year, employeeId, reloadKey]);
-
-  // Stepping a month at a time is how people actually move through attendance;
-  // a month dropdown next to a year box next to a Refresh button is three
-  // decisions for what should be one arrow.
-  function stepMonth(by: number) {
-    const d = new Date(year, month - 1 + by, 1);
-    setMonth(d.getMonth() + 1);
-    setYear(d.getFullYear());
-  }
+  useEffect(() => { load().catch(console.error); }, [month, year, employeeId]);
 
   const byDay = useMemo(() => {
     const m = new Map<string, AttendanceRecord[]>();
-    for (const r of rows) {
-      const list = m.get(r.attendance_date) ?? [];
-      list.push(r);
-      m.set(r.attendance_date, list);
-    }
+    for (const r of rows) m.set(r.attendance_date, [...(m.get(r.attendance_date) ?? []), r]);
     return m;
   }, [rows]);
 
   const tally = useMemo(() => {
-    const t = { Present: 0, Late: 0, "Half Day": 0, Absent: 0, "On Leave": 0 } as Record<string, number>;
+    const t: Record<string, number> = { Present: 0, Late: 0, "Half Day": 0, Absent: 0, "On Leave": 0 };
     for (const r of rows) if (t[r.status] !== undefined) t[r.status] += 1;
     return t;
   }, [rows]);
 
-  const marked = rows.length;
-  const attended = tally.Present + tally.Late;
-  const rate = marked ? Math.round((attended / marked) * 100) : 0;
-  // Only days actually worked count towards the average — summing hours across
-  // absences and dividing by worked days inflates it.
-  const workedRows = rows.filter((r) => r.status === "Present" || r.status === "Late" || r.status === "Half Day");
-  const avgHours = workedRows.length
-    ? (workedRows.reduce((n, r) => n + (Number(r.total_hours) || 0), 0) / workedRows.length).toFixed(1)
-    : "0.0";
-  const singleEmployee = !isAdmin || !!employeeId;
-  const headcount = isAdmin && !employeeId ? employees.length : 1;
-  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+  const single = !isAdmin || !!employeeId;
+  const activePeople = employees.filter((e) => e.employment_status === "Active");
+  const picked = employees.find((e) => String(e.id) === employeeId);
 
-  function handleEditClick(record: AttendanceRecord) {
-    setEditingAttendance(record);
-    setAttendanceForm({
-      employee_id: record.employee_id,
-      attendance_date: record.attendance_date,
-      check_in: record.check_in ?? "",
-      check_out: record.check_out ?? "",
-      break_start: record.break_start ?? "",
-      break_end: record.break_end ?? "",
-      status: record.status
+  function startEdit(r: AttendanceRecord) {
+    setEditing(r);
+    setForm({
+      employee_id: r.employee_id, attendance_date: r.attendance_date,
+      check_in: r.check_in ?? "", check_out: r.check_out ?? "",
+      break_start: r.break_start ?? "", break_end: r.break_end ?? "",
+      status: r.status,
     });
   }
 
   async function saveEdit(e: FormEvent) {
     e.preventDefault();
-    if (!editingAttendance) return;
     try {
-      await api("/attendance/manual", {
-        method: "POST",
-        body: JSON.stringify(attendanceForm),
-      });
-      setEditingAttendance(null);
+      await api("/attendance/manual", { method: "POST", body: JSON.stringify(form) });
+      setEditing(null);
       await load();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to edit attendance record");
+      alert(err instanceof Error ? err.message : "Could not save");
     }
   }
 
-  const columns: Array<[string, (row: AttendanceRecord) => React.ReactNode]> = [
-    ["Employee", (row) => row.employee_name ?? row.employee_code ?? "You"],
-    ["Date", (row) => <span className="tnum">{row.attendance_date}</span>],
-    ["Check in", (row) => (
-       <div>
-         <div className="tnum">{row.check_in ?? "-"}</div>
-         {row.late_checkin_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.late_checkin_reason}</div>}
-       </div>
-    )],
-    ["Check out", (row) => (
-       <div>
-         <div className="tnum">{row.check_out ?? "-"}</div>
-         {row.early_checkout_reason && <div className="text-[10px] text-amber-600 mt-0.5">{row.early_checkout_reason}</div>}
-       </div>
-    )],
-    ["Breaks", (row) => <BreaksCell row={row} />],
-    ["Worked", (row) => <span className="tnum font-semibold text-ink">{workedHMS(row)}</span>],
-    ["Status", (row) => <Badge value={row.status} />],
-  ];
-
-  if (isAdmin) {
-    columns.push([
-      "Action",
-      (row) => (
-        <button className="btn btn-soft" onClick={() => handleEditClick(row)}>Edit</button>
-      )
-    ]);
-  }
+  const dayRecords = openDay ? (byDay.get(openDay) ?? []) : [];
+  // On the everyone-view, a day also lists who never checked in.
+  const dayMissing = openDay && isAdmin && !employeeId
+    ? activePeople.filter((p) => !dayRecords.some((r) => r.employee_id === p.id) && (!p.joining_date || p.joining_date <= openDay))
+    : [];
 
   return (
     <section className="space-y-5">
       <PageTitle
         title="Attendance"
-        description={isAdmin ? "Everyone's attendance for the month — filter by employee to narrow it down." : "Your attendance for the selected month."}
-        action={isAdmin ? <a className="btn btn-soft" href={`/api/attendance.csv?${new URLSearchParams({ start: monthStart, end: monthEnd, ...(employeeId ? { employeeId } : {}) }).toString()}`}><Download size={17} />CSV</a> : null}
+        description={isAdmin ? "Click any day to see who was in, and to fix a record." : "Your month at a glance. Click a day for its times."}
       />
 
-      {/* One bar: which month, whose, and a way to force a refetch. */}
       <div className="card flex flex-wrap items-center gap-3 p-3">
-        <div className="flex items-center gap-1">
-          <button type="button" aria-label="Previous month" className="btn btn-ghost px-2" onClick={() => stepMonth(-1)}>
-            <ChevronLeft size={17} />
-          </button>
-          <span className="min-w-[8.5rem] text-center text-[14px] font-semibold tracking-[-0.02em] text-ink">
-            {monthNames[month - 1]} {year}
-          </span>
-          <button type="button" aria-label="Next month" className="btn btn-ghost px-2" disabled={isCurrentMonth} onClick={() => stepMonth(1)}>
-            <ChevronRight size={17} />
-          </button>
-          {!isCurrentMonth ? (
-            <button type="button" className="ml-1 rounded-full px-2.5 py-1 text-[11.5px] font-semibold text-brand hover:bg-brand-tint"
-              onClick={() => { setMonth(now.getMonth() + 1); setYear(now.getFullYear()); }}>
-              Today
-            </button>
-          ) : null}
-        </div>
-
-        {isAdmin ? (
-          <select className="input h-9 w-auto py-0 text-sm" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
-            <option value="">All employees</option>
-            {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
-          </select>
-        ) : null}
-
-        <button type="button" className="btn btn-ghost ml-auto px-2.5" title="Refresh" onClick={() => setReloadKey((k) => k + 1)}>
-          <RefreshCcw size={15} />
-        </button>
+        <MonthStepper month={month} year={year} max={{ month: now.getMonth() + 1, year: now.getFullYear() }}
+          onChange={(m, y) => { setMonth(m); setYear(y); }} />
+        {isAdmin ? <PersonPicker value={employeeId} onChange={setEmployeeId} people={employees} /> : null}
+        <p className="tnum ml-auto text-[12.5px] text-ink-3">
+          {single
+            ? `${tally.Present + tally.Late} present · ${tally.Late} late · ${tally["Half Day"]} half · ${tally["On Leave"]} leave · ${tally.Absent} absent`
+            : `${activePeople.length} people · ${rows.filter((r) => r.status === "Present" || r.status === "Late").length} check-ins this month`}
+        </p>
       </div>
 
-      {/* How the month went, before the detail of how each day went. */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard icon={CalendarCheck} label="Attendance rate" value={`${rate}%`} sub={`${attended} of ${marked} marked days`} />
-        <StatCard icon={Clock3} label="Late marks" value={tally.Late} sub={`${tally["Half Day"]} half day${tally["Half Day"] === 1 ? "" : "s"}`} />
-        <StatCard icon={X} label="Absent" value={tally.Absent} sub={`${tally["On Leave"]} on approved leave`} />
-        <StatCard icon={History} label="Average day" value={`${avgHours} hrs`} sub="Across days worked" />
-      </div>
+      {picked && picked.employment_status !== "Active" ? (
+        <p className="text-[12.5px] font-medium text-ink-3">Showing a former employee.</p>
+      ) : null}
 
-      <AttendanceCalendar year={year} month={month} byDay={byDay} headcount={headcount} single={singleEmployee} />
+      <AttendanceCalendar year={year} month={month} byDay={byDay} headcount={activePeople.length || 1} single={single} onDay={setOpenDay} />
 
       <DayRequests isAdmin={isAdmin} />
 
-      <DataTable
-        title="Attendance History"
-        rows={rows}
-        columns={columns}
-      />
+      {openDay ? (
+        <div className="modal-scrim items-start justify-center overflow-y-auto p-4">
+          <div className="card my-8 w-full max-w-lg p-6">
+            <div className="flex items-start justify-between gap-4">
+              <h3 className="text-lg font-bold text-ink">
+                {new Date(`${openDay}T00:00:00`).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })}
+              </h3>
+              <button type="button" aria-label="Close" className="rounded-lg p-1.5 text-ink-4 hover:bg-sunk" onClick={() => setOpenDay(null)}><X size={20} /></button>
+            </div>
+            <div className="mt-4 divide-y divide-line">
+              {dayRecords.map((r) => (
+                <div key={r.id} className="flex items-start gap-3 py-3">
+                  <div className="min-w-0 flex-1">
+                    {!single || isAdmin ? <p className="text-[13.5px] font-semibold text-ink">{r.employee_name ?? "You"}</p> : null}
+                    <p className="tnum text-[12.5px] text-ink-3">
+                      {r.check_in ? `In ${r.check_in.slice(0, 5)}` : "No check-in"}
+                      {r.check_out ? ` · Out ${r.check_out.slice(0, 5)}` : ""}
+                      {r.check_out ? ` · ${workedHMS(r)}` : ""}
+                    </p>
+                    {r.missed_checkout ? <p className="mt-0.5 text-[12px] font-medium text-rose-600">Didn't check out — counted as leave</p> : null}
+                    {r.late_checkin_reason ? <p className="mt-0.5 text-[12px] text-amber-700">Late: {r.late_checkin_reason}</p> : null}
+                    {r.early_checkout_reason ? <p className="mt-0.5 text-[12px] text-amber-700">Left early: {r.early_checkout_reason}</p> : null}
+                  </div>
+                  <Badge value={attendanceLabel(r)} />
+                  {isAdmin ? <button type="button" className="btn btn-ghost px-2 py-1 text-xs" onClick={() => startEdit(r)}><Pencil size={13} />Edit</button> : null}
+                </div>
+              ))}
+              {dayMissing.map((p) => (
+                <div key={`m${p.id}`} className="flex items-center gap-3 py-3">
+                  <p className="flex-1 text-[13.5px] font-semibold text-ink-3">{p.full_name}</p>
+                  <span className="text-[12px] text-ink-4">No check-in</span>
+                </div>
+              ))}
+              {!dayRecords.length && !dayMissing.length ? <p className="py-6 text-center text-[13.5px] text-ink-3">Nothing recorded for this day.</p> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
-      {editingAttendance && (
+      {editing ? (
         <div className="modal-scrim items-center justify-center p-4">
-          <form onSubmit={saveEdit} className="card w-full max-w-md p-6 space-y-4">
-            <h3 className="text-lg font-bold text-ink">Edit Attendance Details</h3>
-            <p className="text-xs text-ink-3">Modify times or status for {editingAttendance.employee_name} on {editingAttendance.attendance_date}.</p>
-            
+          <form onSubmit={saveEdit} className="card w-full max-w-md space-y-4 p-6">
+            <h3 className="text-lg font-bold text-ink">Fix {editing.employee_name}'s day</h3>
+            <p className="text-xs text-ink-3">{editing.attendance_date}. Saving replaces what was recorded.</p>
             <div className="grid grid-cols-2 gap-4">
-              <Field label="Check In">
-                <input className="input" type="time" value={attendanceForm.check_in} onChange={(e) => setAttendanceForm({ ...attendanceForm, check_in: e.target.value })} />
-              </Field>
-              <Field label="Check Out">
-                <input className="input" type="time" value={attendanceForm.check_out} onChange={(e) => setAttendanceForm({ ...attendanceForm, check_out: e.target.value })} />
-              </Field>
+              <Field label="Check in"><input className="input" type="time" value={form.check_in} onChange={(e) => setForm({ ...form, check_in: e.target.value })} /></Field>
+              <Field label="Check out"><input className="input" type="time" value={form.check_out} onChange={(e) => setForm({ ...form, check_out: e.target.value })} /></Field>
             </div>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Break Start">
-                <input className="input" type="time" value={attendanceForm.break_start} onChange={(e) => setAttendanceForm({ ...attendanceForm, break_start: e.target.value })} />
-              </Field>
-              <Field label="Break End">
-                <input className="input" type="time" value={attendanceForm.break_end} onChange={(e) => setAttendanceForm({ ...attendanceForm, break_end: e.target.value })} />
-              </Field>
-            </div>
-
             <Field label="Status">
-              <select className="input" value={attendanceForm.status} onChange={(e) => setAttendanceForm({ ...attendanceForm, status: e.target.value })}>
-                <option>Present</option>
-                <option>Absent</option>
-                <option>Half Day</option>
-                <option>Late</option>
-                <option>On Leave</option>
+              <select className="input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                <option value="Present">Present</option>
+                <option value="Late">Late</option>
+                <option value="Half Day">Half day</option>
+                <option value="Absent">Absent</option>
+                <option value="On Leave">Leave</option>
               </select>
             </Field>
-
-            <div className="flex gap-3 justify-end pt-2">
-              <button type="button" className="btn btn-soft" onClick={() => setEditingAttendance(null)}>Cancel</button>
-              <button type="submit" className="btn btn-primary">Save Changes</button>
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" className="btn btn-soft" onClick={() => setEditing(null)}>Cancel</button>
+              <button type="submit" className="btn btn-primary">Save</button>
             </div>
           </form>
         </div>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -3328,7 +3281,7 @@ type WorkPerson = { id: number; display_name: string; role: string };
 type WorkComment = { id: number; body: string; created_at: string; user_id: number; author_name: string };
 type WorkScope = { kind: "all" | "space" | "list"; id: number };
 
-const WORK_STATUSES = ["Backlog", "To Do", "In Progress", "In Review", "Done"];
+const WORK_STATUSES = ["To Do", "In Progress", "In Review", "Done"];
 
 // A colour per column, the way ClickUp tints its statuses.
 const statusStyle: Record<string, string> = {
@@ -3435,36 +3388,6 @@ function byPriorityThenDue(a: WorkTask, b: WorkTask) {
   return a.due_date.localeCompare(b.due_date) || b.id - a.id;
 }
 
-// Due date first, priority as the tie-break — the mirror of the default sort,
-// for when a deadline matters more than how urgent something was marked.
-function byDueThenPriority(a: WorkTask, b: WorkTask) {
-  const finished = doneLast(a, b);
-  if (finished !== 0) return finished;
-  if (!a.due_date && !b.due_date) return byPriorityThenDue(a, b);
-  if (!a.due_date) return 1;
-  if (!b.due_date) return -1;
-  return a.due_date.localeCompare(b.due_date) || byPriorityThenDue(a, b);
-}
-
-// A filter set someone bothered to name, kept per browser.
-type SavedFilterValues = {
-  query?: string; statusFilter?: string; dueFilter?: string; priorityFilter?: string;
-  sortBy?: "priority" | "due" | "recent"; view?: "board" | "list" | "calendar"; hideDone?: boolean;
-};
-type SavedFilter = { name: string; values: SavedFilterValues };
-
-const SAVED_FILTERS_KEY = "fast_hrms_task_filters";
-
-function loadSavedFilters(): SavedFilter[] {
-  try {
-    const raw = JSON.parse(localStorage.getItem(SAVED_FILTERS_KEY) ?? "[]");
-    return Array.isArray(raw) ? raw.filter((f) => f && typeof f.name === "string" && f.values) : [];
-  } catch { return []; }
-}
-
-function storeSavedFilters(filters: SavedFilter[]) {
-  try { localStorage.setItem(SAVED_FILTERS_KEY, JSON.stringify(filters)); } catch { /* private mode */ }
-}
 
 // A small labelled flag, so priority is readable in every view rather than a
 // coloured dot you have to hover to decode.
@@ -3547,6 +3470,7 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [spaces, setSpaces] = useState<WorkSpace[]>([]);
   const [lists, setLists] = useState<WorkList[]>([]);
   const [people, setPeople] = useState<WorkPerson[]>([]);
+  const [formerPeople, setFormerPeople] = useState<WorkPerson[]>([]);
   const [tasks, setTasks] = useState<WorkTask[]>([]);
   // The view you last chose is the one you get next time.
   const [view, setView] = useState<"board" | "list" | "calendar">(() => {
@@ -3554,14 +3478,9 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     return saved === "list" || saved === "calendar" || saved === "board" ? saved : "board";
   });
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
   const [dueFilter, setDueFilter] = useState("");
   const [priorityFilter, setPriorityFilter] = useState("");
   const [hideDone, setHideDone] = useState(false);
-  const [sortBy, setSortBy] = useState<"priority" | "due" | "recent">("priority");
-  const [savedFilters, setSavedFilters] = useState<SavedFilter[]>(() => loadSavedFilters());
-  const [savingFilter, setSavingFilter] = useState(false);
-  const [filterName, setFilterName] = useState("");
   const searchRef = useRef<HTMLInputElement | null>(null);
   const [spaceId, setSpaceId] = useState(0);
   const [listId, setListId] = useState(0);
@@ -3584,8 +3503,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [seriesOpen, setSeriesOpen] = useState(false);
 
   async function loadMeta() {
-    const m = await api<{ spaces: WorkSpace[]; lists: WorkList[]; people: WorkPerson[] }>("/work/meta");
-    setSpaces(m.spaces); setLists(m.lists); setPeople(m.people);
+    const m = await api<{ spaces: WorkSpace[]; lists: WorkList[]; people: WorkPerson[]; formerPeople?: WorkPerson[] }>("/work/meta");
+    setSpaces(m.spaces); setLists(m.lists); setPeople(m.people); setFormerPeople(m.formerPeople ?? []);
   }
 
   async function loadTasks() {
@@ -3699,7 +3618,6 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
       .filter((t) => {
         if (view !== "calendar" && isUpcomingRepeat(t)) return false;
         if (needle && !`${t.title} ${t.description ?? ""} ${t.list_name}`.toLowerCase().includes(needle)) return false;
-        if (statusFilter && t.status !== statusFilter) return false;
         if (priorityFilter && t.priority !== priorityFilter) return false;
         if (hideDone && t.status === "Done") return false;
         if (dueFilter) {
@@ -3711,8 +3629,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
         }
         return true;
       })
-      .sort(sortBy === "recent" ? (a2, b2) => doneLast(a2, b2) || b2.id - a2.id : sortBy === "due" ? byDueThenPriority : byPriorityThenDue);
-  }, [tasks, query, statusFilter, dueFilter, priorityFilter, sortBy, hideDone, view]);
+      .sort(byPriorityThenDue);
+  }, [tasks, query, dueFilter, priorityFilter, hideDone, view]);
   const upcomingRepeats = view === "calendar" ? 0 : tasks.filter(isUpcomingRepeat).length;
 
   const grouped = useMemo(() => {
@@ -3722,38 +3640,10 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
     return map;
   }, [visibleTasks]);
 
-  const filtersOn = !!(query.trim() || statusFilter || dueFilter || priorityFilter || hideDone);
-
-  const currentFilter: SavedFilterValues = { query, statusFilter, dueFilter, priorityFilter, sortBy, view, hideDone };
-
-  function applyFilter(f: SavedFilter) {
-    setQuery(f.values.query ?? "");
-    setStatusFilter(f.values.statusFilter ?? "");
-    setDueFilter(f.values.dueFilter ?? "");
-    setPriorityFilter(f.values.priorityFilter ?? "");
-    setSortBy(f.values.sortBy ?? "priority");
-    setHideDone(!!f.values.hideDone);
-    if (f.values.view) setView(f.values.view);
-  }
-
-  function saveCurrentFilter() {
-    const name = filterName.trim();
-    if (!name) return;
-    const next = [...savedFilters.filter((f) => f.name.toLowerCase() !== name.toLowerCase()), { name, values: currentFilter }];
-    setSavedFilters(next);
-    storeSavedFilters(next);
-    setFilterName("");
-    setSavingFilter(false);
-  }
-
-  function removeSavedFilter(name: string) {
-    const next = savedFilters.filter((f) => f.name !== name);
-    setSavedFilters(next);
-    storeSavedFilters(next);
-  }
+  const filtersOn = !!(query.trim() || dueFilter || priorityFilter || hideDone);
 
   function clearFilters() {
-    setQuery(""); setStatusFilter(""); setDueFilter(""); setPriorityFilter(""); setHideDone(false);
+    setQuery(""); setDueFilter(""); setPriorityFilter(""); setHideDone(false);
   }
 
   const done = visibleTasks.filter((t) => t.status === "Done").length;
@@ -3767,8 +3657,8 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
   return (
     <section className="space-y-4">
       <PageTitle
-        title="Work"
-        description={isAdmin ? "Spaces hold your brand lists. Every task lives in a list." : "Your work, and anything raised for you."}
+        title="Tasks"
+        description={isAdmin ? "Every task lives in a list, and every list in a space." : "Your work, and anything raised for you."}
         action={(
           <span className="flex gap-2">
             <button type="button" className="btn btn-soft" onClick={() => setSeriesOpen(true)}>
@@ -3834,7 +3724,10 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
           {isAdmin ? (
             <SearchSelect
               label="Assignee" allLabel="Everyone" placeholder="Search people…"
-              value={assigneeId} options={people.map((pp) => ({ id: pp.id, label: pp.display_name }))}
+              value={assigneeId} options={[
+                ...people.map((pp) => ({ id: pp.id, label: pp.display_name })),
+                ...formerPeople.map((pp) => ({ id: pp.id, label: pp.display_name, hint: "former" })),
+              ]}
               onChange={(id) => { setAssigneeId(id); if (id) setMine(false); }}
             />
           ) : null}
@@ -3853,17 +3746,13 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </div>
 
-        {/* Find a task by name, or narrow by where it stands and when it is due. */}
+        {/* Find a task by name, or narrow by how urgent it is and when it is due. */}
         <div className="flex flex-wrap items-center gap-2 p-3">
           <div className="relative min-w-[12rem] flex-1">
             <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
-            <input ref={searchRef} className="input h-9 py-0 pl-8 text-sm" placeholder="Search tasks by name…   /"
+            <input ref={searchRef} className="input h-9 py-0 pl-8 text-sm" placeholder="Search tasks…"
               value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
-          <select className="input h-9 w-auto py-0 text-sm" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-            <option value="">Any status</option>
-            {WORK_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
-          </select>
           <select className="input h-9 w-auto py-0 text-sm" value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)}>
             <option value="">Any priority</option>
             {["Urgent", "High", "Normal", "Low"].map((p2) => <option key={p2} value={p2}>{p2}</option>)}
@@ -3873,48 +3762,12 @@ function Tasks({ isAdmin }: { isAdmin: boolean }) {
             <option value="overdue">Overdue</option>
             <option value="today">Due today</option>
             <option value="week">Due this week</option>
-            <option value="none">No due date</option>
-          </select>
-          <select className="input h-9 w-auto py-0 text-sm" value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
-            <option value="priority">Sort: priority</option>
-            <option value="due">Sort: due date</option>
-            <option value="recent">Sort: newest</option>
           </select>
           {filtersOn ? (
             <button type="button" className="rounded-full px-3 py-1.5 text-xs font-semibold text-ink-3 hover:text-brand" onClick={clearFilters}>
               Clear
             </button>
           ) : null}
-        </div>
-
-        {/* Saved filters: name the set you keep coming back to, then reapply it
-            in one click. Kept in this browser, like the default view. */}
-        <div className="flex flex-wrap items-center gap-2 p-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-ink-4">Saved</span>
-          {savedFilters.length ? savedFilters.map((f) => (
-            <span key={f.name} className="flex items-center gap-1 rounded-full border border-line bg-white px-3 py-1 text-xs font-semibold text-ink-2 transition hover:border-line-strong">
-              <button type="button" onClick={() => applyFilter(f)}>{f.name}</button>
-              <button type="button" aria-label={`Delete saved filter ${f.name}`} className="text-ink-4 hover:text-rose-600"
-                onClick={() => removeSavedFilter(f.name)}><X size={11} /></button>
-            </span>
-          )) : <span className="text-xs text-ink-4">No saved filters yet.</span>}
-
-          {savingFilter ? (
-            <span className="flex items-center gap-1">
-              <input autoFocus className="input h-8 w-40 py-0 text-xs" placeholder="Name this view" value={filterName}
-                onChange={(e) => setFilterName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveCurrentFilter(); } if (e.key === "Escape") setSavingFilter(false); }} />
-              <button type="button" className="btn btn-primary px-3 py-1 text-xs" onClick={saveCurrentFilter}>Save</button>
-              <button type="button" className="btn btn-soft px-3 py-1 text-xs" onClick={() => { setSavingFilter(false); setFilterName(""); }}>Cancel</button>
-            </span>
-          ) : (
-            <button type="button" onClick={() => setSavingFilter(true)} disabled={!filtersOn}
-              className={classNames("ml-auto flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold transition",
-                filtersOn ? "text-brand hover:bg-orange-50" : "cursor-not-allowed text-ink-4")}
-              title={filtersOn ? "Save this filter set" : "Set a filter first"}>
-              <Plus size={12} />Save current filters
-            </button>
-          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-3 p-3">
@@ -4779,438 +4632,321 @@ function NewListForm({ isAdmin, spaces, initialSpaceId, onClose, onSaved }: {
   );
 }
 
+type LeaveBalance = { id: number; name: string; is_paid: number; yearly_balance: number; used: number };
+
+function leaveDates(row: LeaveRequest) {
+  return row.start_date === row.end_date ? prettyDate(row.start_date) : `${prettyDate(row.start_date)} → ${prettyDate(row.end_date)}`;
+}
+
 function Leave({ isAdmin }: { isAdmin: boolean }) {
   const [rows, setRows] = useState<LeaveRequest[]>([]);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
+  const [balances, setBalances] = useState<LeaveBalance[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employeeId, setEmployeeId] = useState("");
+  const [form, setForm] = useState({ leave_type_id: "", start_date: today, end_date: today, reason: "" });
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
 
   async function load() {
-    const data = await api<{ leaves: LeaveRequest[]; leaveTypes: LeaveType[] }>("/leaves");
+    const q = isAdmin && employeeId ? `?employeeId=${employeeId}` : "";
+    const data = await api<{ leaves: LeaveRequest[]; leaveTypes: LeaveType[]; employees?: Employee[]; balances?: LeaveBalance[] }>(`/leaves${q}`);
     setRows(data.leaves);
     setLeaveTypes(data.leaveTypes);
+    if (data.employees) setEmployees(data.employees);
+    if (data.balances) setBalances(data.balances);
+    setForm((f) => (f.leave_type_id ? f : { ...f, leave_type_id: String(data.leaveTypes[0]?.id ?? "") }));
   }
 
-  useEffect(() => {
-    load().catch(console.error);
-  }, []);
+  useEffect(() => { load().catch((err) => setMessage(err.message)); }, [employeeId]);
 
-  async function apply(event: FormEvent<HTMLFormElement>) {
+  async function apply(event: FormEvent) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    await api("/leaves", { method: "POST", body: JSON.stringify(Object.fromEntries(form.entries())) });
-    event.currentTarget.reset();
-    await load();
+    setBusy(true); setMessage("");
+    try {
+      await api("/leaves", { method: "POST", body: JSON.stringify(form) });
+      setForm({ ...form, start_date: today, end_date: today, reason: "" });
+      setMessage("Sent to your admin for approval.");
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not apply");
+    }
+    setBusy(false);
   }
 
   async function decide(id: number, status: "Approved" | "Rejected") {
-    const admin_note = window.prompt(`${status} note`) ?? "";
+    const admin_note = status === "Rejected" ? (window.prompt("Reason for rejecting (optional)") ?? "") : "";
     await api(`/leaves/${id}/decision`, { method: "POST", body: JSON.stringify({ status, admin_note }) });
     await load();
   }
 
-  async function saveType(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    await api("/leave-types", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
-    form.reset();
-    await load();
-  }
+  const pending = rows.filter((r) => r.status === "Pending");
+  const settled = rows.filter((r) => r.status !== "Pending");
+  const days = form.start_date && form.end_date && form.end_date >= form.start_date
+    ? Math.round((Date.parse(form.end_date) - Date.parse(form.start_date)) / 86400000) + 1 : 0;
 
-  async function removeType(id: number) {
-    if (!window.confirm("Delete this leave type?")) return;
-    await api(`/leave-types/${id}`, { method: "DELETE" });
-    await load();
-  }
+  const list = (items: LeaveRequest[], actions: boolean) => (
+    <div className="card divide-y divide-line">
+      {items.map((row) => (
+        <div key={row.id} className="flex flex-wrap items-center gap-3 px-5 py-3.5">
+          <div className="min-w-0 flex-1">
+            <p className="text-[14px] font-semibold text-ink">
+              {isAdmin ? `${row.employee_name} · ` : ""}{row.leave_type_name}
+              <span className="ml-2 text-[12.5px] font-normal text-ink-3">{row.days} day{row.days === 1 ? "" : "s"}</span>
+            </p>
+            <p className="text-[12.5px] text-ink-3">
+              {leaveDates(row)}{row.reason ? ` · ${row.reason}` : ""}{row.admin_note ? ` · Admin: ${row.admin_note}` : ""}
+            </p>
+          </div>
+          {actions ? (
+            <div className="flex gap-2">
+              <button type="button" className="btn btn-primary py-1.5" onClick={() => decide(row.id, "Approved")}>Approve</button>
+              <button type="button" className="btn btn-soft py-1.5 text-rose-600" onClick={() => decide(row.id, "Rejected")}>Reject</button>
+            </div>
+          ) : <Badge value={row.status} />}
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     <section className="space-y-5">
-      <PageTitle title="Leave Management" description={isAdmin ? "Approve, reject, and review leave requests." : "Apply and track your leave history."} />
-      {isAdmin ? (
-        <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
-          <form onSubmit={saveType} className="card grid gap-3 p-4 sm:grid-cols-2">
-            <Field label="Leave type"><input required name="name" className="input" placeholder="Paid Leave" /></Field>
-            <Field label="Paid">
-              <select name="is_paid" className="input" defaultValue="1">
-                <option value="1">Paid</option>
-                <option value="0">Unpaid</option>
-              </select>
-            </Field>
-            <Field label="Monthly balance"><input name="monthly_balance" className="input" type="number" step="0.5" defaultValue="1" /></Field>
-            <Field label="Yearly balance"><input name="yearly_balance" className="input" type="number" step="0.5" defaultValue="12" /></Field>
-            <button className="btn btn-primary sm:col-span-2"><Plus size={17} />Save leave type</button>
-          </form>
-          <div className="card p-4">
-            <h3 className="font-bold text-ink">Leave Types</h3>
-            <div className="mt-3 divide-y divide-line">
-              {leaveTypes.map((type) => (
-                <div key={type.id} className="flex items-center justify-between gap-3 py-3">
-                  <div>
-                    <p className="font-semibold text-ink">{type.name}</p>
-                    <p className="text-xs text-ink-3">{type.is_paid ? "Paid" : "Unpaid"} · {type.monthly_balance}/month · {type.yearly_balance}/year</p>
-                  </div>
-                  <button className="btn btn-soft" onClick={() => removeType(type.id)}>Delete</button>
+      <PageTitle title="Leave" description={isAdmin ? "Approve requests. Approved leave flows into attendance and salary by itself." : "Apply for time off and see where your requests stand."} />
+      {message ? <div className="rounded-lg border border-line bg-white px-4 py-3 text-sm font-semibold text-ink-2">{message}</div> : null}
+
+      {!isAdmin ? (
+        <>
+          {balances.some((b) => b.is_paid) ? (
+            <div className="flex flex-wrap gap-3">
+              {balances.filter((b) => b.is_paid).map((b) => (
+                <div key={b.id} className="card min-w-[10rem] flex-1 p-4">
+                  <p className="text-[12.5px] text-ink-3">{b.name}</p>
+                  <p className="tnum mt-1 text-[22px] font-bold leading-none text-ink">
+                    {Math.max(0, Number(b.yearly_balance) - Number(b.used))}
+                    <span className="ml-1 text-[12.5px] font-medium text-ink-3">of {b.yearly_balance} left this year</span>
+                  </p>
                 </div>
               ))}
             </div>
-          </div>
+          ) : null}
+
+          <form onSubmit={apply} className="card space-y-4 p-5">
+            <p className="text-[15px] font-semibold text-ink">Apply for leave</p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Field label="Type">
+                <select className="input" value={form.leave_type_id} onChange={(e) => setForm({ ...form, leave_type_id: e.target.value })}>
+                  {leaveTypes.map((type) => <option key={type.id} value={type.id}>{type.name}{type.is_paid ? "" : " (unpaid)"}</option>)}
+                </select>
+              </Field>
+              <Field label="From"><input required className="input" type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value, end_date: e.target.value > form.end_date ? e.target.value : form.end_date })} /></Field>
+              <Field label="To"><input required className="input" type="date" min={form.start_date} value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} /></Field>
+            </div>
+            <Field label="Reason"><input className="input" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="Optional" /></Field>
+            <div className="flex items-center justify-end gap-3">
+              {days ? <span className="text-[12.5px] text-ink-3">{days} day{days === 1 ? "" : "s"}</span> : null}
+              <button className="btn btn-primary" disabled={busy || !days}>{busy ? "Sending…" : "Apply"}</button>
+            </div>
+          </form>
+        </>
+      ) : null}
+
+      {isAdmin && pending.length ? (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Waiting for you · {pending.length}</p>
+          {list(pending, true)}
         </div>
       ) : null}
-      {!isAdmin ? (
-        <form onSubmit={apply} className="card grid gap-3 p-4 md:grid-cols-5">
-          <Field label="Leave type"><select name="leave_type_id" className="input">{leaveTypes.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}</select></Field>
-          <Field label="Start"><input name="start_date" className="input" type="date" defaultValue={today} /></Field>
-          <Field label="End"><input name="end_date" className="input" type="date" defaultValue={today} /></Field>
-          <Field label="Reason"><input name="reason" className="input" placeholder="Reason" /></Field>
-          <button className="btn btn-primary self-end">Apply</button>
-        </form>
-      ) : null}
-      <DataTable
-        title="Leave Requests"
-        rows={rows}
-        columns={[
-          ["Employee", (row) => row.employee_name ?? "You"],
-          ["Type", (row) => row.leave_type_name ?? "-"],
-          ["Dates", (row) => `${row.start_date} to ${row.end_date}`],
-          ["Days", (row) => row.days],
-          ["Status", (row) => <Badge value={row.status} />],
-          [
-            "Action",
-            (row) =>
-              isAdmin && row.status === "Pending" ? (
-                <div className="flex gap-2">
-                  <button className="btn btn-soft" onClick={() => decide(row.id, "Approved")}>Approve</button>
-                  <button className="btn btn-soft" onClick={() => decide(row.id, "Rejected")}>Reject</button>
-                </div>
-              ) : (
-                row.admin_note ?? "-"
-              ),
-          ],
-        ]}
-      />
+
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">{isAdmin ? "All leave" : "My requests"}</p>
+          {isAdmin ? <div className="ml-auto"><PersonPicker value={employeeId} onChange={setEmployeeId} people={employees} /></div> : null}
+        </div>
+        {(isAdmin ? settled : rows).length
+          ? list(isAdmin ? settled : rows, false)
+          : <EmptyState title={isAdmin ? "No leave taken yet." : "You haven't applied for leave yet."} />}
+      </div>
     </section>
   );
 }
 
+// Shrinks a payment screenshot to something a database row can carry.
+async function shrinkProof(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width * scale; canvas.height = img.height * scale;
+        canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.6));
+      };
+      img.onerror = reject;
+    };
+    reader.onerror = reject;
+  });
+}
+
 function Payroll({ isAdmin }: { isAdmin: boolean }) {
   const now = new Date();
-  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const [month, setMonth] = useState(lastMonth.getMonth() + 1); // Custom-view month
-  const [year, setYear] = useState(lastMonth.getFullYear());
-  const [period, setPeriod] = useState("Last Month");
-  // Separate month/year for generating payroll (defaults to last completed month).
-  const [genMonth, setGenMonth] = useState(lastMonth.getMonth() + 1);
-  const [genYear, setGenYear] = useState(lastMonth.getFullYear());
+  // Salary is worked out for finished months only, so the newest is last month.
+  const last = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const [month, setMonth] = useState(last.getMonth() + 1);
+  const [year, setYear] = useState(last.getFullYear());
   const [rows, setRows] = useState<Salary[]>([]);
-  const [editingSalary, setEditingSalary] = useState<Salary | null>(null);
-  const [payModalOpen, setPayModalOpen] = useState<{ id: number; employee: string } | null>(null);
-  const [paymentProofFile, setPaymentProofFile] = useState<File | null>(null);
-  const [payBusy, setPayBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employeeId, setEmployeeId] = useState("");
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [paying, setPaying] = useState<Salary | null>(null);
+  const [proof, setProof] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  const [breakdownEmployees, setBreakdownEmployees] = useState<Employee[]>([]);
-  const [breakdownEmployeeId, setBreakdownEmployeeId] = useState("");
-
-  const unpaidRows = rows.filter((r) => r.status !== "Done");
-  const outstandingTotal = unpaidRows.reduce((sum, r) => sum + (Number(r.net_salary) || 0), 0);
-  const paidTotal = rows.filter((r) => r.status === "Done").reduce((sum, r) => sum + (Number(r.net_salary) || 0), 0);
-
-  // A month is generatable only if it's strictly before the current month.
-  const curIndex = now.getFullYear() * 12 + (now.getMonth() + 1);
-  const genIsPast = genYear * 12 + genMonth < curIndex;
 
   useEffect(() => {
     if (!isAdmin) return;
-    api<{ employees: Employee[] }>("/employees")
-      .then((d) => { setBreakdownEmployees(d.employees); setBreakdownEmployeeId(String(d.employees[0]?.id ?? "")); })
-      .catch(() => undefined);
+    api<{ employees: Employee[] }>("/employees").then((d) => setEmployees(d.employees)).catch(() => undefined);
   }, [isAdmin]);
-  const [editForm, setEditForm] = useState({
-    working_days: 0,
-    paid_days: 0,
-    gross_salary: 0,
-    deductions: 0,
-    net_salary: 0,
-  });
-
-  async function processPaymentProof(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = (event) => {
-        const img = new Image();
-        img.src = event.target?.result as string;
-        img.onload = () => {
-          const canvas = document.createElement("canvas");
-          const MAX_WIDTH = 800; const MAX_HEIGHT = 800;
-          let width = img.width; let height = img.height;
-          if (width > height) { if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; } }
-          else { if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; } }
-          canvas.width = width; canvas.height = height;
-          const ctx = canvas.getContext("2d");
-          ctx?.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL("image/jpeg", 0.6));
-        };
-        img.onerror = reject;
-      };
-      reader.onerror = reject;
-    });
-  }
-
-  async function markPaidSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!payModalOpen) return;
-    setPayBusy(true);
-    try {
-      let base64 = "";
-      if (paymentProofFile) base64 = await processPaymentProof(paymentProofFile);
-      await api(`/payroll/${payModalOpen.id}`, { method: "PUT", body: JSON.stringify({ status: "Paid", payment_proof: base64 || null }) });
-      setPayModalOpen(null); setPaymentProofFile(null); await load();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed");
-    } finally {
-      setPayBusy(false);
-    }
-  }
-
-  async function setPaid(id: number, isPaid: boolean) {
-    await api(`/payroll/${id}`, { method: "PUT", body: JSON.stringify({ status: isPaid ? "Paid" : "Unpaid" }) });
-    await load();
-  }
-
-  async function deleteProof(id: number) {
-    if (!window.confirm("Delete the uploaded payment screenshot?")) return;
-    await api(`/payroll/${id}`, { method: "PUT", body: JSON.stringify({ payment_proof: "" }) });
-    await load();
-  }
 
   async function load() {
-    const params = new URLSearchParams({ period, month: String(month), year: String(year) });
+    // Admins look at one month across people; an employee sees their own year.
+    const params = isAdmin
+      ? new URLSearchParams({ period: "Custom", month: String(month), year: String(year), ...(employeeId ? { employeeId } : {}) })
+      : new URLSearchParams({ period: "Last 12 Months" });
     const data = await api<{ salaries: Salary[] }>(`/payroll?${params.toString()}`);
     setRows(data.salaries);
+    setLoaded(true);
   }
 
-  useEffect(() => {
-    load().catch(console.error);
-  }, []);
+  useEffect(() => { setOpenId(null); load().catch((err) => setMessage(err.message)); }, [month, year, employeeId]);
 
-  async function generate() {
-    setMessage("");
-    if (!genIsPast) { setMessage("Payroll can only be generated for completed (past) months."); return; }
+  async function prepare() {
+    setBusy(true); setMessage("");
     try {
-      await api("/payroll/generate", { method: "POST", body: JSON.stringify({ month: genMonth, year: genYear }) });
+      await api("/payroll/generate", { method: "POST", body: JSON.stringify({ month, year }) });
       await load();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to generate payroll");
+      setMessage(err instanceof Error ? err.message : "Could not prepare salaries");
     }
+    setBusy(false);
   }
 
-  function handleEditClick(salary: Salary) {
-    setEditingSalary(salary);
-    setEditForm({
-      working_days: salary.working_days,
-      paid_days: salary.paid_days,
-      gross_salary: salary.gross_salary,
-      deductions: salary.deductions,
-      net_salary: salary.net_salary,
-    });
-  }
-
-  function handleFormChange(field: string, val: number) {
-    setEditForm((prev) => {
-      const next = { ...prev, [field]: val };
-      if (field === "gross_salary" || field === "deductions") {
-        next.net_salary = Math.max(0, next.gross_salary - next.deductions);
-      }
-      return next;
-    });
-  }
-
-  async function saveOverride(e: FormEvent) {
+  async function markPaid(e: FormEvent) {
     e.preventDefault();
-    if (!editingSalary) return;
+    if (!paying) return;
+    setBusy(true);
     try {
-      await api(`/payroll/${editingSalary.id}`, {
-        method: "PUT",
-        body: JSON.stringify(editForm),
-      });
-      setEditingSalary(null);
+      const payment_proof = proof ? await shrinkProof(proof) : undefined;
+      await api(`/payroll/${paying.id}`, { method: "PUT", body: JSON.stringify({ status: "Paid", ...(payment_proof ? { payment_proof } : {}) }) });
+      setPaying(null); setProof(null);
       await load();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to save salary details");
+      setMessage(err instanceof Error ? err.message : "Could not mark paid");
     }
+    setBusy(false);
   }
+
+  async function markUnpaid(row: Salary) {
+    if (!window.confirm(`Mark ${row.employee_name}'s salary as not paid?`)) return;
+    await api(`/payroll/${row.id}`, { method: "PUT", body: JSON.stringify({ status: "Unpaid" }) });
+    await load();
+  }
+
+  const total = rows.reduce((n, r) => n + (Number(r.net_salary) || 0), 0);
+  const paid = rows.filter((r) => r.status === "Done").reduce((n, r) => n + (Number(r.net_salary) || 0), 0);
 
   return (
     <section className="space-y-5">
-      <PageTitle title="Salary & Payroll" description={isAdmin ? "Generate salary for completed months, mark it paid, and issue payslips." : "Your salary history. Payslip PDF is available once your salary is marked paid."} />
-      {message ? <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
+      <PageTitle
+        title={isAdmin ? "Payroll" : "Payslips"}
+        description={isAdmin
+          ? "Salary is worked out from attendance and leave. Check it, pay it, mark it paid."
+          : "Your salary for each month. Click a month to see how it was worked out."}
+      />
+      {message ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
 
-      {/* What is still to go out for the rows on screen, and what already has. */}
-      {isAdmin && rows.length ? (
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div className="card p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink-3">Outstanding</p>
-            <p className="tnum mt-1 text-2xl font-bold text-rose-600">{currency.format(outstandingTotal)}</p>
-            <p className="text-xs text-ink-4">{unpaidRows.length} unpaid</p>
-          </div>
-          <div className="card p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink-3">Paid</p>
-            <p className="tnum mt-1 text-2xl font-bold text-emerald-600">{currency.format(paidTotal)}</p>
-            <p className="text-xs text-ink-4">{rows.length - unpaidRows.length} settled</p>
-          </div>
-          <div className="card p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink-3">Total</p>
-            <p className="tnum mt-1 text-2xl font-bold text-ink">{currency.format(outstandingTotal + paidTotal)}</p>
-            <p className="text-xs text-ink-4">{rows.length} salary rows</p>
-          </div>
+      {isAdmin ? (
+        <div className="card flex flex-wrap items-center gap-3 p-3">
+          <MonthStepper month={month} year={year} max={{ month: last.getMonth() + 1, year: last.getFullYear() }}
+            onChange={(m, y) => { setMonth(m); setYear(y); }} />
+          <PersonPicker value={employeeId} onChange={setEmployeeId} people={employees} />
+          {rows.length ? (
+            <p className="tnum ml-auto text-[12.5px] text-ink-3">
+              <span className="font-semibold text-ink">{currency.format(total - paid)}</span> to pay · {currency.format(paid)} paid · {currency.format(total)} total
+            </p>
+          ) : null}
         </div>
       ) : null}
 
-      {/* View controls — defaults to the last 6 months */}
-      <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
-        <Field label="Show">
-          <select className="input" value={period} onChange={(e) => setPeriod(e.target.value)}>
-            <option value="Last Month">Last Month</option>
-            <option value="Last 3 Months">Last 3 Months</option>
-            <option value="Last 6 Months">Last 6 Months</option>
-            <option value="Last 12 Months">Last 12 Months</option>
-            <option value="Custom">Specific Month</option>
-          </select>
-        </Field>
-        {period === "Custom" && (
-          <>
-            <Field label="Month">
-              <select className="input" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
-                {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-              </select>
-            </Field>
-            <Field label="Year"><input className="input" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} /></Field>
-          </>
-        )}
-        <button type="button" className="btn btn-soft" onClick={load}><RefreshCcw size={17} />Apply</button>
-      </div>
+      {loaded && !rows.length ? (
+        <EmptyState
+          title={isAdmin ? `Salaries for ${monthNames[month - 1]} ${year} aren't prepared yet.` : "No payslips yet."}
+          action={isAdmin && !employeeId ? <button type="button" className="btn btn-primary" disabled={busy} onClick={prepare}><Banknote size={16} />{busy ? "Preparing…" : "Prepare salaries"}</button> : undefined}
+        />
+      ) : null}
 
-      {/* Admin-only: generate payroll for a completed (past) month */}
-      {isAdmin && (
-        <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
-          <Field label="Generate for month">
-            <select className="input" value={genMonth} onChange={(e) => setGenMonth(Number(e.target.value))}>
-              {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-            </select>
-          </Field>
-          <Field label="Year"><input className="input" type="number" value={genYear} onChange={(e) => setGenYear(Number(e.target.value))} /></Field>
-          <button type="button" className="btn btn-primary" onClick={generate} disabled={!genIsPast} title={genIsPast ? "" : "Only completed (past) months can be generated"}>
-            <Banknote size={17} />Generate payroll
-          </button>
-          {!genIsPast ? <p className="self-center text-xs font-semibold text-amber-600">Current & future months are locked.</p> : null}
-        </div>
-      )}
-
-      {/* Salary day breakdown lives here (admin only) — Attendance stays attendance-only. */}
-      {/* Day-by-day salary breakdown — admin picks the employee, an employee sees their own. */}
-      <div className={classNames("card grid gap-3 p-4", isAdmin ? "md:grid-cols-3" : "md:grid-cols-2")}>
-        {isAdmin ? (
-          <Field label="Breakdown for employee">
-            <select className="input" value={breakdownEmployeeId} onChange={(e) => setBreakdownEmployeeId(e.target.value)}>
-              {breakdownEmployees.map((emp) => <option key={emp.id} value={emp.id}>{emp.full_name}</option>)}
-            </select>
-          </Field>
-        ) : null}
-        <Field label="Month">
-          <select className="input" value={genMonth} onChange={(e) => setGenMonth(Number(e.target.value))}>
-            {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-          </select>
-        </Field>
-        <Field label="Year"><input className="input" type="number" value={genYear} onChange={(e) => setGenYear(Number(e.target.value))} /></Field>
-      </div>
-      <MonthGrid isAdmin={isAdmin} showSalary month={genMonth} year={genYear} employeeId={isAdmin ? breakdownEmployeeId : undefined} />
-
-      <DataTable
-        title="Salary Records"
-        rows={rows}
-        columns={[
-          ["Employee", (row) => row.employee_name ?? row.employee_code],
-          ["Period", (row) => `${monthNames[row.salary_month - 1]} ${row.salary_year}`],
-          ["Days", (row) => <span className="text-xs text-ink-2">{row.paid_days} / {row.working_days} paid</span>],
-          ["Gross", (row) => currency.format(row.gross_salary)],
-          ["Deductions", (row) => row.deductions > 0
-            ? <span className="font-semibold text-rose-600">-{currency.format(row.deductions)}</span>
-            : <span className="text-ink-4">—</span>],
-          ["Net", (row) => <span className="font-bold text-ink">{currency.format(row.net_salary)}</span>],
-          ["Status", (row) => <Badge value={row.status === "Done" ? "Paid" : "Unpaid"} />],
-          [
-            "Action",
-            (row) => (
-              <div className="flex gap-2">
-                <a className="btn btn-soft" href={`/api/salary-slips/${row.id}`} target="_blank" rel="noreferrer" title="Download Slip"><Download size={17} /></a>
-                {row.payment_proof && (
-                  <a className="btn btn-soft" href={row.payment_proof} download={`payment_proof_${row.employee_name}_${row.salary_month}.jpg`} title="Payment Proof">
-                    <ImageIcon size={17} /><span className="hidden sm:inline">Proof</span>
-                  </a>
-                )}
-                {isAdmin && (
-                  <>
-                    {row.payment_proof && <button type="button" className="btn btn-soft" onClick={() => deleteProof(row.id)} title="Delete payment screenshot"><X size={16} /></button>}
-                    <button type="button" className="btn btn-soft" onClick={() => handleEditClick(row)}>Edit</button>
-                    {row.status !== "Done" ? (
-                      <>
-                        <button type="button" className="btn btn-primary" onClick={() => setPaid(row.id, true)}>Mark paid</button>
-                        <button type="button" className="btn btn-soft" title="Mark paid with a payment screenshot" onClick={() => setPayModalOpen({ id: row.id, employee: row.employee_name || "Employee" })}><ImageIcon size={16} /></button>
-                      </>
-                    ) : (
-                      <button type="button" className="btn btn-soft" onClick={() => setPaid(row.id, false)}>Mark unpaid</button>
-                    )}
-                  </>
-                )}
+      {rows.length ? (
+        <div className="card divide-y divide-line">
+          {rows.map((row) => {
+            const open = openId === row.id;
+            return (
+              <div key={row.id}>
+                <div className="flex flex-wrap items-center gap-3 px-5 py-3.5">
+                  <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => setOpenId(open ? null : row.id)}>
+                    <ChevronRight size={16} className={classNames("shrink-0 text-ink-4 transition-transform duration-150", open && "rotate-90")} />
+                    <span className="min-w-0">
+                      <span className="block truncate text-[14px] font-semibold text-ink">
+                        {isAdmin ? row.employee_name : `${monthNames[row.salary_month - 1]} ${row.salary_year}`}
+                      </span>
+                      <span className="tnum block text-[12.5px] text-ink-3">
+                        {row.paid_days} of {row.working_days} days paid
+                        {row.deductions > 0 ? ` · −${currency.format(row.deductions)}` : ""}
+                      </span>
+                    </span>
+                  </button>
+                  <span className="tnum text-[15px] font-bold text-ink">{currency.format(row.net_salary)}</span>
+                  <Badge value={row.status === "Done" ? "Paid" : "Not paid"} />
+                  <div className="flex gap-1.5">
+                    <a className="btn btn-ghost px-2.5 py-1.5 text-xs" href={`/api/salary-slips/${row.id}`} target="_blank" rel="noreferrer"><Download size={14} />Payslip</a>
+                    {row.payment_proof ? (
+                      <a className="btn btn-ghost px-2.5 py-1.5 text-xs" href={row.payment_proof} download={`payment_${row.employee_name}_${row.salary_month}.jpg`}><ImageIcon size={14} />Proof</a>
+                    ) : null}
+                    {isAdmin ? (row.status !== "Done"
+                      ? <button type="button" className="btn btn-primary px-3 py-1.5 text-xs" onClick={() => setPaying(row)}>Mark paid</button>
+                      : <button type="button" className="btn btn-ghost px-2.5 py-1.5 text-xs text-ink-3" onClick={() => markUnpaid(row)}>Undo</button>) : null}
+                  </div>
+                </div>
+                {open ? (
+                  <div className="border-t border-line bg-[var(--surface-sunk)] p-3">
+                    <MonthGrid isAdmin={isAdmin} showSalary month={row.salary_month} year={row.salary_year}
+                      employeeId={isAdmin ? String(row.employee_id) : undefined} />
+                  </div>
+                ) : null}
               </div>
-            ),
-          ],
-        ]}
-      />
+            );
+          })}
+        </div>
+      ) : null}
 
-      {payModalOpen && (
+      {paying ? (
         <div className="modal-scrim items-center justify-center p-4">
-          <form onSubmit={markPaidSubmit} className="card w-full max-w-md p-6 space-y-4">
-            <h3 className="text-lg font-bold text-ink">Mark as Paid</h3>
-            <p className="text-xs text-ink-3">Upload a payment screenshot for {payModalOpen.employee}.</p>
-            <Field label="Payment Screenshot (Optional)">
-              <input type="file" className="input file:mr-4 file:rounded-full file:border-0 file:bg-primary-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-primary-700 hover:file:bg-primary-100" accept="image/*" onChange={(e) => setPaymentProofFile(e.target.files?.[0] || null)} />
+          <form onSubmit={markPaid} className="card w-full max-w-md space-y-4 p-6">
+            <h3 className="text-lg font-bold text-ink">Mark {paying.employee_name}'s salary paid</h3>
+            <p className="tnum text-sm text-ink-3">{currency.format(paying.net_salary)} for {monthNames[paying.salary_month - 1]} {paying.salary_year}. They'll be notified and can download the payslip.</p>
+            <Field label="Payment screenshot (optional)">
+              <input type="file" accept="image/*" className="input" onChange={(e) => setProof(e.target.files?.[0] ?? null)} />
             </Field>
-            <div className="flex justify-end gap-3 pt-2">
-              <button type="button" className="btn btn-soft" onClick={() => setPayModalOpen(null)}>Cancel</button>
-              <button type="submit" className="btn btn-primary" disabled={payBusy}>{payBusy ? "Saving..." : "Confirm Payment"}</button>
+            <div className="flex justify-end gap-3">
+              <button type="button" className="btn btn-soft" onClick={() => { setPaying(null); setProof(null); }}>Cancel</button>
+              <button className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Mark paid"}</button>
             </div>
           </form>
         </div>
-      )}
-
-      {editingSalary && (
-        <div className="modal-scrim items-center justify-center p-4">
-          <form onSubmit={saveOverride} className="card w-full max-w-md p-6 space-y-4">
-            <h3 className="text-lg font-bold text-ink">Edit Salary Details</h3>
-            <p className="text-xs text-ink-3">Modify attendance days, gross salary, or add custom deductions for {editingSalary.employee_name}.</p>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Working Days">
-                <input className="input" type="number" step="any" value={editForm.working_days} onChange={(e) => handleFormChange("working_days", Number(e.target.value))} />
-              </Field>
-              <Field label="Paid Days">
-                <input className="input" type="number" step="any" value={editForm.paid_days} onChange={(e) => handleFormChange("paid_days", Number(e.target.value))} />
-              </Field>
-            </div>
-            <Field label="Gross Salary">
-              <input className="input" type="number" step="any" value={editForm.gross_salary} onChange={(e) => handleFormChange("gross_salary", Number(e.target.value))} />
-            </Field>
-            <Field label="Deductions (Custom)">
-              <input className="input" type="number" step="any" value={editForm.deductions} onChange={(e) => handleFormChange("deductions", Number(e.target.value))} />
-            </Field>
-            <Field label="Net Payable Salary">
-              <input className="input" type="number" step="any" value={editForm.net_salary} onChange={(e) => handleFormChange("net_salary", Number(e.target.value))} />
-            </Field>
-            <div className="flex gap-3 justify-end pt-2">
-              <button type="button" className="btn btn-soft" onClick={() => setEditingSalary(null)}>Cancel</button>
-              <button type="submit" className="btn btn-primary">Save Changes</button>
-            </div>
-          </form>
-        </div>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -5249,11 +4985,10 @@ function Holidays({ isAdmin }: { isAdmin: boolean }) {
   }
 
   return (
-    <section className="space-y-5">
-      <PageTitle title="Holidays" description={isAdmin ? "Manage company holidays for everyone." : "View upcoming company holidays."} />
+    <section className="space-y-4">
       {message ? <div className="rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">{message}</div> : null}
       {isAdmin ? (
-        <form onSubmit={save} className="card grid gap-3 p-4 md:grid-cols-4">
+        <form onSubmit={save} className="card grid gap-3 p-4 md:grid-cols-[1fr_auto_1fr_auto] md:items-end">
           <Field label="Holiday name"><input required name="name" className="input" placeholder="Holiday name" /></Field>
           <Field label="Date"><input required name="holiday_date" className="input" type="date" defaultValue={today} /></Field>
           <Field label="Description"><input name="description" className="input" placeholder="Optional note" /></Field>
@@ -5261,8 +4996,8 @@ function Holidays({ isAdmin }: { isAdmin: boolean }) {
         </form>
       ) : null}
       <DataTable
-        title="Holiday List"
-        rows={rows}
+        title="Holidays"
+        rows={[...rows].sort((a, b) => b.holiday_date.localeCompare(a.holiday_date))}
         columns={[
           ["Holiday", (row) => <span className="font-semibold text-ink">{row.name}</span>],
           ["Date", (row) => row.holiday_date],
@@ -5436,10 +5171,6 @@ function Reports() {
     meta.departments.find((d) => String(d.id) === filters.departmentId)?.name,
   ].filter(Boolean).join(" · ") || "All employees";
 
-  const csvArgs = new URLSearchParams({
-    employeeId: filters.employeeId, departmentId: filters.departmentId, start: filters.start, end: filters.end,
-  }).toString();
-
   return (
     <section className="space-y-5">
       {/* Hidden on paper: the printed sheet gets its own heading below, with the
@@ -5450,7 +5181,6 @@ function Reports() {
           description="Attendance, leave, payroll and workload across any period."
           action={
             <div className="flex flex-wrap gap-2">
-              <a className="btn btn-soft" href={`/api/attendance.csv?${csvArgs}`}><Download size={15} />CSV</a>
               <button type="button" className="btn btn-primary" onClick={() => window.print()}>
                 <FileText size={15} />Download PDF
               </button>
@@ -5482,10 +5212,7 @@ function Reports() {
               onChange={(e) => { setPreset("custom"); setFilters({ ...filters, end: e.target.value }); }} />
           </Field>
           <Field label="Employee">
-            <select className="input" value={filters.employeeId} onChange={(e) => setFilters({ ...filters, employeeId: e.target.value })}>
-              <option value="">All employees</option>
-              {meta.employees.map((e) => <option key={e.id} value={e.id}>{e.full_name}</option>)}
-            </select>
+            <PersonPicker value={filters.employeeId} onChange={(id) => setFilters({ ...filters, employeeId: id })} people={meta.employees} allLabel="All employees" />
           </Field>
           <Field label="Department">
             <select className="input" value={filters.departmentId} onChange={(e) => setFilters({ ...filters, departmentId: e.target.value })}>
@@ -5592,55 +5319,121 @@ function Reports() {
 
 
 function SettingsPage() {
+  const [tab, setTab] = useState<"company" | "holidays" | "leave" | "activity">("company");
+  return (
+    <section className="space-y-5">
+      <PageTitle title="Settings" description="Company rules, holidays and leave types." />
+      <Tabs value={tab} onChange={setTab} options={[["company", "Company"], ["holidays", "Holidays"], ["leave", "Leave types"], ["activity", "Activity log"]]} />
+      {tab === "company" ? <CompanySettingsForm /> : null}
+      {tab === "holidays" ? <Holidays isAdmin /> : null}
+      {tab === "leave" ? <LeaveTypes /> : null}
+      {tab === "activity" ? <AuditLogs /> : null}
+    </section>
+  );
+}
+
+// Only the rules the system actually uses. Fields it ignores are passed back
+// unchanged so saving never resets them.
+function CompanySettingsForm() {
   const [settings, setSettings] = useState<CompanySettings | null>(null);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    api<{ settings: CompanySettings }>("/settings")
-      .then((data) => setSettings(data.settings))
-      .catch((err) => setMessage(err.message));
+    api<{ settings: CompanySettings }>("/settings").then((d) => setSettings(d.settings)).catch((err) => setMessage(err.message));
   }, []);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!settings) return;
     setMessage("");
-    const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const body = { ...settings, ...Object.fromEntries(new FormData(event.currentTarget).entries()) };
     try {
       const data = await api<{ settings: CompanySettings }>("/settings", { method: "PUT", body: JSON.stringify(body) });
       setSettings(data.settings);
-      setMessage("Settings saved.");
+      setMessage("Saved.");
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Unable to save settings");
+      setMessage(err instanceof Error ? err.message : "Could not save");
     }
   }
 
-  if (!settings) return <EmptyState title={message || "Loading settings..."} />;
+  if (!settings) return <EmptyState title={message || "Loading…"} />;
 
   return (
-    <section className="space-y-5">
-      <PageTitle title="Company Settings" description="Configure company details, office timing, attendance rules, and salary deductions." />
-      {message ? <div className="rounded-md bg-sky-50 px-3 py-2 text-sm font-semibold text-brand">{message}</div> : null}
-      <form onSubmit={save} className="card grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3">
+    <form onSubmit={save} className="card space-y-5 p-5">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Company name"><input required name="company_name" className="input" defaultValue={settings.company_name} /></Field>
-        <Field label="Logo URL"><input name="company_logo_url" className="input" defaultValue={settings.company_logo_url || ""} /></Field>
-        <Field label="Working days"><input name="working_days" className="input" defaultValue={settings.working_days} /></Field>
-        <Field label="Office start"><input required name="office_start_time" type="time" className="input" defaultValue={settings.office_start_time} /></Field>
-        <Field label="Office end"><input required name="office_end_time" type="time" className="input" defaultValue={settings.office_end_time} /></Field>
-        <Field label="Late mark time"><input required name="late_mark_time" type="time" className="input" defaultValue={settings.late_mark_time} /></Field>
-        <Field label="Half-day min hours"><input required name="half_day_min_hours" type="number" step="0.5" min="0" className="input" defaultValue={settings.half_day_min_hours} /></Field>
-        <Field label="Shift min hours"><input required name="shift_min_hours" type="number" step="0.5" min="0" className="input" defaultValue={settings.shift_min_hours} /></Field>
-        <Field label="Deduct absent days">
-          <select name="deduct_absent_days" className="input" defaultValue={String(settings.deduct_absent_days)}>
-            <option value="1">Yes</option>
-            <option value="0">No</option>
+        <Field label="Address (on payslips)"><input name="company_address" className="input" defaultValue={settings.company_address || ""} /></Field>
+      </div>
+      <div>
+        <p className="text-[13px] font-semibold text-ink">Attendance rules</p>
+        <p className="text-[12px] text-ink-3">Sunday is always a paid weekly off. A day without a check-out is counted as leave.</p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <Field label="Late after"><input required name="late_mark_time" type="time" className="input" defaultValue={settings.late_mark_time} /></Field>
+          <Field label="Full day = hours"><input required name="shift_min_hours" type="number" step="0.5" min="0" className="input" defaultValue={settings.shift_min_hours} /></Field>
+          <Field label="Half day = hours"><input required name="half_day_min_hours" type="number" step="0.5" min="0" className="input" defaultValue={settings.half_day_min_hours} /></Field>
+        </div>
+      </div>
+      <div className="flex items-center justify-end gap-3">
+        {message ? <span className="text-[12.5px] font-semibold text-ink-3">{message}</span> : null}
+        <button className="btn btn-primary">Save</button>
+      </div>
+    </form>
+  );
+}
+
+function LeaveTypes() {
+  const [types, setTypes] = useState<LeaveType[]>([]);
+  const [form, setForm] = useState({ name: "", is_paid: "1", yearly_balance: "12" });
+
+  async function load() {
+    const data = await api<{ leaveTypes: LeaveType[] }>("/leaves");
+    setTypes(data.leaveTypes);
+  }
+  useEffect(() => { load().catch(console.error); }, []);
+
+  async function add(e: FormEvent) {
+    e.preventDefault();
+    const yearly = Number(form.yearly_balance) || 0;
+    await api("/leave-types", { method: "POST", body: JSON.stringify({ ...form, monthly_balance: Math.round((yearly / 12) * 2) / 2 }) });
+    setForm({ name: "", is_paid: "1", yearly_balance: "12" });
+    await load();
+  }
+
+  async function remove(type: LeaveType) {
+    if (!window.confirm(`Remove the leave type "${type.name}"?`)) return;
+    try {
+      await api(`/leave-types/${type.id}`, { method: "DELETE" });
+      await load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Could not remove");
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="card divide-y divide-line">
+        {types.map((type) => (
+          <div key={type.id} className="flex items-center gap-3 px-5 py-3.5">
+            <div className="flex-1">
+              <p className="text-[14px] font-semibold text-ink">{type.name}</p>
+              <p className="text-[12.5px] text-ink-3">{type.is_paid ? `Paid · ${type.yearly_balance} days a year` : "Unpaid — deducted from salary"}</p>
+            </div>
+            <button type="button" className="btn btn-ghost px-2.5 py-1.5 text-xs text-rose-600" onClick={() => remove(type)}><Trash2 size={13} />Remove</button>
+          </div>
+        ))}
+      </div>
+      <form onSubmit={add} className="card grid gap-3 p-4 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end">
+        <Field label="New leave type"><input required className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Sick leave" /></Field>
+        <Field label="Paid?">
+          <select className="input" value={form.is_paid} onChange={(e) => setForm({ ...form, is_paid: e.target.value })}>
+            <option value="1">Paid</option>
+            <option value="0">Unpaid</option>
           </select>
         </Field>
-        <Field label="Company address"><textarea name="company_address" className="input min-h-24" defaultValue={settings.company_address || ""} /></Field>
-        <div className="sm:col-span-2 lg:col-span-3">
-          <button className="btn btn-primary"><Settings size={17} />Save settings</button>
-        </div>
+        <Field label="Days a year"><input className="input w-28" type="number" min="0" step="0.5" value={form.yearly_balance} disabled={form.is_paid === "0"} onChange={(e) => setForm({ ...form, yearly_balance: e.target.value })} /></Field>
+        <button className="btn btn-primary"><Plus size={16} />Add</button>
       </form>
-    </section>
+    </div>
   );
 }
 
@@ -5654,10 +5447,9 @@ function AuditLogs() {
   }, []);
 
   return (
-    <section className="space-y-5">
-      <PageTitle title="Audit Logs" description="Track important admin actions in one place." />
+    <section>
       <DataTable
-        title="Recent Activity"
+        title="Recent admin actions"
         rows={rows}
         columns={[
           ["When", (row) => row.created_at],

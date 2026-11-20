@@ -48,7 +48,7 @@ async function route(context: Context) {
   if (method === "POST" && path === "/attendance/check-out") return checkOut(db, user, await readBody(context.request));
   if (method === "POST" && path === "/attendance/break-start") return takeBreak(db, user);
   if (method === "POST" && path === "/attendance/break-end") return endBreak(db, user);
-  if (method === "GET" && path === "/leaves") return leaveList(db, user);
+  if (method === "GET" && path === "/leaves") return leaveList(db, user, url);
   if (method === "POST" && path === "/leaves") return applyLeave(db, user, await readBody(context.request));
   if (method === "GET" && path === "/payroll") return payrollList(db, user, url);
   if (method === "GET" && path.startsWith("/salary-slips/")) return salarySlip(db, user, Number(path.split("/").pop()));
@@ -82,10 +82,6 @@ async function route(context: Context) {
   if (method === "POST" && path.match(/^\/chat\/messages\/\d+\/reactions$/)) return toggleReaction(db, user, Number(path.split("/")[3]), await readBody(context.request));
   if (method === "PUT" && path.match(/^\/chat\/messages\/\d+$/)) return editChatMessage(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "DELETE" && path.match(/^\/chat\/messages\/\d+$/)) return deleteChatMessage(db, user, Number(path.split("/").pop()));
-  if (method === "GET" && path === "/tasks") return taskList(db, user, url);
-  if (method === "GET" && path === "/tasks.csv") return tasksCsv(db, user, url);
-  if (method === "POST" && path === "/tasks") return createTask(db, user, await readBody(context.request));
-  if (method === "PUT" && path.match(/^\/tasks\/\d+$/)) return updateTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
 
   requireAdmin(user);
 
@@ -117,7 +113,6 @@ async function route(context: Context) {
   if (method === "POST" && path === "/holidays") return saveHoliday(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/holidays/")) return deleteHoliday(db, user, Number(path.split("/").pop()));
   if (method === "PUT" && path === "/settings") return saveSettings(db, user, await readBody(context.request));
-  if (method === "DELETE" && path.match(/^\/tasks\/\d+$/)) return deleteTask(db, user, Number(path.split("/").pop()));
   if (method === "GET" && path === "/audit-logs") return auditLogs(db);
   if (method === "GET" && path === "/reports/meta") return reportsMeta(db);
   if (method === "GET" && path === "/reports/summary") return reportsSummary(db, url);
@@ -176,6 +171,7 @@ async function meta(db: D1Database) {
 }
 
 async function adminSummary(db: D1Database) {
+  await settleMissedCheckouts(db);
   const today = dateOnly();
   const monthStart = today.slice(0, 8) + "01";
   const [
@@ -189,9 +185,9 @@ async function adminSummary(db: D1Database) {
     estimatedMonthlyPayroll,
   ] = await Promise.all([
     scalar(db, "SELECT COUNT(*) FROM employees WHERE employment_status = 'Active'"),
-    scalar(db, "SELECT COUNT(*) FROM attendance WHERE attendance_date = ? AND status IN ('Present', 'Late', 'Half Day')", today),
-    scalar(db, "SELECT COUNT(*) FROM employees WHERE employment_status = 'Active'") .then(async (total) => total - await scalar(db, "SELECT COUNT(DISTINCT employee_id) FROM attendance WHERE attendance_date = ?", today)),
-    scalar(db, "SELECT COUNT(*) FROM leave_requests WHERE status = 'Pending'"),
+    scalar(db, "SELECT COUNT(*) FROM attendance a JOIN employees e ON e.id = a.employee_id WHERE a.attendance_date = ? AND a.status IN ('Present', 'Late', 'Half Day') AND e.employment_status = 'Active'", today),
+    scalar(db, "SELECT COUNT(*) FROM employees WHERE employment_status = 'Active'") .then(async (total) => total - await scalar(db, "SELECT COUNT(DISTINCT a.employee_id) FROM attendance a JOIN employees e ON e.id = a.employee_id WHERE a.attendance_date = ? AND e.employment_status = 'Active'", today)),
+    scalar(db, "SELECT COUNT(*) FROM leave_requests lr JOIN employees e ON e.id = lr.employee_id WHERE lr.status = 'Pending' AND e.employment_status = 'Active'"),
     scalar(db, "SELECT COUNT(*) FROM leave_requests WHERE status = 'Approved' AND start_date >= ?", monthStart),
     scalar(db, "SELECT COUNT(*) FROM salaries WHERE status = 'Pending'"),
     scalar(db, "SELECT COUNT(*) FROM salaries WHERE status = 'Done'"),
@@ -225,6 +221,16 @@ async function adminSummary(db: D1Database) {
     if (!paidIds.has(Number(employee.id))) lastMonthOutstanding += net;
   }
 
+  // What is waiting on the admin, and who is away today.
+  const [onLeaveToday, pendingCorrections, missedCheckouts] = await Promise.all([
+    scalar(db, `SELECT COUNT(DISTINCT lr.employee_id) FROM leave_requests lr JOIN employees e ON e.id = lr.employee_id
+      WHERE lr.status = 'Approved' AND lr.start_date <= ? AND lr.end_date >= ? AND e.employment_status = 'Active'`, today, today),
+    scalar(db, `SELECT COUNT(*) FROM attendance_requests ar JOIN employees e ON e.id = ar.employee_id
+      WHERE ar.status = 'Pending' AND e.employment_status = 'Active'`),
+    scalar(db, `SELECT COUNT(*) FROM attendance a JOIN employees e ON e.id = a.employee_id
+      WHERE a.missed_checkout = 1 AND a.attendance_date >= ? AND e.employment_status = 'Active'`, addDaysYmd(today, -7)),
+  ]);
+
   // Headline task numbers for the dashboard. Next week's repeats are not work
   // anyone owes yet, so they stay out of the count until their day arrives.
   const [taskTotal, taskDone, taskOngoing, taskPending] = await Promise.all([
@@ -249,11 +255,13 @@ async function adminSummary(db: D1Database) {
       lastMonthPaid: Math.round(paidTotal),
       lastMonthLabel: `${monthName(lastMonth)} ${lastMonthYear}`,
       taskTotal, taskDone, taskOngoing, taskPending,
+      onLeaveToday, pendingCorrections, missedCheckouts,
     },
   });
 }
 
 async function employeeSummary(db: D1Database, user: AppUser) {
+  await settleMissedCheckouts(db);
   const employee = await employeeForUser(db, user);
   const today = dateOnly();
   const now = new Date();
@@ -281,15 +289,20 @@ async function employeeSummary(db: D1Database, user: AppUser) {
     // Company holidays from today onward.
     db.prepare("SELECT id, name, holiday_date, description FROM holidays WHERE holiday_date >= ? ORDER BY holiday_date ASC LIMIT 5").bind(today).all(),
   ]);
-  const monthAttendance = { present: 0, late: 0, halfDay: 0, absent: 0 };
+  const monthAttendance = { present: 0, late: 0, halfDay: 0, absent: 0, leave: 0 };
   for (const row of attendanceRows.results as Array<{ status: string; count: number }>) {
     if (row.status === "Present") monthAttendance.present = row.count;
     if (row.status === "Late") monthAttendance.late = row.count;
     if (row.status === "Half Day") monthAttendance.halfDay = row.count;
     if (row.status === "Absent") monthAttendance.absent = row.count;
+    if (row.status === "On Leave") monthAttendance.leave = row.count;
   }
+  // Days this week the system counted as leave because nobody checked out.
+  const missedDays = (await db.prepare(
+    "SELECT attendance_date FROM attendance WHERE employee_id = ? AND missed_checkout = 1 AND attendance_date >= ? ORDER BY attendance_date DESC",
+  ).bind(employee.id, addDaysYmd(today, -7)).all<{ attendance_date: string }>()).results.map((r) => r.attendance_date);
   if (todayAttendance) await attachBreaks(db, [todayAttendance as Record<string, unknown>]);
-  return json({ summary: { todayAttendance, monthAttendance, leaveBalance: paidLeave, recentLeaves: recentLeaves.results, currentSalary, latestSalary, upcomingLeaves: upcomingLeaves.results, upcomingHolidays: upcomingHolidays.results } });
+  return json({ summary: { todayAttendance, monthAttendance, leaveBalance: paidLeave, recentLeaves: recentLeaves.results, currentSalary, latestSalary, upcomingLeaves: upcomingLeaves.results, upcomingHolidays: upcomingHolidays.results, missedDays } });
 }
 
 async function employeesList(db: D1Database) {
@@ -372,8 +385,11 @@ async function deleteNamed(db: D1Database, table: "departments" | "designations"
 }
 
 async function attendanceList(db: D1Database, user: AppUser, url: URL) {
+  await settleMissedCheckouts(db);
   const rows = await attendanceRows(db, user, url);
-  const employees = user.role === "Superadmin" ? (await db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all()).results : undefined;
+  // Everyone is offered in the picker — inactive people last — so a former
+  // employee's record is one selection away, but never in the default view.
+  const employees = user.role === "Superadmin" ? (await db.prepare(employeeSelect(everyoneOrder)).all()).results : undefined;
   return json({ attendance: rows, employees });
 }
 
@@ -389,6 +405,9 @@ async function attendanceRows(db: D1Database, user: AppUser, url: URL) {
   } else if (employeeId) {
     where += " AND a.employee_id = ?";
     params.push(employeeId);
+  } else {
+    // Former employees stay out of the everyone-view; pick them to see them.
+    where += " AND e.employment_status = 'Active'";
   }
   const departmentId = url.searchParams.get("departmentId");
   if (user.role === "Superadmin" && departmentId) {
@@ -404,7 +423,37 @@ async function attendanceRows(db: D1Database, user: AppUser, url: URL) {
   return attachBreaks(db, result.results as Array<Record<string, unknown>>);
 }
 
+// A day that was checked into but never checked out — usually because someone
+// left on a break and never came back to the screen — counts as leave once it
+// is over. Runs whenever attendance is read; the partial index means it touches
+// only the handful of still-open rows. An admin can overrule any such day from
+// the month view.
+async function settleMissedCheckouts(db: D1Database) {
+  const today = dateOnly();
+  const open = await db.prepare(
+    `SELECT a.id, a.attendance_date, e.user_id, e.full_name
+     FROM attendance a JOIN employees e ON e.id = a.employee_id
+     WHERE a.check_out IS NULL AND a.missed_checkout = 0 AND a.attendance_date < ? AND a.check_in IS NOT NULL`,
+  ).bind(today).all<{ id: number; attendance_date: string; user_id: number; full_name: string }>();
+  if (!open.results.length) return;
+  // Only recent days are worth telling anyone about; older ones are settled quietly.
+  const recent = addDaysYmd(today, -3);
+  for (const row of open.results) {
+    await db.prepare("UPDATE attendance_breaks SET break_end = break_start WHERE attendance_id = ? AND break_end IS NULL").bind(row.id).run();
+    await db.prepare(
+      `UPDATE attendance SET status = 'On Leave', missed_checkout = 1, total_hours = 0,
+         break_end = COALESCE(break_end, break_start), notes = 'Did not check out — counted as leave', updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    ).bind(row.id).run();
+    if (row.attendance_date >= recent) {
+      await notify(db, row.user_id, "Counted as leave", `You did not check out on ${row.attendance_date}, so that day is counted as leave. Ask your admin if this is wrong.`);
+      await notifyAdmins(db, "Missed check-out", `${row.full_name} did not check out on ${row.attendance_date}; the day is counted as leave.`);
+    }
+  }
+}
+
 async function checkIn(db: D1Database, user: AppUser, body: Record<string, unknown>) {
+  await settleMissedCheckouts(db);
   const employee = await employeeForUser(db, user);
   const settings = await companySettings(db);
   const time = timeOnly();
@@ -504,9 +553,9 @@ async function manualAttendance(db: D1Database, actor: AppUser, body: Record<str
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(employee_id, attendance_date) DO UPDATE SET check_in = excluded.check_in, check_out = excluded.check_out,
        break_start = excluded.break_start, break_end = excluded.break_end, total_hours = excluded.total_hours, 
-       status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
+       status = excluded.status, missed_checkout = 0, notes = NULL, updated_at = CURRENT_TIMESTAMP`,
   )
-    .bind(number(body.employee_id), text(body.attendance_date), checkInAt, checkOutAt, breakStart, breakEnd, hours, text(body.status) || "Present")
+    .bind(number(body.employee_id), text(body.attendance_date), checkInAt || null, checkOutAt || null, breakStart, breakEnd, hours, text(body.status) || "Present")
     .run();
   await audit(db, actor, "Attendance edited", "attendance", number(body.employee_id), text(body.attendance_date));
   return json({ ok: true });
@@ -523,16 +572,29 @@ async function attendanceCsv(db: D1Database, user: AppUser, url: URL) {
   return new Response([header.join(","), ...lines].join("\n"), { headers: { "Content-Type": "text/csv", "Content-Disposition": "attachment; filename=attendance.csv" } });
 }
 
-async function leaveList(db: D1Database, user: AppUser) {
+async function leaveList(db: D1Database, user: AppUser, url: URL) {
   const leaveTypes = (await db.prepare("SELECT * FROM leave_types ORDER BY name").all()).results;
-  const employeeFilter = user.role === "Employee" ? "WHERE lr.employee_id = ?" : "";
-  const bind = user.role === "Employee" ? [user.employeeId] : [];
+  const picked = url.searchParams.get("employeeId");
+  const employeeFilter = user.role === "Employee" || picked ? "WHERE lr.employee_id = ?" : "WHERE e.employment_status = 'Active'";
+  const bind = user.role === "Employee" ? [user.employeeId] : picked ? [picked] : [];
   const leaves = await db.prepare(
     `SELECT lr.*, e.full_name AS employee_name, lt.name AS leave_type_name, lt.is_paid
      FROM leave_requests lr JOIN employees e ON e.id = lr.employee_id JOIN leave_types lt ON lt.id = lr.leave_type_id
-     ${employeeFilter} ORDER BY lr.created_at DESC`,
+     ${employeeFilter} ORDER BY (lr.status = 'Pending') DESC, lr.start_date DESC`,
   ).bind(...bind).all();
-  return json({ leaves: leaves.results, leaveTypes });
+  const employees = user.role === "Superadmin" ? (await db.prepare(employeeSelect(everyoneOrder)).all()).results : undefined;
+  // What each paid type allows, and what this person has already used this year.
+  let balances: Array<Record<string, unknown>> | undefined;
+  if (user.role === "Employee") {
+    const year = dateOnly().slice(0, 4);
+    balances = (await db.prepare(
+      `SELECT lt.id, lt.name, lt.is_paid, lt.yearly_balance,
+         COALESCE((SELECT SUM(lr.days) FROM leave_requests lr WHERE lr.leave_type_id = lt.id AND lr.employee_id = ?
+           AND lr.status = 'Approved' AND substr(lr.start_date, 1, 4) = ?), 0) AS used
+       FROM leave_types lt ORDER BY lt.name`,
+    ).bind(user.employeeId, year).all()).results;
+  }
+  return json({ leaves: leaves.results, leaveTypes, employees, balances });
 }
 
 async function applyLeave(db: D1Database, user: AppUser, body: Record<string, unknown>) {
@@ -542,6 +604,7 @@ async function applyLeave(db: D1Database, user: AppUser, body: Record<string, un
   const result = await db.prepare("INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, days, reason) VALUES (?, ?, ?, ?, ?, ?)")
     .bind(employee.id, number(body.leave_type_id), text(body.start_date), text(body.end_date), days, text(body.reason)).run();
   await notify(db, user.id, "Leave applied", "Your leave request was submitted.");
+  await notifyAdmins(db, "Leave request", `${displayNameOf(user)} asked for ${days} day${days === 1 ? "" : "s"} of leave from ${text(body.start_date)}.`);
   return json({ ok: true, id: result.meta.last_row_id });
 }
 
@@ -577,14 +640,21 @@ async function deleteLeaveType(db: D1Database, actor: AppUser, id: number) {
 }
 
 async function payrollList(db: D1Database, user: AppUser, url: URL) {
+  await settleMissedCheckouts(db);
   // Same period filter for both roles. Current & future months are never shown
   // (payroll is only generated for completed months).
   const period = url.searchParams.get("period") || "Last Month";
   const conditions: string[] = [];
   const params: unknown[] = [];
+  const picked = url.searchParams.get("employeeId");
   if (user.role === "Employee") {
     conditions.push("s.employee_id = ?");
     params.push(user.employeeId);
+  } else if (picked) {
+    conditions.push("s.employee_id = ?");
+    params.push(picked);
+  } else {
+    conditions.push("e.employment_status = 'Active'");
   }
 
   const todayStr = dateOnly();
@@ -642,6 +712,7 @@ async function payrollList(db: D1Database, user: AppUser, url: URL) {
 }
 
 async function generatePayroll(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
+  await settleMissedCheckouts(db);
   const month = number(body.month);
   const year = number(body.year);
   const settings = await companySettings(db);
@@ -787,7 +858,7 @@ async function markNotificationsRead(db: D1Database, user: AppUser) {
 // Spaces hold Lists (the brands we work with); every task belongs to one List.
 // Employees move their own tasks along the pipeline and comment.
 
-const workStatuses = ["Backlog", "To Do", "In Progress", "In Review", "Done"];
+const workStatuses = ["To Do", "In Progress", "In Review", "Done"];
 const workPriorities = ["Urgent", "High", "Normal", "Low"];
 
 async function workMeta(db: D1Database, user: AppUser) {
@@ -813,7 +884,11 @@ async function workMeta(db: D1Database, user: AppUser) {
     ).bind(...bind).all(),
     db.prepare(`${chatUserSelect} WHERE u.is_active = 1 ORDER BY display_name`).all(),
   ]);
-  return json({ spaces: spaces.results, lists: lists.results, people: people.results, statuses: workStatuses, priorities: workPriorities, isAdmin });
+  // Former employees, for the admin's assignee filter only — never to assign work to.
+  const formerPeople = isAdmin
+    ? (await db.prepare(`${chatUserSelect} WHERE u.is_active = 0 AND u.role = 'Employee' ORDER BY display_name`).all()).results
+    : [];
+  return json({ spaces: spaces.results, lists: lists.results, people: people.results, formerPeople, statuses: workStatuses, priorities: workPriorities, isAdmin });
 }
 
 // Anyone can propose a Space; admins get one instantly, everyone else waits for approval.
@@ -953,6 +1028,12 @@ async function workTasks(db: D1Database, user: AppUser, url: URL) {
   if (assigneeId && user.role === "Superadmin") {
     conditions.push("EXISTS (SELECT 1 FROM work_task_assignees a2 WHERE a2.task_id = t.id AND a2.user_id = ?)");
     params.push(assigneeId);
+  }
+  // Work that belongs only to former employees stays out of view until one of
+  // them is picked as the assignee.
+  if (!assigneeId) {
+    conditions.push(`(NOT EXISTS (SELECT 1 FROM work_task_assignees ax WHERE ax.task_id = t.id)
+      OR EXISTS (SELECT 1 FROM work_task_assignees ax JOIN users ux ON ux.id = ax.user_id WHERE ax.task_id = t.id AND ux.is_active = 1))`);
   }
   // Employees only ever see work assigned to them; admins see everything.
   if (mine === "1" || user.role !== "Superadmin") {
@@ -1663,125 +1744,16 @@ async function deleteChatMessage(db: D1Database, user: AppUser, id: number) {
 const taskPriorities = ["High", "Medium", "Low"];
 const taskStatuses = ["Pending", "In Progress", "Completed"];
 
-async function taskList(db: D1Database, user: AppUser, url: URL) {
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  if (user.role === "Employee") {
-    conditions.push("t.employee_id = ?");
-    params.push(user.employeeId);
-  } else {
-    const employeeId = url.searchParams.get("employeeId");
-    if (employeeId) {
-      conditions.push("t.employee_id = ?");
-      params.push(employeeId);
-    }
-  }
-  const date = url.searchParams.get("date");
-  if (date) {
-    conditions.push("t.task_date = ?");
-    params.push(date);
-  }
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const rows = await db.prepare(
-    `SELECT t.*, e.full_name AS employee_name, e.employee_code
-     FROM tasks t JOIN employees e ON e.id = t.employee_id
-     ${where}
-     ORDER BY CASE t.priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END, t.created_at ASC`,
-  ).bind(...params).all();
-  // Admins get the employee list for the filter dropdown.
-  const employees = user.role === "Superadmin"
-    ? (await db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all()).results
-    : undefined;
-  return json({ tasks: rows.results, employees });
-}
 
-async function createTask(db: D1Database, user: AppUser, body: Record<string, unknown>) {
-  const title = text(body.title);
-  if (!title) return json({ error: "Task title is required" }, 400);
-  const date = text(body.task_date) || dateOnly();
-  const priority = taskPriorities.includes(text(body.priority)) ? text(body.priority) : "Medium";
 
-  let employeeId: number;
-  let assignedByAdmin = 0;
-  if (user.role === "Superadmin") {
-    // Admin assigns a task to a chosen employee.
-    employeeId = number(body.employee_id);
-    const target = await db.prepare("SELECT id, user_id, full_name FROM employees WHERE id = ?").bind(employeeId).first<{ id: number; user_id: number; full_name: string }>();
-    if (!target) return json({ error: "Choose a valid employee to assign the task to" }, 400);
-    assignedByAdmin = 1;
-  } else {
-    const employee = await employeeForUser(db, user);
-    employeeId = Number(employee.id);
-  }
-
-  await db.prepare(
-    "INSERT INTO tasks (employee_id, task_date, title, company, priority, status, notes, assigned_by_admin, deadline) VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)",
-  ).bind(employeeId, date, title, text(body.company) || null, priority, text(body.notes) || null, assignedByAdmin, text(body.deadline) || null).run();
-
-  if (assignedByAdmin) {
-    const emp = await db.prepare("SELECT user_id FROM employees WHERE id = ?").bind(employeeId).first<{ user_id: number }>();
-    if (emp?.user_id) await notify(db, emp.user_id, "New task assigned", `Admin assigned you a task for ${date}: ${title}`);
-  }
-  return json({ ok: true });
-}
-
-async function updateTask(db: D1Database, user: AppUser, id: number, body: Record<string, unknown>) {
-  const task = await db.prepare("SELECT * FROM tasks WHERE id = ?").bind(id).first<Record<string, unknown>>();
-  if (!task) return json({ error: "Task not found" }, 404);
-  // Employees can only touch their own tasks; admins can edit any.
-  if (user.role === "Employee" && Number(task.employee_id) !== user.employeeId) return json({ error: "Not allowed" }, 403);
-  const title = body.title !== undefined ? (text(body.title) || String(task.title)) : String(task.title);
-  const company = body.company !== undefined ? (text(body.company) || null) : (task.company ?? null);
-  const priority = body.priority !== undefined && taskPriorities.includes(text(body.priority)) ? text(body.priority) : String(task.priority);
-  const status = body.status !== undefined && taskStatuses.includes(text(body.status)) ? text(body.status) : String(task.status);
-  const notes = body.notes !== undefined ? (text(body.notes) || null) : (task.notes ?? null);
-  const deadline = body.deadline !== undefined ? (text(body.deadline) || null) : (task.deadline ?? null);
-  await db.prepare(
-    "UPDATE tasks SET title = ?, company = ?, priority = ?, status = ?, notes = ?, deadline = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-  ).bind(title, company, priority, status, notes, deadline, id).run();
-  return json({ ok: true });
-}
 
 // Delete is admin-only (route sits after the requireAdmin gate).
-async function deleteTask(db: D1Database, actor: AppUser, id: number) {
-  const task = await db.prepare("SELECT title FROM tasks WHERE id = ?").bind(id).first<{ title: string }>();
-  await db.prepare("DELETE FROM tasks WHERE id = ?").bind(id).run();
-  await audit(db, actor, "Task deleted", "tasks", id, task?.title ?? "");
-  return json({ ok: true });
-}
 
 // CSV report of tasks over a date range (admin: all employees; employee: own).
-async function tasksCsv(db: D1Database, user: AppUser, url: URL) {
-  const start = url.searchParams.get("start") || "1900-01-01";
-  const end = url.searchParams.get("end") || "2999-12-31";
-  const conditions = ["t.task_date BETWEEN ? AND ?"];
-  const params: unknown[] = [start, end];
-  if (user.role === "Employee") {
-    conditions.push("t.employee_id = ?");
-    params.push(user.employeeId);
-  } else {
-    const employeeId = url.searchParams.get("employeeId");
-    if (employeeId) {
-      conditions.push("t.employee_id = ?");
-      params.push(employeeId);
-    }
-  }
-  const rows = await db.prepare(
-    `SELECT t.task_date, e.full_name AS employee_name, e.employee_code, t.title, t.company, t.priority, t.status, t.deadline
-     FROM tasks t JOIN employees e ON e.id = t.employee_id
-     WHERE ${conditions.join(" AND ")}
-     ORDER BY t.task_date DESC, CASE t.priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END`,
-  ).bind(...params).all<Record<string, unknown>>();
-  const header = ["Date", "Employee", "Employee ID", "Task", "Company/Brand", "Priority", "Status", "Deadline"];
-  const lines = rows.results.map((r) => [r.task_date, r.employee_name, r.employee_code, r.title, r.company, r.priority, r.status, r.deadline].map(csvCell).join(","));
-  return new Response([header.join(","), ...lines].join("\n"), {
-    headers: { "Content-Type": "text/csv", "Content-Disposition": `attachment; filename=tasks_${start}_to_${end}.csv` },
-  });
-}
 
 async function reportsMeta(db: D1Database) {
   const [employees, departments] = await Promise.all([
-    db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all(),
+    db.prepare(employeeSelect(everyoneOrder)).all(),
     db.prepare("SELECT id, name FROM departments ORDER BY name").all(),
   ]);
   return json({ employees: employees.results, departments: departments.results });
@@ -1798,6 +1770,7 @@ async function reportsSummary(db: D1Database, url: URL) {
   const scope: string[] = [];
   const scopeArgs: unknown[] = [];
   if (employeeId) { scope.push("e.id = ?"); scopeArgs.push(employeeId); }
+  else scope.push("e.employment_status = 'Active'");
   if (departmentId) { scope.push("e.department_id = ?"); scopeArgs.push(departmentId); }
   const andScope = scope.length ? ` AND ${scope.join(" AND ")}` : "";
 
@@ -1827,7 +1800,7 @@ async function reportsSummary(db: D1Database, url: URL) {
          COUNT(*) AS marked
        FROM employees e LEFT JOIN attendance a
          ON a.employee_id = e.id AND a.attendance_date BETWEEN ? AND ?
-       WHERE e.employment_status = 'Active'${andScope}
+       WHERE 1 = 1${andScope}
        GROUP BY e.id ORDER BY e.full_name`,
     ).bind(start, end, ...scopeArgs).all(),
 
@@ -1853,7 +1826,7 @@ async function reportsSummary(db: D1Database, url: URL) {
 
     db.prepare(`SELECT status, COUNT(*) AS count FROM work_tasks WHERE ${notYetDueRepeat} GROUP BY status`).all(),
 
-    db.prepare(`SELECT COUNT(*) AS n FROM employees e WHERE e.employment_status = 'Active'${andScope}`)
+    db.prepare(`SELECT COUNT(*) AS n FROM employees e WHERE 1 = 1${andScope}`)
       .bind(...scopeArgs).first<{ n: number }>(),
   ]);
 
@@ -1942,6 +1915,9 @@ async function employeeForUser(db: D1Database, user: AppUser) {
   if (!employee) throw new Error("Employee profile not found");
   return employee as Record<string, string | number>;
 }
+
+// Active people first, then former ones — for pickers that must offer both.
+const everyoneOrder = "ORDER BY (e.employment_status = 'Active') DESC, e.full_name";
 
 function employeeSelect(suffix: string) {
   return `SELECT e.*, d.name AS department_name, des.name AS designation_name
@@ -2094,7 +2070,12 @@ async function monthDayBreakdown(db: D1Database, employee: Record<string, unknow
       out.push({ ...base, status: leave.is_paid ? "Paid leave" : "Unpaid leave", factor: leave.is_paid ? 0 : 1, note: leave.name });
       continue;
     }
-    // 5. Attendance-based.
+    // 5. Checked in but never checked out — counted as leave (unpaid).
+    if (Number(att?.missed_checkout)) {
+      out.push({ ...base, status: "Leave", factor: 1, note: "Did not check out — counted as leave" });
+      continue;
+    }
+    // 6. Attendance-based.
     if (!att?.check_in) {
       out.push({ ...base, status: "No check-in", factor: 0.5, note: "Treated as half day" });
     } else if (hours >= fullHours) {
@@ -2109,6 +2090,7 @@ async function monthDayBreakdown(db: D1Database, employee: Record<string, unknow
 }
 
 async function monthGrid(db: D1Database, user: AppUser, url: URL) {
+  await settleMissedCheckouts(db);
   const month = Number(url.searchParams.get("month")) || Number(dateOnly().slice(5, 7));
   const year = Number(url.searchParams.get("year")) || Number(dateOnly().slice(0, 4));
   const employeeId = user.role === "Employee" ? user.employeeId : Number(url.searchParams.get("employeeId"));
@@ -2122,7 +2104,7 @@ async function monthGrid(db: D1Database, user: AppUser, url: URL) {
   const perDay = totalDays ? gross / totalDays : 0;
   const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
   const employees = user.role === "Superadmin"
-    ? (await db.prepare(employeeSelect("WHERE e.employment_status = 'Active' ORDER BY e.full_name")).all()).results
+    ? (await db.prepare(employeeSelect(everyoneOrder)).all()).results
     : undefined;
 
   // Employees may see their own breakdown (it is shown in their Payroll section).
@@ -2165,7 +2147,7 @@ async function saveDayOverride(db: D1Database, actor: AppUser, body: Record<stri
 // ---- Employee day-correction requests (half day / full day / timing) ----
 
 async function attendanceRequestList(db: D1Database, user: AppUser) {
-  const where = user.role === "Employee" ? "WHERE ar.employee_id = ?" : "";
+  const where = user.role === "Employee" ? "WHERE ar.employee_id = ?" : "WHERE e.employment_status = 'Active'";
   const bind = user.role === "Employee" ? [user.employeeId] : [];
   const rows = await db.prepare(
     `SELECT ar.*, e.full_name AS employee_name, e.employee_code
@@ -2226,7 +2208,9 @@ async function decideAttendanceRequest(db: D1Database, actor: AppUser, id: numbe
         `INSERT INTO attendance (employee_id, attendance_date, check_in, check_out, total_hours, status)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(employee_id, attendance_date) DO UPDATE SET check_in = excluded.check_in, check_out = excluded.check_out,
-           total_hours = excluded.total_hours, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
+           total_hours = excluded.total_hours, status = excluded.status,
+           missed_checkout = CASE WHEN excluded.check_out IS NOT NULL THEN 0 ELSE attendance.missed_checkout END,
+           updated_at = CURRENT_TIMESTAMP`,
       ).bind(employeeId, day, checkIn, checkOut, hours, attStatus).run();
     }
   }

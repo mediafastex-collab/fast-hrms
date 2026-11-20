@@ -92,6 +92,8 @@ type AttendanceRecord = {
   check_in?: string;
   check_out?: string;
   missed_checkout?: number;
+  override_type?: "Paid" | "Half Day" | "Unpaid" | null;
+  override_reason?: string | null;
   break_start?: string;
   break_end?: string;
   breaks?: AttendanceBreak[];
@@ -142,6 +144,8 @@ type Salary = {
   net_salary: number;
   status: "Pending" | "Done";
   payment_proof?: string;
+  adjustment?: number;
+  adjustment_note?: string | null;
 };
 
 type DashboardSummary = {
@@ -240,9 +244,9 @@ function classNames(...items: Array<string | false | null | undefined>) {
 }
 
 function statusTone(status: string) {
-  if (["Done", "Approved", "Present"].includes(status)) return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/15";
-  if (["Pending", "Late", "Half Day"].includes(status)) return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/15";
-  if (["Rejected", "Absent", "Inactive"].includes(status)) return "bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-600/15";
+  if (["Done", "Approved", "Present", "Paid by admin"].includes(status)) return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/15";
+  if (["Pending", "Late", "Half Day", "Half day (admin)"].includes(status)) return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/15";
+  if (["Rejected", "Absent", "Inactive", "Unpaid (admin)"].includes(status)) return "bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-600/15";
   return "bg-[var(--surface-sunk)] text-ink-2 ring-1 ring-inset ring-[var(--line-strong)]";
 }
 
@@ -1350,14 +1354,14 @@ type GridResponse = {
   employee: { id: number; full_name: string; joining_date: string; monthly_salary?: number };
   days: GridDay[];
   // Salary figures are only present for admins.
-  summary: { totalDays: number; deductionDays: number; paidDays: number; perDay?: number; gross?: number; deductions?: number; net?: number };
+  summary: { totalDays: number; deductionDays: number; paidDays: number; perDay?: number; gross?: number; deductions?: number; net?: number; adjustment?: number; adjustment_note?: string | null };
   employees?: Employee[];
 };
 
 function dayTone(status: string) {
-  if (["Present", "Holiday", "Paid leave", "Paid"].includes(status)) return "bg-emerald-50 text-emerald-700 border-emerald-200";
-  if (["Half day", "No check-in", "Half Day"].includes(status)) return "bg-amber-50 text-amber-700 border-amber-200";
-  if (["Absent", "Unpaid leave", "Unpaid", "Not joined", "Leave"].includes(status)) return "bg-rose-50 text-rose-700 border-rose-200";
+  if (["Present", "Holiday", "Paid leave", "Paid", "Paid by admin"].includes(status)) return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (["Half day", "No check-in", "Half Day", "Half day (admin)"].includes(status)) return "bg-amber-50 text-amber-700 border-amber-200";
+  if (["Absent", "Unpaid leave", "Unpaid", "Unpaid (admin)", "Not joined", "Leave"].includes(status)) return "bg-rose-50 text-rose-700 border-rose-200";
   return "bg-sunk text-ink-2 border-line";
 }
 
@@ -1410,12 +1414,21 @@ function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloa
       {data ? (
         <>
           {showSalary ? (
-            <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-[repeat(auto-fit,minmax(9rem,1fr))]">
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Days in month</p><p className="text-lg font-bold text-ink">{data.summary.totalDays}</p></div>
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Per day</p><p className="tnum text-lg font-bold text-ink">{currency.format(data.summary.perDay ?? 0)}</p></div>
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Paid days</p><p className="text-lg font-bold text-emerald-600">{data.summary.paidDays}</p></div>
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Deduction days</p><p className="text-lg font-bold text-rose-600">{data.summary.deductionDays}</p></div>
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Deductions</p><p className="tnum text-lg font-bold text-rose-600">-{currency.format(data.summary.deductions ?? 0)}</p></div>
+              {data.summary.adjustment ? (
+                <div className="rounded-xl border border-line p-3" title={data.summary.adjustment_note ?? undefined}>
+                  <p className="text-[11px] font-semibold uppercase text-ink-3">{data.summary.adjustment > 0 ? "Addition" : "Extra deduction"}</p>
+                  <p className={classNames("tnum text-lg font-bold", data.summary.adjustment > 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {data.summary.adjustment > 0 ? "+" : "−"}{currency.format(Math.abs(data.summary.adjustment))}
+                  </p>
+                  {data.summary.adjustment_note ? <p className="truncate text-[11px] text-ink-3">{data.summary.adjustment_note}</p> : null}
+                </div>
+              ) : null}
               <div className="rounded-xl border-2 border-brand/30 bg-orange-50 p-3"><p className="text-[11px] font-semibold uppercase text-brand">Net payable</p><p className="tnum text-lg font-extrabold text-brand">{currency.format(data.summary.net ?? 0)}</p></div>
             </div>
           ) : (
@@ -1680,11 +1693,11 @@ function AttendanceCalendar({ year, month, byDay, headcount, single, onDay }: {
                 <div className="mt-1">
                   {/* A phone cell is ~38px wide — "Half Day" does not fit, so the
                       label gives way to the dot and the tooltip carries it. */}
-                  <span className={classNames("badge hidden w-full justify-center !px-1 !text-[9px] sm:inline-flex", statusTone(one.status))}>
-                    {one.missed_checkout ? "No check-out" : attendanceLabel(one)}
+                  <span className={classNames("badge hidden w-full justify-center !px-1 !text-[9px] sm:inline-flex", statusTone(attendanceLabel(one)))}>
+                    {one.override_type ? attendanceLabel(one) : one.missed_checkout ? "No check-out" : attendanceLabel(one)}
                   </span>
                   <span className="mx-auto block h-2 w-2 rounded-full sm:hidden"
-                    style={{ background: STATUS_COLOUR[one.status] ?? VIZ.neutral }} />
+                    style={{ background: attendanceColour(one) }} />
                   {one.check_in ? <p className="tnum mt-1 text-center text-[9.5px] text-ink-3">{one.check_in.slice(0, 5)}</p> : null}
                 </div>
               ) : records.length ? (
@@ -1693,7 +1706,7 @@ function AttendanceCalendar({ year, month, byDay, headcount, single, onDay }: {
                     {records.slice(0, 8).map((r) => (
                       <span key={r.id} title={`${r.employee_name}: ${r.status}`}
                         className="h-[7px] w-[7px] rounded-full"
-                        style={{ background: STATUS_COLOUR[r.status] ?? VIZ.neutral }} />
+                        style={{ background: attendanceColour(r) }} />
                     ))}
                   </div>
                   <p className="tnum mt-1 text-[9.5px] text-ink-3">
@@ -1714,6 +1727,10 @@ function AttendanceCalendar({ year, month, byDay, headcount, single, onDay }: {
             {s === "On Leave" ? "Leave" : s}
           </span>
         ))}
+        <span className="flex items-center gap-1.5 text-[11px] text-ink-3">
+          <span className="h-2 w-2 rounded-full ring-2 ring-emerald-200" style={{ background: VIZ.good }} />
+          Paid by admin
+        </span>
       </div>
     </div>
   );
@@ -1721,9 +1738,20 @@ function AttendanceCalendar({ year, month, byDay, headcount, single, onDay }: {
 
 // What a record is called on screen. A missed check-out is stored as leave, and
 // says so.
-function attendanceLabel(r: Pick<AttendanceRecord, "status" | "missed_checkout">) {
+function attendanceLabel(r: Pick<AttendanceRecord, "status" | "missed_checkout" | "override_type">) {
+  // What the admin decided about a day outranks what the clock recorded.
+  if (r.override_type === "Paid") return "Paid by admin";
+  if (r.override_type === "Half Day") return "Half day (admin)";
+  if (r.override_type === "Unpaid") return "Unpaid (admin)";
   if (r.status === "On Leave") return "Leave";
   return r.status;
+}
+
+function attendanceColour(r: AttendanceRecord) {
+  if (r.override_type === "Paid") return VIZ.good;
+  if (r.override_type === "Half Day") return VIZ.serious;
+  if (r.override_type === "Unpaid") return VIZ.critical;
+  return STATUS_COLOUR[r.status] ?? VIZ.neutral;
 }
 
 // One picker for "whose", with former employees kept apart at the bottom.
@@ -1784,8 +1812,13 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
   async function load() {
     const search = new URLSearchParams({ start: monthStart, end: monthEnd });
     if (isAdmin && employeeId) search.set("employeeId", employeeId);
-    const data = await api<{ attendance: AttendanceRecord[]; employees?: Employee[] }>(`/attendance?${search.toString()}`);
-    setRows(data.attendance);
+    const data = await api<{ attendance: AttendanceRecord[]; employees?: Employee[]; overrides?: Array<{ employee_id: number; day: string; day_type: "Paid" | "Half Day" | "Unpaid"; reason?: string | null; employee_name?: string }> }>(`/attendance?${search.toString()}`);
+    // Days the admin decided on with no check-in at all still belong on the calendar.
+    const decided: AttendanceRecord[] = (data.overrides ?? []).map((o, i) => ({
+      id: -(i + 1), employee_id: o.employee_id, employee_name: o.employee_name, attendance_date: o.day,
+      total_hours: 0, status: "Absent", override_type: o.day_type, override_reason: o.reason ?? null,
+    }));
+    setRows([...data.attendance, ...decided]);
     if (data.employees) setEmployees(data.employees);
   }
 
@@ -1799,9 +1832,10 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
 
   const tally = useMemo(() => {
     const t: Record<string, number> = { Present: 0, Late: 0, "Half Day": 0, Absent: 0, "On Leave": 0 };
-    for (const r of rows) if (t[r.status] !== undefined) t[r.status] += 1;
+    for (const r of rows) if (!r.override_type && t[r.status] !== undefined) t[r.status] += 1;
     return t;
   }, [rows]);
+  const granted = rows.filter((r) => r.override_type === "Paid").length;
 
   const single = !isAdmin || !!employeeId;
   const activePeople = employees.filter((e) => e.employment_status === "Active");
@@ -1858,7 +1892,7 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
         </div>
         <p className="tnum ml-auto text-[12.5px] text-ink-3">
           {single
-            ? `${tally.Present + tally.Late} present · ${tally.Late} late · ${tally["Half Day"]} half · ${tally["On Leave"]} leave · ${tally.Absent} absent`
+            ? `${tally.Present + tally.Late} present · ${tally.Late} late · ${tally["Half Day"]} half · ${tally["On Leave"]} leave · ${tally.Absent} absent${granted ? ` · ${granted} paid by admin` : ""}`
             : `${activePeople.length} people · ${rows.filter((r) => r.status === "Present" || r.status === "Late").length} check-ins this month`}
         </p>
       </div>
@@ -1903,7 +1937,7 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
                     <td className="px-5 py-3"><Badge value={attendanceLabel(r)} /></td>
                     {isAdmin ? (
                       <td className="px-5 py-3 text-right">
-                        <button type="button" className="btn btn-ghost px-2 py-1 text-xs" onClick={() => startEdit(r)}><Pencil size={13} />Edit</button>
+                        {r.id > 0 ? <button type="button" className="btn btn-ghost px-2 py-1 text-xs" onClick={() => startEdit(r)}><Pencil size={13} />Edit</button> : null}
                       </td>
                     ) : null}
                   </tr>
@@ -1937,12 +1971,13 @@ function Attendance({ isAdmin }: { isAdmin: boolean }) {
                       {r.check_out ? ` · Out ${r.check_out.slice(0, 5)}` : ""}
                       {r.check_out ? ` · ${workedHMS(r)}` : ""}
                     </p>
-                    {r.missed_checkout ? <p className="mt-0.5 text-[12px] font-medium text-rose-600">Didn't check out — counted as leave</p> : null}
+                    {r.override_type ? <p className="mt-0.5 text-[12px] font-medium text-emerald-700">{r.override_reason || "Set by admin"}</p>
+                      : r.missed_checkout ? <p className="mt-0.5 text-[12px] font-medium text-rose-600">Didn't check out — counted as leave</p> : null}
                     {r.late_checkin_reason ? <p className="mt-0.5 text-[12px] text-amber-700">Late: {r.late_checkin_reason}</p> : null}
                     {r.early_checkout_reason ? <p className="mt-0.5 text-[12px] text-amber-700">Left early: {r.early_checkout_reason}</p> : null}
                   </div>
                   <Badge value={attendanceLabel(r)} />
-                  {isAdmin ? <button type="button" className="btn btn-ghost px-2 py-1 text-xs" onClick={() => startEdit(r)}><Pencil size={13} />Edit</button> : null}
+                  {isAdmin && r.id > 0 ? <button type="button" className="btn btn-ghost px-2 py-1 text-xs" onClick={() => startEdit(r)}><Pencil size={13} />Edit</button> : null}
                 </div>
               ))}
               {dayMissing.map((p) => (
@@ -2275,6 +2310,9 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
   const [employeeId, setEmployeeId] = useState("");
   const [openId, setOpenId] = useState<number | null>(null);
   const [paying, setPaying] = useState<Salary | null>(null);
+  // Editing pay: an amount added (bonus) or taken off (extra deduction), with a reason.
+  const [adjusting, setAdjusting] = useState<Salary | null>(null);
+  const [adjust, setAdjust] = useState({ kind: "add" as "add" | "deduct", amount: "", note: "" });
   const [proof, setProof] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -2318,6 +2356,45 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
       await load();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Could not mark paid");
+    }
+    setBusy(false);
+  }
+
+  function startAdjust(row: Salary) {
+    const a = Number(row.adjustment) || 0;
+    setAdjust({ kind: a < 0 ? "deduct" : "add", amount: a ? String(Math.abs(a)) : "", note: row.adjustment_note ?? "" });
+    setAdjusting(row);
+  }
+
+  async function saveAdjust(e: FormEvent) {
+    e.preventDefault();
+    if (!adjusting) return;
+    const amount = Math.round(Number(adjust.amount) || 0);
+    setBusy(true); setMessage("");
+    try {
+      await api(`/payroll/${adjusting.id}`, { method: "PUT", body: JSON.stringify({
+        adjustment: adjust.kind === "deduct" ? -amount : amount,
+        adjustment_note: adjust.note.trim(),
+      }) });
+      setAdjusting(null);
+      setOpenId(null);
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not save");
+    }
+    setBusy(false);
+  }
+
+  async function payInFull(row: Salary) {
+    if (!window.confirm(`Pay ${row.employee_name} in full for ${monthNames[row.salary_month - 1]} ${row.salary_year}?\n\nEvery cut day (leave, absent, half day, missed check-out) will show as "Paid by admin" in their attendance, and no salary is deducted.`)) return;
+    setBusy(true); setMessage("");
+    try {
+      await api(`/payroll/${row.id}/pay-in-full`, { method: "POST" });
+      setAdjusting(null);
+      setOpenId(null);
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not update");
     }
     setBusy(false);
   }
@@ -2377,6 +2454,7 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
                       <span className="tnum block text-[12.5px] text-ink-3">
                         {row.paid_days} of {row.working_days} days paid
                         {row.deductions > 0 ? ` · −${currency.format(row.deductions)}` : ""}
+                        {row.adjustment ? ` · ${row.adjustment > 0 ? "+" : "−"}${currency.format(Math.abs(row.adjustment))} ${row.adjustment_note ?? ""}` : ""}
                       </span>
                     </span>
                   </button>
@@ -2387,6 +2465,7 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
                     {row.payment_proof ? (
                       <a className="btn btn-ghost px-2.5 py-1.5 text-xs" href={row.payment_proof} download={`payment_${row.employee_name}_${row.salary_month}.jpg`}><ImageIcon size={14} />Proof</a>
                     ) : null}
+                    {isAdmin ? <button type="button" className="btn btn-ghost px-2.5 py-1.5 text-xs" onClick={() => startAdjust(row)}><Pencil size={14} />Edit</button> : null}
                     {isAdmin ? (row.status !== "Done"
                       ? <button type="button" className="btn btn-primary px-3 py-1.5 text-xs" onClick={() => setPaying(row)}>Mark paid</button>
                       : <button type="button" className="btn btn-ghost px-2.5 py-1.5 text-xs text-ink-3" onClick={() => markUnpaid(row)}>Undo</button>) : null}
@@ -2403,6 +2482,64 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
           })}
         </div>
       ) : null}
+
+      {adjusting ? (() => {
+        const amount = Math.round(Number(adjust.amount) || 0);
+        const before = Number(adjusting.net_salary) - (Number(adjusting.adjustment) || 0);
+        const after = before + (adjust.kind === "deduct" ? -amount : amount);
+        return (
+          <div className="modal-scrim items-center justify-center p-4">
+            <form onSubmit={saveAdjust} className="card w-full max-w-md space-y-4 p-6">
+              <div>
+                <h3 className="text-lg font-bold text-ink">Edit {adjusting.employee_name}'s salary</h3>
+                <p className="mt-1 text-sm text-ink-3">{monthNames[adjusting.salary_month - 1]} {adjusting.salary_year}. They'll see the change and the reason on their payslip.</p>
+              </div>
+              <div className="flex gap-1 rounded-full bg-sunk p-1">
+                {([["add", "Add (bonus, incentive)"], ["deduct", "Deduct (advance, penalty)"]] as const).map(([k, label]) => (
+                  <button key={k} type="button" onClick={() => setAdjust({ ...adjust, kind: k })}
+                    className={classNames("flex-1 rounded-full px-3 py-1.5 text-xs font-semibold transition",
+                      adjust.kind === k ? "bg-white text-ink shadow-sm" : "text-ink-3 hover:text-ink")}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {adjusting.deductions > 0 ? (
+                <button type="button" disabled={busy} onClick={() => payInFull(adjusting)}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-line px-4 py-3 text-left transition hover:border-line-strong hover:bg-sunk">
+                  <span>
+                    <span className="block text-[13.5px] font-semibold text-ink">Pay in full — waive all cuts</span>
+                    <span className="block text-[12px] text-ink-3">{currency.format(adjusting.deductions)} of cuts become days "Paid by admin"</span>
+                  </span>
+                  <ChevronRight size={16} className="text-ink-4" />
+                </button>
+              ) : null}
+              <Field label="Amount (₹)">
+                <input autoFocus className="input" type="number" min="0" step="1" value={adjust.amount}
+                  onChange={(e) => setAdjust({ ...adjust, amount: e.target.value })} placeholder="0" />
+              </Field>
+              <Field label="Reason">
+                <input className="input" value={adjust.note} onChange={(e) => setAdjust({ ...adjust, note: e.target.value })}
+                  placeholder={adjust.kind === "add" ? "e.g. Diwali bonus" : "e.g. Salary advance"} />
+              </Field>
+              <div className="tnum rounded-lg bg-sunk px-4 py-3 text-[13px] text-ink-2">
+                From attendance {currency.format(before)}
+                {amount ? ` ${adjust.kind === "deduct" ? "−" : "+"} ${currency.format(amount)}` : ""}
+                {" = "}<span className="font-bold text-ink">{currency.format(after)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                {adjusting.adjustment ? (
+                  <button type="button" className="text-xs font-semibold text-rose-600 hover:underline"
+                    onClick={() => setAdjust({ ...adjust, amount: "0", note: "" })}>Remove change</button>
+                ) : <span />}
+                <div className="flex gap-3">
+                  <button type="button" className="btn btn-soft" onClick={() => setAdjusting(null)}>Cancel</button>
+                  <button className="btn btn-primary" disabled={busy || (amount > 0 && !adjust.note.trim())}>{busy ? "Saving…" : "Save"}</button>
+                </div>
+              </div>
+            </form>
+          </div>
+        );
+      })() : null}
 
       {paying ? (
         <div className="modal-scrim items-center justify-center p-4">

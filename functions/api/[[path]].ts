@@ -79,6 +79,7 @@ async function route(context: Context) {
   if (method === "POST" && path === "/leave-types") return saveLeaveType(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/leave-types/")) return deleteLeaveType(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path === "/payroll/generate") return generatePayroll(db, user, await readBody(context.request));
+  if (method === "POST" && path.match(/^\/payroll\/\d+\/pay-in-full$/)) return payInFull(db, user, Number(path.split("/")[2]));
   if (method === "PUT" && path.startsWith("/payroll/")) return updateSalary(db, user, Number(path.split("/").pop()), await readBody(context.request));
   if (method === "POST" && path === "/holidays") return saveHoliday(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/holidays/")) return deleteHoliday(db, user, Number(path.split("/").pop()));
@@ -347,10 +348,11 @@ async function deleteNamed(db: D1Database, table: "departments" | "designations"
 async function attendanceList(db: D1Database, user: AppUser, url: URL) {
   await settleMissedCheckouts(db);
   const rows = await attendanceRows(db, user, url);
+  const overrides = await overridesWithoutAttendance(db, user, url);
   // Everyone is offered in the picker — inactive people last — so a former
   // employee's record is one selection away, but never in the default view.
   const employees = user.role === "Superadmin" ? (await db.prepare(employeeSelect(everyoneOrder)).all()).results : undefined;
-  return json({ attendance: rows, employees });
+  return json({ attendance: rows, overrides, employees });
 }
 
 async function attendanceRows(db: D1Database, user: AppUser, url: URL) {
@@ -375,12 +377,30 @@ async function attendanceRows(db: D1Database, user: AppUser, url: URL) {
     params.push(departmentId);
   }
   const result = await db.prepare(
-    `SELECT a.*, e.full_name AS employee_name, e.employee_code, d.name AS department_name
+    `SELECT a.*, e.full_name AS employee_name, e.employee_code, d.name AS department_name,
+       o.day_type AS override_type, o.reason AS override_reason
      FROM attendance a JOIN employees e ON e.id = a.employee_id
      LEFT JOIN departments d ON d.id = e.department_id
+     LEFT JOIN attendance_day_overrides o ON o.employee_id = a.employee_id AND o.day = a.attendance_date
      ${where} ORDER BY a.attendance_date DESC, e.full_name`,
   ).bind(...params).all();
   return attachBreaks(db, result.results as Array<Record<string, unknown>>);
+}
+
+// The admin's decisions for days that have no attendance row at all (no
+// check-in), so the calendar can show "Paid by admin" on those too.
+async function overridesWithoutAttendance(db: D1Database, user: AppUser, url: URL) {
+  const start = url.searchParams.get("start") || "1900-01-01";
+  const end = url.searchParams.get("end") || "2999-12-31";
+  const employeeId = user.role === "Employee" ? user.employeeId : url.searchParams.get("employeeId");
+  if (!employeeId) return [];
+  const rows = await db.prepare(
+    `SELECT o.employee_id, o.day, o.day_type, o.reason, e.full_name AS employee_name
+     FROM attendance_day_overrides o JOIN employees e ON e.id = o.employee_id
+     WHERE o.employee_id = ? AND o.day BETWEEN ? AND ?
+       AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.employee_id = o.employee_id AND a.attendance_date = o.day)`,
+  ).bind(employeeId, start, end).all();
+  return rows.results;
 }
 
 // A day that was checked into but never checked out — usually because someone
@@ -643,32 +663,76 @@ async function payrollList(db: D1Database, user: AppUser, url: URL) {
      ORDER BY s.salary_year DESC, s.salary_month DESC, e.full_name ASC`,
   ).bind(...params).all<Record<string, unknown>>();
 
-  // Salaries that are not yet paid are recalculated live from attendance, so what
-  // shows here always matches the attendance record. Paid salaries stay frozen.
   const salaries = [];
-  for (const row of rows.results) {
-    if (String(row.status) === "Done") { salaries.push(row); continue; }
-    const employee = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(row.employee_id).first<Record<string, unknown>>();
-    if (!employee) { salaries.push(row); continue; }
-    const days = await monthDayBreakdown(db, employee, Number(row.salary_month), Number(row.salary_year));
-    const totalDays = days.length;
-    const gross = Number(employee.monthly_salary) || 0;
-    const perDay = totalDays ? gross / totalDays : 0;
-    const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
-    salaries.push({
-      ...row,
-      gross_salary: gross,
-      working_days: totalDays,
-      paid_days: Math.round((totalDays - deductionDays) * 100) / 100,
-      deductions: Math.round(perDay * deductionDays),
-      net_salary: Math.round(gross - perDay * deductionDays),
-      present_days: days.filter((d) => d.status === "Present").length,
-      half_days: days.filter((d) => d.status === "Half day" || d.status === "No check-in").length,
-      absent_days: days.filter((d) => d.status === "Absent").length,
-      live: true,
-    });
-  }
+  for (const row of rows.results) salaries.push(await liveSalary(db, row));
   return json({ salaries });
+}
+
+// A salary row as it stands now. Unpaid salaries are recalculated from
+// attendance, so they always match the attendance record; paid ones stay frozen.
+// The admin's adjustment is added on top of an unpaid one; a paid row's stored
+// net already includes it (and may hold older hand-edited totals), so it is
+// returned exactly as saved.
+async function liveSalary(db: D1Database, row: Record<string, unknown>) {
+  const adjustment = Number(row.adjustment) || 0;
+  if (String(row.status) === "Done") return row;
+  const employee = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(row.employee_id).first<Record<string, unknown>>();
+  if (!employee) return row;
+  const days = await monthDayBreakdown(db, employee, Number(row.salary_month), Number(row.salary_year));
+  const totalDays = days.length;
+  const gross = Number(employee.monthly_salary) || 0;
+  const perDay = totalDays ? gross / totalDays : 0;
+  const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
+  const deductions = Math.round(perDay * deductionDays);
+  return {
+    ...row,
+    gross_salary: gross,
+    working_days: totalDays,
+    paid_days: Math.round((totalDays - deductionDays) * 100) / 100,
+    deductions,
+    net_salary: Math.round(gross - deductions + adjustment),
+    present_days: days.filter((d) => d.status === "Present").length,
+    half_days: days.filter((d) => d.status === "Half day" || d.status === "No check-in").length,
+    absent_days: days.filter((d) => d.status === "Absent").length,
+    live: true,
+  };
+}
+
+// "I paid them in full": every day that would have cost money that month is
+// marked Paid by the admin, so the salary, the payslip and the attendance
+// calendar all agree — the employee sees those days as granted, not as cuts.
+async function payInFull(db: D1Database, actor: AppUser, id: number) {
+  const salary = await db.prepare("SELECT s.*, e.user_id FROM salaries s JOIN employees e ON e.id = s.employee_id WHERE s.id = ?").bind(id).first<Record<string, unknown>>();
+  if (!salary) return json({ error: "Salary record not found" }, 404);
+  const employee = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(salary.employee_id).first<Record<string, unknown>>();
+  if (!employee) return json({ error: "Employee not found" }, 404);
+  const month = Number(salary.salary_month);
+  const year = Number(salary.salary_year);
+  const days = await monthDayBreakdown(db, employee, month, year);
+  let granted = 0;
+  for (const d of days) {
+    if (d.factor <= 0 || d.status === "Not joined") continue;
+    await db.prepare(
+      `INSERT INTO attendance_day_overrides (employee_id, day, day_type, reason, created_by) VALUES (?, ?, 'Paid', ?, ?)
+       ON CONFLICT(employee_id, day) DO UPDATE SET day_type = 'Paid', reason = excluded.reason, created_by = excluded.created_by`,
+    ).bind(salary.employee_id, d.day, `Paid by admin (was ${d.status})`, actor.id).run();
+    granted += 1;
+  }
+  // Paid rows keep frozen figures, so bring those in line by hand.
+  const gross = Number(salary.status === "Done" ? salary.gross_salary : employee.monthly_salary) || 0;
+  const adjustment = Number(salary.adjustment) || 0;
+  const notJoined = days.filter((d) => d.status === "Not joined").length;
+  const perDay = days.length ? gross / days.length : 0;
+  const deductions = Math.round(perDay * notJoined);
+  await db.prepare(
+    "UPDATE salaries SET paid_days = ?, deductions = ?, net_salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+  ).bind(days.length - notJoined, deductions, Math.round(gross - deductions + adjustment), id).run();
+  if (granted) {
+    await notify(db, Number(salary.user_id), "Salary paid in full",
+      `Your ${monthName(month)} ${year} salary is paid in full; ${granted} day${granted === 1 ? "" : "s"} are marked as paid by admin.`);
+  }
+  await audit(db, actor, "Salary paid in full", "salaries", id, `${granted} day(s) granted`);
+  return json({ ok: true, granted });
 }
 
 async function generatePayroll(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
@@ -696,7 +760,8 @@ async function generatePayroll(db: D1Database, actor: AppUser, body: Record<stri
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
        ON CONFLICT(employee_id, salary_month, salary_year) DO UPDATE SET working_days = excluded.working_days, paid_days = excluded.paid_days,
        paid_leave_days = excluded.paid_leave_days, unpaid_leave_days = excluded.unpaid_leave_days, absent_days = excluded.absent_days,
-       gross_salary = excluded.gross_salary, deductions = excluded.deductions, net_salary = excluded.net_salary, updated_at = CURRENT_TIMESTAMP`,
+       gross_salary = excluded.gross_salary, deductions = excluded.deductions,
+       net_salary = excluded.gross_salary - excluded.deductions + salaries.adjustment, updated_at = CURRENT_TIMESTAMP`,
     ).bind(employeeId, month, year, workingDays, paidDays, paidLeaveDays, unpaidLeaveDays, absentDays, gross, deductions, gross - deductions).run();
     const salary = await db.prepare("SELECT * FROM salaries WHERE employee_id = ? AND salary_month = ? AND salary_year = ?").bind(employeeId, month, year).first<Record<string, unknown>>();
     if (salary) await upsertSlip(db, salary, employee, settings);
@@ -714,6 +779,29 @@ async function updateSalary(db: D1Database, actor: AppUser, id: number, body: Re
 
   const existing = await db.prepare("SELECT s.*, e.user_id, e.id AS employee_id FROM salaries s JOIN employees e ON e.id = s.employee_id WHERE s.id = ?").bind(id).first<Record<string, unknown>>();
   if (!existing) return json({ error: "Salary record not found" }, 404);
+
+  // Editing the pay: an adjustment on top of what attendance works out. The
+  // current figures are written back with it, so the row, the payslip and the
+  // employee's view all show the same amount.
+  if (body.adjustment !== undefined) {
+    const adjustment = Math.round(Number(body.adjustment) || 0);
+    const note = text(body.adjustment_note) || null;
+    if (adjustment && !note) return json({ error: "Add a reason — the employee sees it on their payslip" }, 400);
+    // A paid row keeps its saved figures; only the change in adjustment moves its net.
+    const current = String(existing.status) === "Done"
+      ? { ...existing, net_salary: Math.round(Number(existing.net_salary) - (Number(existing.adjustment) || 0) + adjustment) }
+      : await liveSalary(db, { ...existing, adjustment });
+    await db.prepare(
+      `UPDATE salaries SET adjustment = ?, adjustment_note = ?, gross_salary = ?, working_days = ?, paid_days = ?,
+         deductions = ?, net_salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    ).bind(adjustment, adjustment ? note : null, current.gross_salary, current.working_days, current.paid_days,
+      current.deductions, current.net_salary, id).run();
+    const period = `${monthName(Number(existing.salary_month))} ${existing.salary_year}`;
+    await notify(db, Number(existing.user_id), "Salary updated",
+      adjustment ? `Your ${period} salary was ${adjustment > 0 ? "increased" : "reduced"} by ${money(Math.abs(adjustment))}: ${note}` : `The adjustment on your ${period} salary was removed.`);
+    await audit(db, actor, "Salary adjusted", "salaries", id, `${adjustment} ${note ?? ""}`.trim());
+    return json({ ok: true, net_salary: current.net_salary });
+  }
 
   const newStatus = status || String(existing.status);
   const workingDays = body.working_days !== undefined ? Number(body.working_days) : Number(existing.working_days);
@@ -970,9 +1058,9 @@ async function salarySlip(db: D1Database, user: AppUser, salaryId: number) {
   ).bind(salaryId).first<Record<string, unknown>>();
   if (!salary) return json({ error: "Salary not found" }, 404);
   if (user.role === "Employee" && Number(salary.employee_id) !== user.employeeId) return json({ error: "Not allowed" }, 403);
-  // Always render fresh from current salary data so edits are reflected in the payslip.
+  // Rendered from the same live figures the payroll screen shows.
   const settings = await companySettings(db);
-  const slipHtml = slipTemplate(salary, salary, settings);
+  const slipHtml = slipTemplate(await liveSalary(db, salary), salary, settings);
   await db.prepare("INSERT OR REPLACE INTO salary_slips (salary_id, slip_html, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)").bind(salaryId, slipHtml).run();
   return html(slipHtml);
 }
@@ -1026,6 +1114,10 @@ function slipTemplate(salary: Record<string, unknown>, employee: Record<string, 
     ["Absent days", salary.absent_days],
     ["Gross salary", money(Number(salary.gross_salary))],
     ["Deductions", money(Number(salary.deductions))],
+    ...(Number(salary.adjustment) ? [
+      [Number(salary.adjustment) > 0 ? "Addition" : "Further deduction", `${Number(salary.adjustment) > 0 ? "+" : "−"}${money(Math.abs(Number(salary.adjustment)))}`],
+      ["Reason", salary.adjustment_note || "-"],
+    ] : []),
     ["Net payable salary", money(Number(salary.net_salary))],
     ["Salary status", salary.status],
     ["Generated date", dateOnly()],
@@ -1113,7 +1205,7 @@ async function monthDayBreakdown(db: D1Database, employee: Record<string, unknow
     const ov = overrideByDay.get(day);
     if (ov) {
       const factor = ov.day_type === "Paid" ? 0 : ov.day_type === "Half Day" ? 0.5 : 1;
-      out.push({ ...base, status: ov.day_type, factor, note: ov.reason || "Admin override" });
+      out.push({ ...base, status: ov.day_type === "Paid" ? "Paid by admin" : ov.day_type === "Unpaid" ? "Unpaid (admin)" : "Half day (admin)", factor, note: ov.reason || "Set by admin" });
       continue;
     }
     // 2. Before joining date — not payable (salary is pro-rated).
@@ -1174,6 +1266,9 @@ async function monthGrid(db: D1Database, user: AppUser, url: URL) {
   const employees = user.role === "Superadmin"
     ? (await db.prepare(employeeSelect(everyoneOrder)).all()).results
     : undefined;
+  const salaryRow = await db.prepare("SELECT adjustment, adjustment_note FROM salaries WHERE employee_id = ? AND salary_month = ? AND salary_year = ?")
+    .bind(employeeId, month, year).first<{ adjustment: number; adjustment_note: string | null }>();
+  const adjustment = Number(salaryRow?.adjustment) || 0;
 
   // Employees may see their own breakdown (it is shown in their Payroll section).
   return json({
@@ -1187,7 +1282,9 @@ async function monthGrid(db: D1Database, user: AppUser, url: URL) {
       paidDays: Math.round((totalDays - deductionDays) * 100) / 100,
       gross,
       deductions: Math.round(perDay * deductionDays),
-      net: Math.round(gross - perDay * deductionDays),
+      adjustment,
+      adjustment_note: salaryRow?.adjustment_note ?? null,
+      net: Math.round(gross - Math.round(perDay * deductionDays) + adjustment),
     },
     employees,
   });

@@ -663,7 +663,48 @@ function AdminDashboard({ onView }: { onView: (view: View) => void }) {
   );
 }
 
+// One line a day for the team, about doing good work. Thirty-one of them, so a
+// month goes by without a repeat; the day of the year picks which one shows.
+const QUOTES = [
+  "Do the small things well and the big things follow.",
+  "Progress today beats perfection tomorrow.",
+  "Your effort today is someone's reason to trust you tomorrow.",
+  "Focus on one thing at a time — that's where good work hides.",
+  "Consistency turns ordinary days into a strong career.",
+  "Ask the question. Clarity is faster than guessing.",
+  "Finish what you start — momentum is built, not found.",
+  "A calm hour of focus beats a busy day of noise.",
+  "Take the break. Rested minds do better work.",
+  "Being reliable is a skill. Practise it daily.",
+  "Learn one new thing today — it compounds.",
+  "Good teammates make good teams. Be one.",
+  "Done and shared beats perfect and hidden.",
+  "Celebrate the small wins; they add up by month-end.",
+  "Start with the hardest task while your mind is fresh.",
+  "Show up on time. It is the easiest promise to keep.",
+  "Every expert was once a beginner who kept going.",
+  "Write it down. A clear note saves an hour later.",
+  "Good work speaks, but a short update helps it be heard.",
+  "Mistakes are fine. Hiding them is not.",
+  "Small steps every day beat big plans someday.",
+  "Make it work, then make it better.",
+  "Your attitude decides how the day feels.",
+  "Help someone today; it comes back in ways you won't expect.",
+  "Be the person others can count on when it matters.",
+  "Energy is contagious. Bring good energy in.",
+  "One focused task finished beats five half started.",
+  "Ask for feedback early, not after it's too late.",
+  "Today's discipline is tomorrow's freedom.",
+  "Do it right the first time and you won't do it twice.",
+  "End the day knowing you gave it your honest best.",
+];
+
 function EmployeeDashboard({ onView }: { onView: (view: View) => void }) {
+  const quote = useMemo(() => {
+    const now = new Date();
+    const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86400000);
+    return QUOTES[dayOfYear % QUOTES.length];
+  }, []);
   const [summary, setSummary] = useState<EmployeeSummary | null>(null);
   const [settings, setSettings] = useState<CompanySettings | null>(null);
   const [message, setMessage] = useState("");
@@ -742,6 +783,12 @@ function EmployeeDashboard({ onView }: { onView: (view: View) => void }) {
   return (
     <section className="space-y-5">
       <PageTitle title="Home" description={new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })} />
+
+      {/* Today's thought: Newsreader, with Fastex Orange as a thin accent only. */}
+      <div className="card border-l-[3px] p-5" style={{ borderLeftColor: "var(--brand)" }}>
+        <p className="eyebrow !text-ember">Today's thought</p>
+        <p className="mt-2 font-serif text-[22px] leading-snug text-ink">“{quote}”</p>
+      </div>
       {message ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">{message}</div> : null}
 
       {summary.missedDays?.length ? (

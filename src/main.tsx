@@ -1,11 +1,9 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-// Geist, self-hosted. Drawn for Vercel's own products: the proportions are
-// tighter and the curves cleaner than a workhorse UI face, which is what makes
-// it read as considered rather than merely functional. Both axes are variable,
-// so every weight comes from one file per family.
-import "@fontsource-variable/geist";
-import "@fontsource-variable/geist-mono";
+// The Fastex Media pair (brandkit.fastexmedia.com): Newsreader for headings and
+// numbers, Inter for everything else. Self-hosted, one variable file each.
+import "@fontsource-variable/inter";
+import "@fontsource-variable/newsreader/opsz.css";
 import { App } from "./App";
 import "./styles.css";
 

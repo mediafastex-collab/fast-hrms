@@ -1,7 +1,6 @@
 import {
   Banknote,
   Bell,
-  BriefcaseBusiness,
   CalendarCheck,
   CheckCircle2,
   Clock3,
@@ -288,7 +287,7 @@ function StatCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[12.5px] font-medium text-ink-3">{label}</p>
-          <p className="tnum mt-1.5 text-[26px] font-bold leading-none tracking-[-0.03em] text-ink">{value}</p>
+          <p className="tnum stat mt-1.5 text-[32px] leading-none text-ink">{value}</p>
           {sub ? <p className="mt-2 text-[11.5px] text-ink-3">{sub}</p> : null}
         </div>
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-sunk)] text-ink-3">
@@ -352,6 +351,18 @@ export function App() {
   return <Shell user={user} view={view} onView={setView} onLogout={logout} />;
 }
 
+// The FX mark from the Fastex Media brand kit. The F and X take the current
+// text colour; the chevron is always Fastex Orange.
+function BrandMark({ size = 28 }: { size?: number }) {
+  return (
+    <svg viewBox="138 155 338 306" width={size} height={size * 306 / 338} aria-hidden="true" className="shrink-0">
+      <path fill="currentColor" d="M138 241H261.33L290.67 285H138ZM138 330H291.33L262 374H181V461H138Z" />
+      <path fill="currentColor" d="M416 155H476L380.5 298.25L350.5 253.25ZM416 461H476L380.5 317.75L350.5 362.75Z" />
+      <path fill="#FF6600" d="M204 155H264L366 308L264 461H204L306 308Z" />
+    </svg>
+  );
+}
+
 function LoginScreen({ error, onLogin }: { error: string; onLogin: (email: string, password: string) => Promise<void> }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -368,21 +379,16 @@ function LoginScreen({ error, onLogin }: { error: string; onLogin: (email: strin
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10" style={{ background: "var(--canvas)" }}>
       {/* A single soft wash of brand colour behind the card — enough to feel
           considered, far short of the three-colour gradient it replaces. */}
-      <div aria-hidden className="pointer-events-none absolute left-1/2 top-[-18rem] h-[36rem] w-[36rem] -translate-x-1/2 rounded-full opacity-[0.07]"
-        style={{ background: "radial-gradient(circle, var(--brand) 0%, transparent 65%)" }} />
 
       <div className="animate-rise relative w-full max-w-[22rem]">
-        <div className="mb-7 flex flex-col items-center text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand text-white" style={{ boxShadow: "0 8px 24px rgba(234,88,12,0.28)" }}>
-            <BriefcaseBusiness size={26} strokeWidth={2.1} />
-          </div>
-          <h1 className="mt-5 text-[32px] font-bold leading-none tracking-[-0.04em] text-ink">
-            Fastex <span className="text-brand">HRMS</span>
-          </h1>
-          <p className="mt-2.5 text-[13.5px] text-ink-3">Sign in to your workspace</p>
+        <div className="mb-8 flex flex-col items-center text-center">
+          <span className="text-ink"><BrandMark size={46} /></span>
+          <p className="mt-4 text-[12px] font-bold uppercase tracking-[0.12em] text-ink">Fastex Media</p>
+          <h1 className="mt-3 text-[40px] leading-none text-ink">HRMS</h1>
+          <p className="mt-3 text-[14px] text-ink-3">Sign in to your workspace</p>
         </div>
 
-        <form onSubmit={submit} className="card space-y-4 p-6" style={{ boxShadow: "var(--shadow-lg)" }}>
+        <form onSubmit={submit} className="card space-y-4 p-6">
           {error ? (
             <div className="animate-pop rounded-lg bg-rose-50 px-3 py-2.5 text-[13px] font-medium text-rose-700 ring-1 ring-inset ring-rose-600/15">
               {error}
@@ -399,7 +405,7 @@ function LoginScreen({ error, onLogin }: { error: string; onLogin: (email: strin
           </button>
         </form>
 
-        <p className="mt-6 text-center text-[11.5px] text-ink-4">© {new Date().getFullYear()} Fastex Media</p>
+        <p className="mt-6 text-center text-[11.5px] text-ink-4">© {new Date().getFullYear()} Fastex Media · Engineered for B2B scale.</p>
       </div>
     </main>
   );
@@ -443,11 +449,12 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
         navOpen ? "w-[244px]" : "w-[72px]",
       )} style={{ background: "var(--rail)" }}>
         <div className={classNames("flex items-center gap-2.5 px-1.5 pb-5", !navOpen && "justify-center px-0")}>
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-brand text-white">
-            <BriefcaseBusiness size={17} strokeWidth={2.2} />
-          </div>
+          <span className="text-[var(--paper)]"><BrandMark size={26} /></span>
           {navOpen ? (
-            <p className="truncate text-[14.5px] font-semibold tracking-[-0.02em] text-white">Fastex HRMS</p>
+            <span className="min-w-0 leading-tight">
+              <span className="block truncate text-[12.5px] font-bold uppercase tracking-[0.06em] text-[var(--paper)]">Fastex Media</span>
+              <span className="block text-[10.5px] font-medium uppercase tracking-[0.12em] text-[var(--rail-text)]">HRMS</span>
+            </span>
           ) : null}
         </div>
 
@@ -494,7 +501,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
             its header bar entirely — one less horizontal band across the page. */}
         <div className="mt-2 border-t pt-2" style={{ borderColor: "var(--rail-edge)" }}>
           <div className={classNames("flex items-center gap-2.5 rounded-lg px-1.5 py-2", !navOpen && "justify-center px-0")}>
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-bold text-white">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-bold text-ink">
               {initialsOf(user.displayName ?? user.employeeName ?? user.email)}
             </span>
             {navOpen ? (
@@ -528,7 +535,7 @@ function Shell({ user, view, onView, onLogout }: { user: User; view: View; onVie
 
       <div className={navOpen ? "lg:pl-[244px]" : "lg:pl-[72px]"}>
         {newVersion ? (
-          <div className="flex flex-wrap items-center justify-center gap-3 bg-brand px-4 py-2 text-sm font-semibold text-white">
+          <div className="flex flex-wrap items-center justify-center gap-3 bg-ink px-4 py-2 text-sm font-medium text-[var(--paper)]">
             A newer version of Fast HRMS is ready.
             <button type="button" className="rounded-full bg-white/20 px-3 py-1 hover:bg-white/30" onClick={() => window.location.reload()}>
               Reload
@@ -624,7 +631,7 @@ function AdminDashboard({ onView }: { onView: (view: View) => void }) {
       <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
         {/* Today, in three numbers. */}
         <div className="card p-5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Today</p>
+          <p className="eyebrow">Today</p>
           <div className="mt-3 grid grid-cols-3 gap-3">
             {[
               ["In", summary.presentToday, "text-emerald-600"],
@@ -632,7 +639,7 @@ function AdminDashboard({ onView }: { onView: (view: View) => void }) {
               ["On leave", summary.onLeaveToday ?? 0, "text-ink-3"],
             ].map(([label, value, tone]) => (
               <div key={label as string}>
-                <p className={classNames("tnum text-[30px] font-bold leading-none tracking-[-0.03em]", tone as string)}>{value}</p>
+                <p className={classNames("tnum stat text-[36px] leading-none", tone as string)}>{value}</p>
                 <p className="mt-1.5 text-[12.5px] text-ink-3">{label}</p>
               </div>
             ))}
@@ -643,9 +650,9 @@ function AdminDashboard({ onView }: { onView: (view: View) => void }) {
         </div>
 
         {/* Money still to go out. */}
-        <div className="card p-5" style={{ background: "var(--brand-tint)" }}>
-          <p className="text-xs font-semibold uppercase tracking-wider text-brand">Salary to pay · {summary.lastMonthLabel ?? "last month"}</p>
-          <p className="tnum mt-2 text-[30px] font-bold leading-none tracking-[-0.03em] text-ink">{currency.format(summary.lastMonthOutstanding ?? 0)}</p>
+        <div className="card p-5">
+          <p className="eyebrow">Salary to pay · {summary.lastMonthLabel ?? "last month"}</p>
+          <p className="tnum stat mt-2 text-[36px] leading-none text-ink">{currency.format(summary.lastMonthOutstanding ?? 0)}</p>
           <p className="mt-1.5 text-[12.5px] text-ink-3">
             {summary.lastMonthPaid ? `${currency.format(summary.lastMonthPaid)} of ${currency.format(summary.lastMonthPayable ?? 0)} already paid` : "Nothing paid yet for this month"}
           </p>
@@ -657,14 +664,14 @@ function AdminDashboard({ onView }: { onView: (view: View) => void }) {
 
       <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
         <div className="card p-2">
-          <p className="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-ink-4">Needs you</p>
+          <p className="px-3 pb-1 pt-2 eyebrow">Needs you</p>
           {todo.length ? todo.map((t) => (
             <ActionRow key={t.label} count={t.count} label={t.label} tone={t.tone} onClick={() => onView(t.view)} />
           )) : <p className="px-3 pb-4 pt-2 text-[13.5px] text-ink-3">Nothing waiting. All caught up.</p>}
         </div>
 
         <div className="card p-5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Tasks</p>
+          <p className="eyebrow">Tasks</p>
           <div className="mt-3 grid grid-cols-3 gap-3">
             {[
               ["To do", summary.taskPending ?? 0],
@@ -672,7 +679,7 @@ function AdminDashboard({ onView }: { onView: (view: View) => void }) {
               ["Done", summary.taskDone ?? 0],
             ].map(([label, value]) => (
               <div key={label as string}>
-                <p className="tnum text-[22px] font-bold leading-none text-ink">{value}</p>
+                <p className="tnum stat text-[28px] leading-none text-ink">{value}</p>
                 <p className="mt-1.5 text-[12.5px] text-ink-3">{label}</p>
               </div>
             ))}
@@ -778,8 +785,8 @@ function EmployeeDashboard({ onView }: { onView: (view: View) => void }) {
       <div className="card p-6">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Today</p>
-            <p className="mt-2 text-[26px] font-bold leading-none tracking-[-0.03em] text-ink">
+            <p className="eyebrow">Today</p>
+            <p className="stat mt-2 text-[32px] leading-none text-ink">
               {isSunday ? "Weekly off" : !checkedIn ? "Not checked in" : checkedOut ? "Day done" : onBreak ? "On a break" : "Working"}
             </p>
             <p className="tnum mt-2 text-[13px] text-ink-3">
@@ -813,7 +820,7 @@ function EmployeeDashboard({ onView }: { onView: (view: View) => void }) {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="card p-5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">This month</p>
+          <p className="eyebrow">This month</p>
           <div className="mt-3 grid grid-cols-3 gap-3">
             {[
               ["Present", summary.monthAttendance.present + summary.monthAttendance.late],
@@ -821,7 +828,7 @@ function EmployeeDashboard({ onView }: { onView: (view: View) => void }) {
               ["Leave", summary.monthAttendance.leave ?? 0],
             ].map(([label, value]) => (
               <div key={label as string}>
-                <p className="tnum text-[22px] font-bold leading-none text-ink">{value}</p>
+                <p className="tnum stat text-[28px] leading-none text-ink">{value}</p>
                 <p className="mt-1.5 text-[12.5px] text-ink-3">{label}</p>
               </div>
             ))}
@@ -832,7 +839,7 @@ function EmployeeDashboard({ onView }: { onView: (view: View) => void }) {
         </div>
 
         <div className="card p-5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Coming up</p>
+          <p className="eyebrow">Coming up</p>
           <div className="mt-2 divide-y divide-line">
             {coming.length ? coming.map((c) => (
               <div key={c.key} className="flex items-center justify-between gap-3 py-2.5">
@@ -869,7 +876,7 @@ function PageTitle({ title, description, action }: { title: string; description:
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0">
-        <h1 className="text-[26px] font-bold leading-tight tracking-[-0.035em] text-ink">{title}</h1>
+        <h1 className="text-[34px] leading-[1.1] text-ink">{title}</h1>
         <p className="mt-1 text-[13.5px] leading-relaxed text-ink-3">{description}</p>
       </div>
       {action ? <div className="shrink-0">{action}</div> : null}
@@ -1599,7 +1606,7 @@ const VIZ = {
   serious: "#ec835a",
   critical: "#d03b3b",
   neutral: "#b3aea5",
-  single: "#ea580c",
+  single: "#FF6600",
   grid: "var(--line)",
 };
 
@@ -3089,7 +3096,7 @@ function WorkTaskForm({ spaces, lists, people, initial, series, onClose, onSaved
                     return (
                       <button key={d} type="button" aria-pressed={on} aria-label={WEEKDAY_SHORT[d]} title={WEEKDAY_SHORT[d]} onClick={() => toggleDay(d)}
                         className={classNames("flex h-9 flex-1 items-center justify-center rounded-lg border text-xs font-bold transition",
-                          on ? "border-brand bg-brand text-white" : "border-line bg-white text-ink-3 hover:border-line-strong")}>
+                          on ? "border-ink bg-ink text-[var(--paper)]" : "border-line bg-white text-ink-3 hover:border-line-strong")}>
                         {WEEKDAY_LETTER[d]}
                       </button>
                     );
@@ -3478,7 +3485,7 @@ function Leave({ isAdmin }: { isAdmin: boolean }) {
               {balances.filter((b) => b.is_paid).map((b) => (
                 <div key={b.id} className="card min-w-[10rem] flex-1 p-4">
                   <p className="text-[12.5px] text-ink-3">{b.name}</p>
-                  <p className="tnum mt-1 text-[22px] font-bold leading-none text-ink">
+                  <p className="tnum stat mt-1 text-[28px] leading-none text-ink">
                     {Math.max(0, Number(b.yearly_balance) - Number(b.used))}
                     <span className="ml-1 text-[12.5px] font-medium text-ink-3">of {b.yearly_balance} left this year</span>
                   </p>
@@ -3509,14 +3516,14 @@ function Leave({ isAdmin }: { isAdmin: boolean }) {
 
       {isAdmin && pending.length ? (
         <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">Waiting for you · {pending.length}</p>
+          <p className="eyebrow">Waiting for you · {pending.length}</p>
           {list(pending, true)}
         </div>
       ) : null}
 
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-3">
-          <p className="text-xs font-semibold uppercase tracking-wider text-ink-4">{isAdmin ? "All leave" : "My requests"}</p>
+          <p className="eyebrow">{isAdmin ? "All leave" : "My requests"}</p>
           {isAdmin ? <div className="ml-auto"><PersonPicker value={employeeId} onChange={setEmployeeId} people={employees} /></div> : null}
         </div>
         {(isAdmin ? settled : rows).length

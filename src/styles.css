@@ -3,41 +3,41 @@
 @tailwind utilities;
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Design tokens.
+   Design tokens — the Fastex Media brand kit (brandkit.fastexmedia.com).
 
-   One warm-neutral family, because the brand is a warm orange and cool greys
-   fight it. One accent, spent sparingly — the restraint is what reads as
-   expensive. Shadows are low-opacity and layered rather than large and dark;
-   a premium surface looks lifted, not dropped.
+   Mostly paper and ink. Fastex Orange is a signal, not a surface: the logo
+   chevron, the active marker, a highlight — never a fill under white text
+   (2.9:1 fails). Primary buttons are ink pills with paper text. Small orange
+   text uses Ember, the accessible orange.
    ──────────────────────────────────────────────────────────────────────── */
 :root {
-  --canvas:        #f7f7f5;
+  --paper:         #FBFAF8;
+  --canvas:        var(--paper);
   --surface:       #ffffff;
-  --surface-sunk:  #faf9f7;
-  --surface-hover: #f4f3f0;
+  --surface-sunk:  #F5F3EF;
+  --surface-hover: #F0EEE9;
 
-  --line:          #e9e7e2;
-  --line-strong:   #dcd9d2;
+  --line:          #E7E4DE;
+  --line-strong:   #D6D2CA;
 
-  --ink:           #1a1917;
-  --ink-2:         #57544e;
-  --ink-3:         #8e8a82;
-  --ink-4:         #b3aea5;
+  --ink:           #0D0D0D;
+  --ink-2:         #2E2E33;
+  --ink-3:         #63636B;  /* Slate: secondary text, captions */
+  --ink-4:         #8E8E96;  /* hints and placeholders only */
 
-  --brand:         #ea580c;
-  --brand-hover:   #d14d08;
-  --brand-press:   #b84306;
-  --brand-tint:    #fff3ec;
-  --brand-line:    #fbd5bd;
+  --brand:         #FF6600;  /* Fastex Orange */
+  --ember:         #C94A00;  /* orange for text on light */
+  --brand-hover:   #E65C00;
+  --brand-press:   #C94A00;
+  --brand-tint:    #FFF1E6;
+  --brand-line:    #FFD3B0;
 
-  /* The navigation rail is dark on purpose: it frames the work, separates
-     chrome from content at a glance, and is the single clearest signal that
-     this is a considered product rather than a bootstrap template. */
-  --rail:          #1b1917;
-  --rail-edge:     #2b2825;
-  --rail-text:     #9d968c;
-  --rail-hover:    rgba(255, 255, 255, 0.06);
-  --rail-active:   rgba(255, 255, 255, 0.10);
+  /* The navigation rail is Ink, like the brand's dark sections. */
+  --rail:          #0D0D0D;
+  --rail-edge:     #222224;
+  --rail-text:     #A3A3AB;
+  --rail-hover:    rgba(251, 250, 248, 0.06);
+  --rail-active:   rgba(251, 250, 248, 0.10);
 
   --ok:            #15803d;
   --ok-tint:       #effaf2;
@@ -46,42 +46,61 @@
   --bad:           #be123c;
   --bad-tint:      #fff1f3;
 
-  /* Layered and shallow: depth without the smudge of one big blur. */
-  --shadow-xs: 0 1px 2px rgba(28, 25, 23, 0.04);
-  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.04), 0 2px 6px rgba(28, 25, 23, 0.03);
-  --shadow-md: 0 2px 4px rgba(28, 25, 23, 0.04), 0 6px 16px rgba(28, 25, 23, 0.06);
-  --shadow-lg: 0 4px 8px rgba(28, 25, 23, 0.04), 0 16px 40px rgba(28, 25, 23, 0.10);
+  /* The brand is flat; shadows are only there to lift a pop-up. */
+  --shadow-xs: none;
+  --shadow-sm: 0 1px 2px rgba(13, 13, 13, 0.04);
+  --shadow-md: 0 2px 4px rgba(13, 13, 13, 0.04), 0 8px 20px rgba(13, 13, 13, 0.06);
+  --shadow-lg: 0 4px 8px rgba(13, 13, 13, 0.04), 0 16px 40px rgba(13, 13, 13, 0.10);
 
-  /* Decelerating, and quick enough to feel like a response rather than a
-     performance. Anything over ~200ms on a click starts to feel sluggish. */
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --fast: 130ms;
   --base: 180ms;
 
+  --font-sans: "Inter Variable", Inter, Arial, ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Newsreader Variable", Newsreader, Georgia, serif;
+
   color: var(--ink);
   background: var(--canvas);
-  font-family: "Geist Variable", Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   font-synthesis-weight: none;
   text-rendering: optimizeLegibility;
-  accent-color: var(--brand);
+  accent-color: var(--ink);
 }
 
 body {
   margin: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  letter-spacing: -0.011em;
   line-height: 1.55;
 }
 
-::selection { background: var(--brand-tint); color: var(--brand-press); }
+::selection { background: var(--brand-tint); color: var(--ink); }
 
-/* Large type carries its own weight — the bigger it gets, the tighter it wants
-   to be set. Loose headings are the usual tell of an unconsidered interface. */
-h1, h2, h3, h4, h5, h6 {
-  letter-spacing: -0.032em;
+/* Brand rule: headings in Newsreader, regular weight (500 at most), sentence
+   case, tracked slightly in. Never bold, never all caps. */
+h1, h2, h3 {
+  font-family: var(--font-serif);
+  font-weight: 400 !important;
+  letter-spacing: -0.015em;
   line-height: 1.15;
   color: var(--ink);
+}
+h4, h5, h6 { color: var(--ink); }
+
+/* Stat numbers are Newsreader too. */
+.stat {
+  font-family: var(--font-serif);
+  font-weight: 400 !important;
+  letter-spacing: -0.02em;
+}
+
+/* Eyebrows and labels: Inter, uppercase, tracked out. */
+.eyebrow {
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-3);
 }
 
 /* Figures stay in the sans, set with tabular numerals: every digit takes the
@@ -93,16 +112,14 @@ input[type="number"],
 input[type="date"],
 input[type="time"] {
   font-variant-numeric: tabular-nums;
-  font-feature-settings: "ss03";
-  letter-spacing: -0.014em;
 }
 
 /* The monospace is kept for what is genuinely a machine identifier. */
 .mono,
 .code {
-  font-family: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.02em;
 }
 
 table { font-variant-numeric: tabular-nums; }
@@ -123,7 +140,7 @@ button, input, select, textarea { font: inherit; }
 
 /* One visible focus treatment everywhere, for keyboard users only. */
 :focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--ink);
   outline-offset: 2px;
   border-radius: 6px;
 }
@@ -150,15 +167,16 @@ button, input, select, textarea { font: inherit; }
   /* Flat fills and a shorter frame. The old gradient-and-bounce reads as a
      2019 dashboard; a premium control changes colour and nothing else. */
   .btn {
-    @apply inline-flex min-h-[38px] select-none items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold;
+    @apply inline-flex min-h-[38px] select-none items-center justify-center gap-2 rounded-full px-4 text-sm font-medium;
     transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease),
                 border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), opacity var(--fast) var(--ease);
   }
   .btn:disabled { @apply cursor-not-allowed opacity-40; }
 
-  .btn-primary { background: var(--brand); color: #fff; box-shadow: var(--shadow-xs); }
-  .btn-primary:hover:not(:disabled) { background: var(--brand-hover); }
-  .btn-primary:active:not(:disabled) { background: var(--brand-press); }
+  /* Brand rule: the primary button is an ink pill with paper text. */
+  .btn-primary { background: var(--ink); color: var(--paper); }
+  .btn-primary:hover:not(:disabled) { background: #2a2a2d; }
+  .btn-primary:active:not(:disabled) { background: #000; }
 
   .btn-soft {
     background: var(--surface);
@@ -189,14 +207,14 @@ button, input, select, textarea { font: inherit; }
   .input::placeholder { color: var(--ink-4); }
   .input:hover:not(:focus) { border-color: var(--ink-4); }
   .input:focus {
-    border-color: var(--brand);
-    box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.12);
+    border-color: var(--ink);
+    box-shadow: 0 0 0 3px rgba(13, 13, 13, 0.08);
     outline: none;
   }
   select.input { @apply cursor-pointer pr-8; }
 
   .label {
-    @apply mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.07em];
+    @apply mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em];
     color: var(--ink-3);
   }
 
@@ -207,7 +225,7 @@ button, input, select, textarea { font: inherit; }
   }
 
   .table-header {
-    @apply text-[11px] font-semibold uppercase tracking-[0.07em];
+    @apply text-[11px] font-semibold uppercase tracking-[0.12em];
     background: var(--surface-sunk);
     color: var(--ink-3);
   }
@@ -219,7 +237,7 @@ button, input, select, textarea { font: inherit; }
      black, so the surface above it reads as lifted instead of cut out. */
   .modal-scrim {
     @apply fixed inset-0 z-50 flex overflow-y-auto;
-    background: rgba(28, 25, 23, 0.42);
+    background: rgba(13, 13, 13, 0.45);
     backdrop-filter: blur(6px) saturate(140%);
     -webkit-backdrop-filter: blur(6px) saturate(140%);
     animation: fadeIn 140ms var(--ease) both;
@@ -310,3 +328,7 @@ button, input, select, textarea { font: inherit; }
     scroll-behavior: auto !important;
   }
 }
+
+/* Brand rule: orange text on paper is 2.8:1, so any text the app colours
+   "brand" is set in Ember instead. Fills and borders keep Fastex Orange. */
+.text-brand, .hover\:text-brand:hover { color: var(--ember) !important; }

@@ -4,9 +4,10 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"Geist Variable"', "Geist", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
-        display: ['"Geist Variable"', "Geist", "ui-sans-serif", "system-ui", "sans-serif"],
-        mono: ['"Geist Mono Variable"', '"Geist Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        sans: ['"Inter Variable"', "Inter", "Arial", "ui-sans-serif", "system-ui", "sans-serif"],
+        display: ['"Newsreader Variable"', "Newsreader", "Georgia", "serif"],
+        serif: ['"Newsreader Variable"', "Newsreader", "Georgia", "serif"],
+        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       colors: {
         // Mapped onto the CSS tokens so the palette has one home, and the
@@ -24,6 +25,7 @@ export default {
         "rail-edge": "var(--rail-edge)",
         "rail-text": "var(--rail-text)",
         brand: "var(--brand)",
+        ember: "var(--ember)",
         "brand-tint": "var(--brand-tint)",
         mint: "var(--ok)",
         coral: "var(--bad)",

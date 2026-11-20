@@ -57,18 +57,6 @@ async function route(context: Context) {
   if (method === "GET" && path === "/attendance/month-grid") return monthGrid(db, user, url);
   if (method === "GET" && path === "/attendance-requests") return attendanceRequestList(db, user);
   if (method === "POST" && path === "/attendance-requests") return createAttendanceRequest(db, user, await readBody(context.request));
-  if (method === "GET" && path === "/work/meta") return workMeta(db, user);
-  if (method === "GET" && path === "/work/tasks") return workTasks(db, user, url);
-  if (method === "POST" && path === "/work/spaces") return saveSpace(db, user, await readBody(context.request));
-  if (method === "POST" && path === "/work/lists") return saveList(db, user, await readBody(context.request));
-  if (method === "POST" && path === "/work/tasks") return createWorkTask(db, user, await readBody(context.request));
-  if (method === "GET" && path === "/work/recurrences") return listRecurrences(db, user);
-  if (method === "POST" && path === "/work/recurrences") return createRecurrence(db, user, await readBody(context.request));
-  if (method === "PUT" && path.match(/^\/work\/recurrences\/\d+$/)) return updateRecurrence(db, user, Number(path.split("/").pop()), await readBody(context.request));
-  if (method === "DELETE" && path.match(/^\/work\/recurrences\/\d+$/)) return endRecurrence(db, user, Number(path.split("/").pop()));
-  if (method === "PUT" && path.match(/^\/work\/tasks\/\d+$/)) return updateWorkTask(db, user, Number(path.split("/").pop()), await readBody(context.request));
-  if (method === "GET" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return workComments(db, user, Number(path.split("/")[3]));
-  if (method === "POST" && path.match(/^\/work\/tasks\/\d+\/comments$/)) return addWorkComment(db, user, Number(path.split("/")[3]), await readBody(context.request));
   if (method === "GET" && path === "/notifications") return notificationsList(db, user);
   if (method === "POST" && path === "/notifications/read-all") return markNotificationsRead(db, user);
 
@@ -85,13 +73,6 @@ async function route(context: Context) {
   if (method === "DELETE" && path.startsWith("/designations/")) return deleteNamed(db, "designations", "designation_id", Number(path.split("/").pop()));
   if (method === "POST" && path === "/attendance/manual") return manualAttendance(db, user, await readBody(context.request));
   if (method === "POST" && path === "/attendance/day-override") return saveDayOverride(db, user, await readBody(context.request));
-  if (method === "POST" && path.match(/^\/work\/spaces\/\d+\/decision$/)) return decideSpaceOrList(db, user, "spaces", Number(path.split("/")[3]), await readBody(context.request));
-  if (method === "POST" && path.match(/^\/work\/lists\/\d+\/decision$/)) return decideSpaceOrList(db, user, "lists", Number(path.split("/")[3]), await readBody(context.request));
-  if (method === "PUT" && path.match(/^\/work\/spaces\/\d+$/)) return renameSpaceOrList(db, user, "spaces", Number(path.split("/").pop()), await readBody(context.request));
-  if (method === "PUT" && path.match(/^\/work\/lists\/\d+$/)) return renameSpaceOrList(db, user, "lists", Number(path.split("/").pop()), await readBody(context.request));
-  if (method === "DELETE" && path.match(/^\/work\/spaces\/\d+$/)) return deleteSpace(db, user, Number(path.split("/").pop()));
-  if (method === "DELETE" && path.match(/^\/work\/lists\/\d+$/)) return deleteList(db, user, Number(path.split("/").pop()));
-  if (method === "DELETE" && path.match(/^\/work\/tasks\/\d+$/)) return deleteWorkTask(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path.match(/^\/attendance-requests\/\d+\/decision$/)) return decideAttendanceRequest(db, user, Number(path.split("/")[2]), await readBody(context.request));
   if (method === "GET" && path === "/attendance.csv") return attendanceCsv(db, user, url);
   if (method === "POST" && path.match(/^\/leaves\/\d+\/decision$/)) return decideLeave(db, user, Number(path.split("/")[2]), await readBody(context.request));
@@ -220,15 +201,6 @@ async function adminSummary(db: D1Database) {
       WHERE a.missed_checkout = 1 AND a.attendance_date >= ? AND e.employment_status = 'Active'`, addDaysYmd(today, -7)),
   ]);
 
-  // Headline task numbers for the dashboard. Next week's repeats are not work
-  // anyone owes yet, so they stay out of the count until their day arrives.
-  const [taskTotal, taskDone, taskOngoing, taskPending] = await Promise.all([
-    scalar(db, `SELECT COUNT(*) FROM work_tasks WHERE ${notYetDueRepeat}`),
-    scalar(db, `SELECT COUNT(*) FROM work_tasks WHERE status = 'Done' AND ${notYetDueRepeat}`),
-    scalar(db, `SELECT COUNT(*) FROM work_tasks WHERE status IN ('In Progress', 'In Review') AND ${notYetDueRepeat}`),
-    scalar(db, `SELECT COUNT(*) FROM work_tasks WHERE status IN ('Backlog', 'To Do') AND ${notYetDueRepeat}`),
-  ]);
-
   return json({
     summary: {
       totalEmployees,
@@ -243,7 +215,6 @@ async function adminSummary(db: D1Database) {
       lastMonthOutstanding: Math.round(lastMonthOutstanding),
       lastMonthPaid: Math.round(paidTotal),
       lastMonthLabel: `${monthName(lastMonth)} ${lastMonthYear}`,
-      taskTotal, taskDone, taskOngoing, taskPending,
       onLeaveToday, pendingCorrections, missedCheckouts,
     },
   });
@@ -843,582 +814,13 @@ async function markNotificationsRead(db: D1Database, user: AppUser) {
   return json({ ok: true });
 }
 
-// ---- Work management (Client > Project > Task) ----
-// Spaces hold Lists (the brands we work with); every task belongs to one List.
-// Employees move their own tasks along the pipeline and comment.
-
-const workStatuses = ["To Do", "In Progress", "In Review", "Done"];
-const workPriorities = ["Urgent", "High", "Normal", "Low"];
-
-async function workMeta(db: D1Database, user: AppUser) {
-  const isAdmin = user.role === "Superadmin";
-  // Everyone sees Active spaces/lists; you also see your own pending requests,
-  // and admins see every pending request so they can approve them.
-  const visible = isAdmin ? "status IN ('Active','Pending')" : "(status = 'Active' OR (status = 'Pending' AND requested_by = ?))";
-  const bind = isAdmin ? [] : [user.id];
-  const [spaces, lists, people] = await Promise.all([
-    db.prepare(
-      `SELECT s.id, s.name, s.color, s.status, s.requested_by,
-         (SELECT COUNT(*) FROM lists l WHERE l.space_id = s.id) AS list_count,
-         (SELECT COUNT(*) FROM work_tasks t JOIN lists l ON l.id = t.list_id WHERE l.space_id = s.id) AS task_count
-       FROM spaces s WHERE ${visible.replace(/status/g, "s.status").replace(/requested_by/g, "s.requested_by")} ORDER BY s.name`,
-    ).bind(...bind).all(),
-    db.prepare(
-      `SELECT l.id, l.space_id, l.name, l.status, l.requested_by, s.name AS space_name,
-         (SELECT COUNT(*) FROM work_tasks t WHERE t.list_id = l.id) AS task_count,
-         (SELECT COUNT(*) FROM work_tasks t WHERE t.list_id = l.id AND t.status = 'Done') AS done_count
-       FROM lists l JOIN spaces s ON s.id = l.space_id
-       WHERE ${visible.replace(/status/g, "l.status").replace(/requested_by/g, "l.requested_by")}
-       ORDER BY s.name, l.name`,
-    ).bind(...bind).all(),
-    db.prepare(`${peopleSelect} WHERE u.is_active = 1 ORDER BY display_name`).all(),
-  ]);
-  // Former employees, for the admin's assignee filter only — never to assign work to.
-  const formerPeople = isAdmin
-    ? (await db.prepare(`${peopleSelect} WHERE u.is_active = 0 AND u.role = 'Employee' ORDER BY display_name`).all()).results
-    : [];
-  return json({ spaces: spaces.results, lists: lists.results, people: people.results, formerPeople, statuses: workStatuses, priorities: workPriorities, isAdmin });
-}
-
-// Anyone can propose a Space; admins get one instantly, everyone else waits for approval.
-async function saveSpace(db: D1Database, user: AppUser, body: Record<string, unknown>) {
-  const name = text(body.name);
-  if (!name) return json({ error: "Space name is required" }, 400);
-  const isAdmin = user.role === "Superadmin";
-  const existing = await db.prepare("SELECT id, status FROM spaces WHERE LOWER(name) = LOWER(?) AND status != 'Rejected'").bind(name).first<{ id: number; status: string }>();
-  if (existing) return json({ error: `A space called "${name}" already exists${existing.status === "Pending" ? " and is awaiting approval" : ""}.` }, 400);
-  const res = await db.prepare("INSERT INTO spaces (name, color, status, requested_by) VALUES (?, ?, ?, ?)")
-    .bind(name, text(body.color) || "orange", isAdmin ? "Active" : "Pending", user.id).run();
-  if (!isAdmin) await notifyAdmins(db, "Space requested", `${displayNameOf(user)} requested a new space "${name}".`);
-  else await audit(db, user, "Space created", "spaces", Number(res.meta.last_row_id), name);
-  return json({ ok: true, id: Number(res.meta.last_row_id), pending: !isAdmin });
-}
-
-// Lists are the brands you work with; they live inside a Space.
-async function saveList(db: D1Database, user: AppUser, body: Record<string, unknown>) {
-  const spaceId = number(body.space_id);
-  const name = text(body.name);
-  if (!spaceId || !name) return json({ error: "Space and list name are required" }, 400);
-  const space = await db.prepare("SELECT id, status FROM spaces WHERE id = ?").bind(spaceId).first<{ status: string }>();
-  if (!space) return json({ error: "Space not found" }, 404);
-  if (space.status !== "Active") return json({ error: "That space is still awaiting approval" }, 400);
-  const isAdmin = user.role === "Superadmin";
-  const existing = await db.prepare("SELECT id, status FROM lists WHERE space_id = ? AND LOWER(name) = LOWER(?) AND status != 'Rejected'").bind(spaceId, name).first<{ status: string }>();
-  if (existing) return json({ error: `"${name}" already exists in this space${existing.status === "Pending" ? " and is awaiting approval" : ""}.` }, 400);
-  const res = await db.prepare("INSERT INTO lists (space_id, name, status, requested_by) VALUES (?, ?, ?, ?)")
-    .bind(spaceId, name, isAdmin ? "Active" : "Pending", user.id).run();
-  if (!isAdmin) await notifyAdmins(db, "List requested", `${displayNameOf(user)} requested a new list "${name}".`);
-  else await audit(db, user, "List created", "lists", Number(res.meta.last_row_id), name);
-  return json({ ok: true, id: Number(res.meta.last_row_id), pending: !isAdmin });
-}
-
-async function renameSpaceOrList(db: D1Database, actor: AppUser, table: "spaces" | "lists", id: number, body: Record<string, unknown>) {
-  const name = text(body.name);
-  if (!name) return json({ error: "Name is required" }, 400);
-  const row = await db.prepare(`SELECT name${table === "lists" ? ", space_id" : ""} FROM ${table} WHERE id = ?`).bind(id).first<{ name: string; space_id?: number }>();
-  if (!row) return json({ error: "Not found" }, 404);
-  const clash = table === "lists"
-    ? await db.prepare("SELECT 1 FROM lists WHERE space_id = ? AND LOWER(name) = LOWER(?) AND id != ? AND status != 'Rejected'").bind(row.space_id, name, id).first()
-    : await db.prepare("SELECT 1 FROM spaces WHERE LOWER(name) = LOWER(?) AND id != ? AND status != 'Rejected'").bind(name, id).first();
-  if (clash) return json({ error: `"${name}" already exists.` }, 400);
-  await db.prepare(`UPDATE ${table} SET name = ? WHERE id = ?`).bind(name, id).run();
-  await audit(db, actor, `${table === "spaces" ? "Space" : "List"} renamed`, table, id, `${row.name} → ${name}`);
-  return json({ ok: true });
-}
-
-// Deleting a list takes its tasks with it, so clear the children first —
-// D1 does not enforce the schema's cascades for us.
-async function deleteListRows(db: D1Database, listIds: number[]) {
-  for (const listId of listIds) {
-    await db.prepare("DELETE FROM work_task_comments WHERE task_id IN (SELECT id FROM work_tasks WHERE list_id = ?)").bind(listId).run();
-    await db.prepare("DELETE FROM work_task_assignees WHERE task_id IN (SELECT id FROM work_tasks WHERE list_id = ?)").bind(listId).run();
-    await db.prepare("DELETE FROM work_tasks WHERE list_id = ?").bind(listId).run();
-    await db.prepare("DELETE FROM work_task_recurrences WHERE list_id = ?").bind(listId).run();
-    await db.prepare("DELETE FROM lists WHERE id = ?").bind(listId).run();
-  }
-}
-
-async function deleteList(db: D1Database, actor: AppUser, id: number) {
-  const row = await db.prepare("SELECT name FROM lists WHERE id = ?").bind(id).first<{ name: string }>();
-  if (!row) return json({ error: "List not found" }, 404);
-  await deleteListRows(db, [id]);
-  await audit(db, actor, "List deleted", "lists", id, row.name);
-  return json({ ok: true });
-}
-
-async function deleteSpace(db: D1Database, actor: AppUser, id: number) {
-  const row = await db.prepare("SELECT name FROM spaces WHERE id = ?").bind(id).first<{ name: string }>();
-  if (!row) return json({ error: "Space not found" }, 404);
-  const lists = await db.prepare("SELECT id FROM lists WHERE space_id = ?").bind(id).all<{ id: number }>();
-  await deleteListRows(db, lists.results.map((l) => Number(l.id)));
-  await db.prepare("DELETE FROM spaces WHERE id = ?").bind(id).run();
-  await audit(db, actor, "Space deleted", "spaces", id, row.name);
-  return json({ ok: true });
-}
-
-async function decideSpaceOrList(db: D1Database, actor: AppUser, table: "spaces" | "lists", id: number, body: Record<string, unknown>) {
-  const status = text(body.status);
-  if (!["Active", "Rejected"].includes(status)) return json({ error: "Invalid decision" }, 400);
-  const row = await db.prepare(`SELECT name, requested_by, status FROM ${table} WHERE id = ?`).bind(id).first<{ name: string; requested_by: number; status: string }>();
-  if (!row) return json({ error: "Not found" }, 404);
-  if (row.status !== "Pending") return json({ error: "Already decided" }, 400);
-  await db.prepare(`UPDATE ${table} SET status = ?, decided_by = ? WHERE id = ?`).bind(status, actor.id, id).run();
-  const label = table === "spaces" ? "Space" : "List";
-  if (row.requested_by) {
-    await notify(db, row.requested_by, `${label} ${status === "Active" ? "approved" : "rejected"}`, `Your ${label.toLowerCase()} "${row.name}" was ${status === "Active" ? "approved" : "rejected"}.`);
-  }
-  await audit(db, actor, `${label} ${status === "Active" ? "approved" : "rejected"}`, table, id, row.name);
-  return json({ ok: true });
-}
-
-// Attaches assignees + comment counts to a set of tasks in one batched pass.
-async function decorateWorkTasks(db: D1Database, rows: Array<Record<string, unknown>>) {
-  const ids = rows.map((r) => Number(r.id));
-  if (!ids.length) return rows;
-  const byTask = new Map<number, Array<Record<string, unknown>>>();
-  const counts = new Map<number, number>();
-  for (let i = 0; i < ids.length; i += 60) {
-    const chunk = ids.slice(i, i + 60);
-    const marks = chunk.map(() => "?").join(",");
-    const [assignees, comments] = await Promise.all([
-      db.prepare(
-        `SELECT a.task_id, a.user_id, ${nameSql()} AS display_name
-         FROM work_task_assignees a JOIN users u ON u.id = a.user_id
-         LEFT JOIN employees e ON e.user_id = u.id WHERE a.task_id IN (${marks})`,
-      ).bind(...chunk).all<Record<string, unknown>>(),
-      db.prepare(`SELECT task_id, COUNT(*) AS n FROM work_task_comments WHERE task_id IN (${marks}) GROUP BY task_id`).bind(...chunk).all<{ task_id: number; n: number }>(),
-    ]);
-    for (const a of assignees.results) {
-      const key = Number(a.task_id);
-      if (!byTask.has(key)) byTask.set(key, []);
-      byTask.get(key)!.push({ user_id: a.user_id, display_name: a.display_name });
-    }
-    for (const c of comments.results) counts.set(Number(c.task_id), Number(c.n));
-  }
-  for (const row of rows) {
-    row.assignees = byTask.get(Number(row.id)) ?? [];
-    row.comment_count = counts.get(Number(row.id)) ?? 0;
-  }
-  return rows;
-}
-
-async function workTasks(db: D1Database, user: AppUser, url: URL) {
-  await ensureRecurrences(db);
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  const listId = url.searchParams.get("listId");
-  const spaceId = url.searchParams.get("spaceId");
-  const mine = url.searchParams.get("mine");
-  const assigneeId = url.searchParams.get("assigneeId");
-
-  if (listId) { conditions.push("t.list_id = ?"); params.push(listId); }
-  if (spaceId) { conditions.push("l.space_id = ?"); params.push(spaceId); }
-  // Admins can single out one person's workload.
-  if (assigneeId && user.role === "Superadmin") {
-    conditions.push("EXISTS (SELECT 1 FROM work_task_assignees a2 WHERE a2.task_id = t.id AND a2.user_id = ?)");
-    params.push(assigneeId);
-  }
-  // Work that belongs only to former employees stays out of view until one of
-  // them is picked as the assignee.
-  if (!assigneeId) {
-    conditions.push(`(NOT EXISTS (SELECT 1 FROM work_task_assignees ax WHERE ax.task_id = t.id)
-      OR EXISTS (SELECT 1 FROM work_task_assignees ax JOIN users ux ON ux.id = ax.user_id WHERE ax.task_id = t.id AND ux.is_active = 1))`);
-  }
-  // Employees only ever see work assigned to them; admins see everything.
-  if (mine === "1" || user.role !== "Superadmin") {
-    conditions.push("EXISTS (SELECT 1 FROM work_task_assignees a WHERE a.task_id = t.id AND a.user_id = ?)");
-    params.push(user.id);
-  }
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const rows = await db.prepare(
-    `SELECT t.*, l.name AS list_name, s.name AS space_name, s.id AS space_id
-     FROM work_tasks t JOIN lists l ON l.id = t.list_id JOIN spaces s ON s.id = l.space_id
-     ${where}
-     -- Finished work sinks to the bottom; live work rises by priority then by
-     -- whatever is due soonest.
-     ORDER BY CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END,
-              CASE t.priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END,
-              t.due_date IS NULL, t.due_date ASC, t.position ASC, t.id DESC`,
-  ).bind(...params).all<Record<string, unknown>>();
-  return json({ tasks: await decorateWorkTasks(db, rows.results) });
-}
-
-// Renaming to an existing client's name merges the two (fixes brand-name drift).
-
-async function createWorkTask(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
-  const listId = number(body.list_id);
-  const title = text(body.title);
-  // A task always belongs to a brand list — that choice is compulsory.
-  if (!listId || !title) return json({ error: "List and title are required" }, 400);
-  const list = await db.prepare("SELECT id FROM lists WHERE id = ? AND status = 'Active'").bind(listId).first();
-  if (!list) return json({ error: "Pick an approved list for this task" }, 400);
-  const status = workStatuses.includes(text(body.status)) ? text(body.status) : "To Do";
-  const priority = workPriorities.includes(text(body.priority)) ? text(body.priority) : "Normal";
-  const res = await db.prepare(
-    `INSERT INTO work_tasks (list_id, title, description, status, priority, start_date, due_date, due_time, estimate_hours, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(listId, title, text(body.description) || null, status, priority, text(body.start_date) || null, text(body.due_date) || null, timeOrNull(body.due_time), body.estimate_hours ? number(body.estimate_hours) : null, actor.id).run();
-  const taskId = Number(res.meta.last_row_id);
-
-  const assignees = Array.isArray(body.assignees) ? body.assignees.map(Number).filter(Boolean) : [];
-  // Employees only see work assigned to them, so a task they raise with nobody
-  // named would otherwise disappear the moment they created it.
-  if (!assignees.length && actor.role !== "Superadmin") assignees.push(actor.id);
-  for (const userId of assignees) {
-    await db.prepare("INSERT OR IGNORE INTO work_task_assignees (task_id, user_id) VALUES (?, ?)").bind(taskId, userId).run();
-    if (userId !== actor.id) await notify(db, userId, "New task assigned", `${title}${text(body.due_date) ? ` · due ${text(body.due_date)}` : ""}`);
-  }
-  return json({ ok: true, id: taskId });
-}
-
-async function updateWorkTask(db: D1Database, user: AppUser, id: number, body: Record<string, unknown>) {
-  const task = await db.prepare("SELECT * FROM work_tasks WHERE id = ?").bind(id).first<Record<string, unknown>>();
-  if (!task) return json({ error: "Task not found" }, 404);
-  const isAdmin = user.role === "Superadmin";
-  // Whoever raised a task can keep it correct; everyone else assigned to it can
-  // only move it along the pipeline.
-  const isOwner = Number(task.created_by) === user.id;
-  if (!isAdmin && !isOwner) {
-    const assigned = await db.prepare("SELECT 1 FROM work_task_assignees WHERE task_id = ? AND user_id = ?").bind(id, user.id).first();
-    if (!assigned) return json({ error: "Not allowed" }, 403);
-  }
-
-  const canEdit = isAdmin || isOwner;
-  const status = body.status !== undefined && workStatuses.includes(text(body.status)) ? text(body.status) : String(task.status);
-  if (!canEdit) {
-    await db.prepare("UPDATE work_tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, id).run();
-    return json({ ok: true });
-  }
-
-  const title = body.title !== undefined ? (text(body.title) || String(task.title)) : String(task.title);
-  const priority = body.priority !== undefined && workPriorities.includes(text(body.priority)) ? text(body.priority) : String(task.priority);
-  await db.prepare(
-    `UPDATE work_tasks SET title = ?, description = ?, status = ?, priority = ?, start_date = ?, due_date = ?,
-       due_time = ?, estimate_hours = ?, list_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-  ).bind(
-    title,
-    body.description !== undefined ? (text(body.description) || null) : (task.description ?? null),
-    status,
-    priority,
-    body.start_date !== undefined ? (text(body.start_date) || null) : (task.start_date ?? null),
-    body.due_date !== undefined ? (text(body.due_date) || null) : (task.due_date ?? null),
-    body.due_time !== undefined ? timeOrNull(body.due_time) : (task.due_time ?? null),
-    body.estimate_hours !== undefined ? (body.estimate_hours ? number(body.estimate_hours) : null) : (task.estimate_hours ?? null),
-    body.list_id !== undefined ? number(body.list_id) : Number(task.list_id),
-    id,
-  ).run();
-
-  if (Array.isArray(body.assignees)) {
-    const wanted = body.assignees.map(Number).filter(Boolean);
-    const current = await db.prepare("SELECT user_id FROM work_task_assignees WHERE task_id = ?").bind(id).all<{ user_id: number }>();
-    const had = new Set(current.results.map((r) => Number(r.user_id)));
-    await db.prepare("DELETE FROM work_task_assignees WHERE task_id = ?").bind(id).run();
-    for (const userId of wanted) {
-      await db.prepare("INSERT OR IGNORE INTO work_task_assignees (task_id, user_id) VALUES (?, ?)").bind(id, userId).run();
-      if (!had.has(userId)) await notify(db, userId, "New task assigned", title);
-    }
-  }
-  return json({ ok: true });
-}
-
-async function deleteWorkTask(db: D1Database, actor: AppUser, id: number) {
-  await db.prepare("DELETE FROM work_tasks WHERE id = ?").bind(id).run();
-  await audit(db, actor, "Task deleted", "work_tasks", id, "");
-  return json({ ok: true });
-}
-
-// ---- Recurring tasks ----
-//
-// A series is a rule; each date it applies becomes an ordinary work_task. They
-// are created a week ahead on a rolling basis: far enough that the calendar can
-// show what is coming, short enough that an open-ended series stays small.
-
-const RECUR_AHEAD_DAYS = 6;
-
-// SQL guard for counts: excludes repeats created ahead whose day is still to come.
-const notYetDueRepeat = "NOT (recurrence_id IS NOT NULL AND due_date > date('now', '+5 hours', '+30 minutes'))";
-
-type Recurrence = {
-  id: number; list_id: number; title: string; description: string | null; priority: string;
-  frequency: "weekly" | "monthly"; days_of_week: string | null; month_day: number | null;
-  start_date: string; end_date: string | null; due_time: string | null;
-  assignee_ids: string; active: number; generated_until: string | null; created_by: number | null;
-};
-
-// Calendar dates are handled as plain YYYY-MM-DD strings in UTC arithmetic, so
-// no timezone can shift a Monday into a Sunday.
+// Date arithmetic on plain YYYY-MM-DD strings, in UTC so no timezone can shift a day.
 function addDaysYmd(ymd: string, n: number) {
   const d = new Date(`${ymd}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
-function weekdayOf(ymd: string) { return new Date(`${ymd}T00:00:00Z`).getUTCDay(); }
-function recurDays(rule: Pick<Recurrence, "days_of_week">) {
-  return String(rule.days_of_week ?? "").split(",").filter((x) => x !== "").map(Number);
-}
 
-function occursOn(rule: Recurrence, ymd: string) {
-  if (ymd < rule.start_date) return false;
-  if (rule.end_date && ymd > rule.end_date) return false;
-  if (rule.frequency === "monthly") {
-    const y = Number(ymd.slice(0, 4)), m = Number(ymd.slice(5, 7));
-    const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
-    // "The 31st" means the last day in a month that has no 31st.
-    return Number(ymd.slice(8, 10)) === Math.min(Number(rule.month_day) || 1, last);
-  }
-  return recurDays(rule).includes(weekdayOf(ymd));
-}
-
-function nextOccurrence(rule: Recurrence, from: string) {
-  let day = from < rule.start_date ? rule.start_date : from;
-  for (let i = 0; i < 400; i += 1) {
-    if (rule.end_date && day > rule.end_date) return null;
-    if (occursOn(rule, day)) return day;
-    day = addDaysYmd(day, 1);
-  }
-  return null;
-}
-
-// Create every occurrence the rule owes up to `until`. Never backfills before
-// today: a series started "from last Monday" should not arrive as a week of
-// overdue tasks.
-async function materializeRecurrence(db: D1Database, rule: Recurrence, until: string) {
-  const today = dateOnly();
-  const resumeFrom = rule.generated_until ? addDaysYmd(rule.generated_until, 1) : rule.start_date;
-  let day = [resumeFrom, rule.start_date, today].sort().pop() as string;
-  const stop = rule.end_date && rule.end_date < until ? rule.end_date : until;
-  if (day > stop) return;
-
-  const assignees: number[] = (() => {
-    try { return (JSON.parse(rule.assignee_ids) as unknown[]).map(Number).filter(Boolean); } catch { return []; }
-  })();
-
-  for (; day <= stop; day = addDaysYmd(day, 1)) {
-    if (!occursOn(rule, day)) continue;
-    // The unique (recurrence_id, due_date) index makes this safe to race.
-    const made = await db.prepare(
-      `INSERT OR IGNORE INTO work_tasks
-         (list_id, title, description, status, priority, due_date, due_time, recurrence_id, created_by)
-       VALUES (?, ?, ?, 'To Do', ?, ?, ?, ?, ?) RETURNING id`,
-    ).bind(rule.list_id, rule.title, rule.description, rule.priority, day, rule.due_time, rule.id, rule.created_by).first<{ id: number }>();
-    if (!made) continue;
-    for (const userId of assignees) {
-      await db.prepare("INSERT OR IGNORE INTO work_task_assignees (task_id, user_id) VALUES (?, ?)").bind(made.id, userId).run();
-    }
-  }
-  await db.prepare("UPDATE work_task_recurrences SET generated_until = ? WHERE id = ?").bind(stop, rule.id).run();
-}
-
-// Topped up whenever the task list is read. Usually that finds nothing to do
-// and costs one indexed lookup on a table of a handful of rows.
-async function ensureRecurrences(db: D1Database) {
-  const horizon = addDaysYmd(dateOnly(), RECUR_AHEAD_DAYS);
-  const due = await db.prepare(
-    `SELECT * FROM work_task_recurrences
-     WHERE active = 1 AND (generated_until IS NULL OR generated_until < ?)
-       AND (end_date IS NULL OR generated_until IS NULL OR generated_until < end_date)`,
-  ).bind(horizon).all<Recurrence>();
-  for (const rule of due.results) await materializeRecurrence(db, rule, horizon);
-}
-
-// Occurrences nobody has touched yet: still to do, not started, no discussion.
-// Those are safe to withdraw when a series is changed, paused or ended; anything
-// someone has started or finished stays exactly as it is.
-async function withdrawUpcoming(db: D1Database, ruleId: number) {
-  const today = dateOnly();
-  const doomed = await db.prepare(
-    `SELECT id FROM work_tasks t
-     WHERE t.recurrence_id = ? AND t.due_date >= ? AND t.status IN ('Backlog', 'To Do')
-       AND NOT EXISTS (SELECT 1 FROM work_task_comments c WHERE c.task_id = t.id)`,
-  ).bind(ruleId, today).all<{ id: number }>();
-  for (const { id } of doomed.results) {
-    await db.prepare("DELETE FROM work_task_assignees WHERE task_id = ?").bind(id).run();
-    await db.prepare("DELETE FROM work_tasks WHERE id = ?").bind(id).run();
-  }
-  return doomed.results.length;
-}
-
-function readRecurrenceBody(body: Record<string, unknown>) {
-  const frequency = text(body.frequency) === "monthly" ? "monthly" : "weekly";
-  const days = Array.isArray(body.days_of_week)
-    ? [...new Set(body.days_of_week.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort()
-    : [];
-  const monthDay = number(body.month_day);
-  const start = text(body.start_date) || dateOnly();
-  const end = text(body.end_date) || null;
-
-  return {
-    list_id: number(body.list_id),
-    title: text(body.title),
-    description: text(body.description) || null,
-    priority: workPriorities.includes(text(body.priority)) ? text(body.priority) : "Normal",
-    frequency,
-    days_of_week: frequency === "weekly" ? days.join(",") : null,
-    month_day: frequency === "monthly" ? monthDay : null,
-    start_date: start,
-    end_date: end,
-    due_time: timeOrNull(body.due_time),
-    assignees: Array.isArray(body.assignees) ? body.assignees.map(Number).filter(Boolean) : [],
-  };
-}
-
-function validateRecurrence(r: ReturnType<typeof readRecurrenceBody>) {
-  if (!r.list_id || !r.title) return "List and title are required";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(r.start_date)) return "Pick a start date";
-  if (r.end_date && !/^\d{4}-\d{2}-\d{2}$/.test(r.end_date)) return "The end date is not a valid date";
-  if (r.end_date && r.end_date < r.start_date) return "The series cannot end before it starts";
-  if (r.frequency === "weekly" && !r.days_of_week) return "Pick at least one day of the week";
-  if (r.frequency === "monthly" && (!r.month_day || r.month_day < 1 || r.month_day > 31)) return "Pick a day of the month between 1 and 31";
-  return null;
-}
-
-async function listRecurrences(db: D1Database, user: AppUser) {
-  const isAdmin = user.role === "Superadmin";
-  const rows = await db.prepare(
-    `SELECT r.*, l.name AS list_name, s.name AS space_name, ${nameSql()} AS created_by_name,
-       (SELECT COUNT(*) FROM work_tasks t WHERE t.recurrence_id = r.id AND t.status = 'Done') AS done_count,
-       (SELECT COUNT(*) FROM work_tasks t WHERE t.recurrence_id = r.id) AS made_count
-     FROM work_task_recurrences r
-     JOIN lists l ON l.id = r.list_id JOIN spaces s ON s.id = l.space_id
-     LEFT JOIN users u ON u.id = r.created_by LEFT JOIN employees e ON e.user_id = u.id
-     ORDER BY r.active DESC, r.created_at DESC`,
-  ).all<Recurrence & Record<string, unknown>>();
-  const today = dateOnly();
-  const visible = rows.results.filter((r) => {
-    if (isAdmin || Number(r.created_by) === user.id) return true;
-    try { return (JSON.parse(r.assignee_ids) as unknown[]).map(Number).includes(user.id); } catch { return false; }
-  });
-  return json({
-    recurrences: visible.map((r) => ({
-      ...r,
-      assignee_ids: (() => { try { return JSON.parse(r.assignee_ids); } catch { return []; } })(),
-      next_date: r.active ? nextOccurrence(r, today) : null,
-    })),
-  });
-}
-
-async function createRecurrence(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
-  const r = readRecurrenceBody(body);
-  const problem = validateRecurrence(r);
-  if (problem) return json({ error: problem }, 400);
-  const list = await db.prepare("SELECT id FROM lists WHERE id = ? AND status = 'Active'").bind(r.list_id).first();
-  if (!list) return json({ error: "Pick an approved list for this task" }, 400);
-  // Same rule as one-off tasks: an employee's own series lands on their own board.
-  if (!r.assignees.length && actor.role !== "Superadmin") r.assignees.push(actor.id);
-
-  const res = await db.prepare(
-    `INSERT INTO work_task_recurrences
-       (list_id, title, description, priority, frequency, days_of_week, month_day, start_date, end_date, due_time, assignee_ids, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(r.list_id, r.title, r.description, r.priority, r.frequency, r.days_of_week, r.month_day,
-    r.start_date, r.end_date, r.due_time, JSON.stringify(r.assignees), actor.id).run();
-  const id = Number(res.meta.last_row_id);
-
-  const rule = await db.prepare("SELECT * FROM work_task_recurrences WHERE id = ?").bind(id).first<Recurrence>();
-  if (rule) await materializeRecurrence(db, rule, addDaysYmd(dateOnly(), RECUR_AHEAD_DAYS));
-
-  // One notice for the series, not one per occurrence.
-  for (const userId of r.assignees) {
-    if (userId !== actor.id) await notify(db, userId, "Recurring task assigned", r.title);
-  }
-  await audit(db, actor, "Recurring task created", "work_task_recurrences", id, r.title);
-  return json({ ok: true, id });
-}
-
-async function updateRecurrence(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
-  const rule = await db.prepare("SELECT * FROM work_task_recurrences WHERE id = ?").bind(id).first<Recurrence>();
-  if (!rule) return json({ error: "Series not found" }, 404);
-  if (actor.role !== "Superadmin" && Number(rule.created_by) !== actor.id) {
-    return json({ error: "Only the person who set it up, or an admin, can change this series" }, 403);
-  }
-
-  // Pause / resume only.
-  if (Object.keys(body).length === 1 && body.active !== undefined) {
-    const active = body.active ? 1 : 0;
-    const withdrawn = active ? 0 : await withdrawUpcoming(db, id);
-    await db.prepare("UPDATE work_task_recurrences SET active = ?, generated_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-      .bind(active, active ? addDaysYmd(dateOnly(), -1) : rule.generated_until, id).run();
-    if (active) {
-      const fresh = await db.prepare("SELECT * FROM work_task_recurrences WHERE id = ?").bind(id).first<Recurrence>();
-      if (fresh) await materializeRecurrence(db, fresh, addDaysYmd(dateOnly(), RECUR_AHEAD_DAYS));
-    }
-    await audit(db, actor, active ? "Recurring task resumed" : "Recurring task paused", "work_task_recurrences", id, rule.title);
-    return json({ ok: true, withdrawn });
-  }
-
-  const r = readRecurrenceBody(body);
-  const problem = validateRecurrence(r);
-  if (problem) return json({ error: problem }, 400);
-
-  // Untouched future occurrences are rebuilt to the new rule; anything already
-  // started or finished is history and is left alone.
-  const withdrawn = await withdrawUpcoming(db, id);
-  await db.prepare(
-    `UPDATE work_task_recurrences SET list_id = ?, title = ?, description = ?, priority = ?, frequency = ?,
-       days_of_week = ?, month_day = ?, start_date = ?, end_date = ?, due_time = ?, assignee_ids = ?,
-       generated_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-  ).bind(r.list_id, r.title, r.description, r.priority, r.frequency, r.days_of_week, r.month_day,
-    r.start_date, r.end_date, r.due_time, JSON.stringify(r.assignees), addDaysYmd(dateOnly(), -1), id).run();
-  const fresh = await db.prepare("SELECT * FROM work_task_recurrences WHERE id = ?").bind(id).first<Recurrence>();
-  if (fresh && fresh.active) await materializeRecurrence(db, fresh, addDaysYmd(dateOnly(), RECUR_AHEAD_DAYS));
-  await audit(db, actor, "Recurring task changed", "work_task_recurrences", id, r.title);
-  return json({ ok: true, withdrawn });
-}
-
-// Ending a series stops it and withdraws what has not been started. Past and
-// in-progress occurrences stay, as ordinary tasks.
-async function endRecurrence(db: D1Database, actor: AppUser, id: number) {
-  const rule = await db.prepare("SELECT * FROM work_task_recurrences WHERE id = ?").bind(id).first<Recurrence>();
-  if (!rule) return json({ error: "Series not found" }, 404);
-  if (actor.role !== "Superadmin" && Number(rule.created_by) !== actor.id) {
-    return json({ error: "Only the person who set it up, or an admin, can end this series" }, 403);
-  }
-  const withdrawn = await withdrawUpcoming(db, id);
-  await db.prepare("UPDATE work_tasks SET recurrence_id = NULL WHERE recurrence_id = ?").bind(id).run();
-  await db.prepare("DELETE FROM work_task_recurrences WHERE id = ?").bind(id).run();
-  await audit(db, actor, "Recurring task ended", "work_task_recurrences", id, rule.title);
-  return json({ ok: true, withdrawn });
-}
-
-async function workComments(db: D1Database, user: AppUser, taskId: number) {
-  const rows = await db.prepare(
-    `SELECT wc.id, wc.body, wc.created_at, wc.user_id, ${nameSql()} AS author_name
-     FROM work_task_comments wc JOIN users u ON u.id = wc.user_id
-     LEFT JOIN employees e ON e.user_id = u.id
-     WHERE wc.task_id = ? ORDER BY wc.id ASC`,
-  ).bind(taskId).all();
-  return json({ comments: rows.results });
-}
-
-async function addWorkComment(db: D1Database, user: AppUser, taskId: number, body: Record<string, unknown>) {
-  const message = text(body.body);
-  if (!message) return json({ error: "Write a comment first" }, 400);
-  const task = await db.prepare("SELECT title FROM work_tasks WHERE id = ?").bind(taskId).first<{ title: string }>();
-  if (!task) return json({ error: "Task not found" }, 404);
-  await db.prepare("INSERT INTO work_task_comments (task_id, user_id, body) VALUES (?, ?, ?)").bind(taskId, user.id, message).run();
-  // Ping everyone else on the task.
-  const others = await db.prepare("SELECT user_id FROM work_task_assignees WHERE task_id = ? AND user_id != ?").bind(taskId, user.id).all<{ user_id: number }>();
-  const who = displayNameOf(user);
-  for (const o of others.results) await notify(db, o.user_id, `Comment on "${task.title}"`, `${who}: ${message.slice(0, 120)}`);
-  return json({ ok: true });
-}
-
-// ---- People ----
-
-// Someone without an employee record used to show up as their whole email
-// address. Fall back to a capitalised handle instead: "Aagam", not
-// "aagam@fastexmedia.com".
-function nameSql(userAlias = "u", employeeAlias = "e") {
-  return `COALESCE(${employeeAlias}.full_name, UPPER(SUBSTR(${userAlias}.email, 1, 1)) || SUBSTR(${userAlias}.email, 2, INSTR(${userAlias}.email, '@') - 2))`;
-}
-
-// Name and role for anyone with a login, for assignee pickers.
-const peopleSelect = `SELECT u.id, u.email, u.role, ${nameSql()} AS display_name
-  FROM users u LEFT JOIN employees e ON e.user_id = u.id`;
-
-// Delete is admin-only (route sits after the requireAdmin gate).
-
-// CSV report of tasks over a date range (admin: all employees; employee: own).
 
 async function reportsMeta(db: D1Database) {
   const [employees, departments] = await Promise.all([
@@ -1443,7 +845,7 @@ async function reportsSummary(db: D1Database, url: URL) {
   if (departmentId) { scope.push("e.department_id = ?"); scopeArgs.push(departmentId); }
   const andScope = scope.length ? ` AND ${scope.join(" AND ")}` : "";
 
-  const [byStatus, daily, byEmployee, leaveByType, payroll, tasks, headcount] = await Promise.all([
+  const [byStatus, daily, byEmployee, leaveByType, payroll, headcount] = await Promise.all([
     db.prepare(
       `SELECT a.status, COUNT(*) AS count FROM attendance a JOIN employees e ON e.id = a.employee_id
        WHERE a.attendance_date BETWEEN ? AND ?${andScope} GROUP BY a.status`,
@@ -1493,8 +895,6 @@ async function reportsSummary(db: D1Database, url: URL) {
        ORDER BY s.salary_year DESC, s.salary_month DESC LIMIT 6`,
     ).bind(...scopeArgs).all(),
 
-    db.prepare(`SELECT status, COUNT(*) AS count FROM work_tasks WHERE ${notYetDueRepeat} GROUP BY status`).all(),
-
     db.prepare(`SELECT COUNT(*) AS n FROM employees e WHERE 1 = 1${andScope}`)
       .bind(...scopeArgs).first<{ n: number }>(),
   ]);
@@ -1507,7 +907,6 @@ async function reportsSummary(db: D1Database, url: URL) {
     byEmployee: byEmployee.results,
     leaveByType: leaveByType.results,
     payroll: payroll.results.reverse(),
-    tasksByStatus: tasks.results,
   });
 }
 
@@ -2013,12 +1412,6 @@ function encoder() {
 
 function text(value: unknown) {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
-}
-
-// "HH:MM" or nothing.
-function timeOrNull(value: unknown) {
-  const t = text(value);
-  return /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? t : null;
 }
 
 function number(value: unknown) {

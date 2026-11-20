@@ -806,9 +806,11 @@ function EmployeeDashboard({ onView }: { onView: (view: View) => void }) {
             <p className="stat mt-2 text-[32px] leading-none text-ink">
               {isSunday ? "Weekly off" : !checkedIn ? "Not checked in" : checkedOut ? "Day done" : onBreak ? "On a break" : "Working"}
             </p>
-            <p className="tnum mt-2 text-[13px] text-ink-3">
-              {checkedIn ? `In ${att?.check_in?.slice(0, 5)}${checkedOut ? ` · Out ${att?.check_out?.slice(0, 5)}` : ""}` : `Check in by ${settings?.late_mark_time ?? "—"} to be on time`}
-            </p>
+            {checkedIn ? (
+              <p className="tnum mt-2 text-[13px] text-ink-3">
+                In {att?.check_in?.slice(0, 5)}{checkedOut ? ` · Out ${att?.check_out?.slice(0, 5)}` : ""}
+              </p>
+            ) : null}
           </div>
           <div className="flex flex-col items-start gap-3 sm:items-end">
             {checkedIn && !checkedOut ? <p className="tnum font-mono text-[28px] font-bold text-brand">{hms}</p> : null}

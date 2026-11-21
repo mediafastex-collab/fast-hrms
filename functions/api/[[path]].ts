@@ -52,6 +52,7 @@ async function route(context: Context) {
   if (method === "POST" && path === "/leaves") return applyLeave(db, user, await readBody(context.request));
   if (method === "GET" && path === "/payroll") return payrollList(db, user, url);
   if (method === "GET" && path.startsWith("/salary-slips/")) return salarySlip(db, user, Number(path.split("/").pop()));
+  if (method === "GET" && path === "/advances") return advanceList(db, user, url);
   if (method === "GET" && path === "/holidays") return holidayList(db);
   if (method === "GET" && path === "/settings") return json({ settings: await companySettings(db) });
   if (method === "GET" && path === "/attendance/month-grid") return monthGrid(db, user, url);
@@ -79,6 +80,9 @@ async function route(context: Context) {
   if (method === "POST" && path.match(/^\/leaves\/\d+\/decision$/)) return decideLeave(db, user, Number(path.split("/")[2]), await readBody(context.request));
   if (method === "POST" && path === "/leave-types") return saveLeaveType(db, user, await readBody(context.request));
   if (method === "DELETE" && path.startsWith("/leave-types/")) return deleteLeaveType(db, user, Number(path.split("/").pop()));
+  if (method === "POST" && path === "/advances") return createAdvance(db, user, await readBody(context.request));
+  if (method === "PUT" && path.match(/^\/advances\/\d+$/)) return updateAdvance(db, user, Number(path.split("/").pop()), await readBody(context.request));
+  if (method === "DELETE" && path.match(/^\/advances\/\d+$/)) return deleteAdvance(db, user, Number(path.split("/").pop()));
   if (method === "POST" && path === "/payroll/generate") return generatePayroll(db, user, await readBody(context.request));
   if (method === "POST" && path.match(/^\/payroll\/\d+\/pay-in-full$/)) return payInFull(db, user, Number(path.split("/")[2]));
   if (method === "PUT" && path.startsWith("/payroll/")) return updateSalary(db, user, Number(path.split("/").pop()), await readBody(context.request));
@@ -184,12 +188,23 @@ async function adminSummary(db: D1Database) {
 
   let lastMonthPayable = 0;
   let lastMonthOutstanding = 0;
+  const lastMonthRows = await db.prepare(
+    "SELECT * FROM salaries WHERE salary_month = ? AND salary_year = ?",
+  ).bind(lastMonth, lastMonthYear).all<Record<string, unknown>>();
+  const rowFor = new Map(lastMonthRows.results.map((r) => [Number(r.employee_id), r]));
   for (const employee of activeEmployees.results) {
-    const days = await monthDayBreakdown(db, employee, lastMonth, lastMonthYear);
-    const gross = Number(employee.monthly_salary) || 0;
-    const perDay = days.length ? gross / days.length : 0;
-    const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
-    const net = gross - perDay * deductionDays;
+    // The same figure Payroll shows: attendance, the admin's adjustment and any advance.
+    const row = rowFor.get(Number(employee.id));
+    let net: number;
+    if (row) {
+      net = Number((await liveSalary(db, row)).net_salary) || 0;
+    } else {
+      const days = await monthDayBreakdown(db, employee, lastMonth, lastMonthYear);
+      const gross = Number(employee.monthly_salary) || 0;
+      const perDay = days.length ? gross / days.length : 0;
+      const deductionDays = days.reduce((sum, d) => sum + d.factor, 0);
+      net = gross - perDay * deductionDays - await advanceFor(db, Number(employee.id), lastMonth, lastMonthYear);
+    }
     lastMonthPayable += net;
     if (!paidIds.has(Number(employee.id))) lastMonthOutstanding += net;
   }
@@ -678,6 +693,104 @@ async function payrollList(db: D1Database, user: AppUser, url: URL) {
   return json({ salaries });
 }
 
+// ---- Advances ----
+
+// Total of advances to recover from one employee's salary for one month.
+async function advanceFor(db: D1Database, employeeId: number, month: number, year: number) {
+  const row = await db.prepare(
+    "SELECT COALESCE(SUM(amount), 0) AS total FROM salary_advances WHERE employee_id = ? AND deduct = 1 AND deduct_month = ? AND deduct_year = ?",
+  ).bind(employeeId, month, year).first<{ total: number }>();
+  return Math.round(Number(row?.total) || 0);
+}
+
+// The month after a date: "upcoming salary" for an advance given on that day.
+function monthAfter(ymd: string) {
+  const y = Number(ymd.slice(0, 4)), m = Number(ymd.slice(5, 7));
+  return m === 12 ? { month: 1, year: y + 1 } : { month: m + 1, year: y };
+}
+
+async function salaryIsPaid(db: D1Database, employeeId: number, month: number, year: number) {
+  return Boolean(await db.prepare(
+    "SELECT 1 FROM salaries WHERE employee_id = ? AND salary_month = ? AND salary_year = ? AND status = 'Done'",
+  ).bind(employeeId, month, year).first());
+}
+
+async function advanceList(db: D1Database, user: AppUser, url: URL) {
+  const picked = user.role === "Employee" ? String(user.employeeId) : url.searchParams.get("employeeId");
+  const rows = await db.prepare(
+    `SELECT a.*, e.full_name AS employee_name,
+       (SELECT s.status FROM salaries s WHERE s.employee_id = a.employee_id AND s.salary_month = a.deduct_month AND s.salary_year = a.deduct_year) AS salary_status
+     FROM salary_advances a JOIN employees e ON e.id = a.employee_id
+     WHERE ${picked ? "a.employee_id = ?" : "e.employment_status = 'Active'"}
+     ORDER BY a.given_on DESC, a.id DESC`,
+  ).bind(...(picked ? [picked] : [])).all();
+  return json({ advances: rows.results });
+}
+
+function readAdvanceDeduct(body: Record<string, unknown>, givenOn: string) {
+  const deduct = body.deduct === false || body.deduct === 0 || body.deduct === "0" || body.deduct === "no" ? 0 : 1;
+  const fallback = monthAfter(givenOn);
+  const month = deduct ? (number(body.deduct_month) || fallback.month) : null;
+  const year = deduct ? (number(body.deduct_year) || fallback.year) : null;
+  return { deduct, month, year };
+}
+
+async function createAdvance(db: D1Database, actor: AppUser, body: Record<string, unknown>) {
+  const employeeId = number(body.employee_id);
+  const amount = Math.round(Number(body.amount) || 0);
+  const givenOn = /^\d{4}-\d{2}-\d{2}$/.test(text(body.given_on)) ? text(body.given_on) : dateOnly();
+  if (!employeeId) return json({ error: "Pick the employee" }, 400);
+  if (amount <= 0) return json({ error: "Enter the amount paid" }, 400);
+  const plan = readAdvanceDeduct(body, givenOn);
+  if (plan.deduct && plan.month && plan.year && await salaryIsPaid(db, employeeId, plan.month, plan.year)) {
+    return json({ error: `${monthName(plan.month)} ${plan.year} salary is already paid. Pick a later month.` }, 400);
+  }
+  const res = await db.prepare(
+    `INSERT INTO salary_advances (employee_id, amount, given_on, note, deduct, deduct_month, deduct_year, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(employeeId, amount, givenOn, text(body.note) || null, plan.deduct, plan.month, plan.year, actor.id).run();
+  const employee = await db.prepare("SELECT user_id, full_name FROM employees WHERE id = ?").bind(employeeId).first<{ user_id: number; full_name: string }>();
+  if (employee) {
+    await notify(db, employee.user_id, "Advance recorded",
+      `${money(amount)} advance paid on ${givenOn}.${plan.deduct ? ` It will be deducted from your ${monthName(plan.month!)} ${plan.year} salary.` : " It will not be deducted from your salary."}`);
+  }
+  await audit(db, actor, "Advance paid", "salary_advances", Number(res.meta.last_row_id), `${employee?.full_name ?? employeeId} ${amount}`);
+  return json({ ok: true });
+}
+
+async function updateAdvance(db: D1Database, actor: AppUser, id: number, body: Record<string, unknown>) {
+  const advance = await db.prepare("SELECT * FROM salary_advances WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  if (!advance) return json({ error: "Advance not found" }, 404);
+  const employeeId = Number(advance.employee_id);
+  if (advance.deduct && await salaryIsPaid(db, employeeId, Number(advance.deduct_month), Number(advance.deduct_year))) {
+    return json({ error: "Already deducted from a paid salary, so it can't be changed." }, 400);
+  }
+  const plan = readAdvanceDeduct(body, String(advance.given_on));
+  if (plan.deduct && plan.month && plan.year && await salaryIsPaid(db, employeeId, plan.month, plan.year)) {
+    return json({ error: `${monthName(plan.month)} ${plan.year} salary is already paid. Pick a later month.` }, 400);
+  }
+  await db.prepare("UPDATE salary_advances SET deduct = ?, deduct_month = ?, deduct_year = ?, note = COALESCE(?, note) WHERE id = ?")
+    .bind(plan.deduct, plan.month, plan.year, body.note !== undefined ? (text(body.note) || null) : null, id).run();
+  const employee = await db.prepare("SELECT user_id FROM employees WHERE id = ?").bind(employeeId).first<{ user_id: number }>();
+  if (employee) {
+    await notify(db, employee.user_id, "Advance updated",
+      plan.deduct ? `Your ${money(Number(advance.amount))} advance will be deducted from your ${monthName(plan.month!)} ${plan.year} salary.` : `Your ${money(Number(advance.amount))} advance will not be deducted from your salary.`);
+  }
+  await audit(db, actor, "Advance changed", "salary_advances", id, plan.deduct ? `deduct ${plan.month}/${plan.year}` : "no deduction");
+  return json({ ok: true });
+}
+
+async function deleteAdvance(db: D1Database, actor: AppUser, id: number) {
+  const advance = await db.prepare("SELECT * FROM salary_advances WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  if (!advance) return json({ error: "Advance not found" }, 404);
+  if (advance.deduct && await salaryIsPaid(db, Number(advance.employee_id), Number(advance.deduct_month), Number(advance.deduct_year))) {
+    return json({ error: "Already deducted from a paid salary, so it can't be removed." }, 400);
+  }
+  await db.prepare("DELETE FROM salary_advances WHERE id = ?").bind(id).run();
+  await audit(db, actor, "Advance removed", "salary_advances", id, String(advance.amount));
+  return json({ ok: true });
+}
+
 // A salary row as it stands now. Unpaid salaries are recalculated from
 // attendance, so they always match the attendance record; paid ones stay frozen.
 // The admin's adjustment is added on top of an unpaid one; a paid row's stored
@@ -686,6 +799,7 @@ async function payrollList(db: D1Database, user: AppUser, url: URL) {
 async function liveSalary(db: D1Database, row: Record<string, unknown>) {
   const adjustment = Number(row.adjustment) || 0;
   if (String(row.status) === "Done") return row;
+  const advance = await advanceFor(db, Number(row.employee_id), Number(row.salary_month), Number(row.salary_year));
   const employee = await db.prepare(employeeSelect("WHERE e.id = ?")).bind(row.employee_id).first<Record<string, unknown>>();
   if (!employee) return row;
   const days = await monthDayBreakdown(db, employee, Number(row.salary_month), Number(row.salary_year));
@@ -700,7 +814,8 @@ async function liveSalary(db: D1Database, row: Record<string, unknown>) {
     working_days: totalDays,
     paid_days: Math.round((totalDays - deductionDays) * 100) / 100,
     deductions,
-    net_salary: Math.round(gross - deductions + adjustment),
+    advance_deduction: advance,
+    net_salary: Math.round(gross - deductions + adjustment - advance),
     present_days: days.filter((d) => d.status === "Present").length,
     half_days: days.filter((d) => d.status === "Half day" || d.status === "No check-in").length,
     absent_days: days.filter((d) => d.status === "Absent").length,
@@ -734,9 +849,11 @@ async function payInFull(db: D1Database, actor: AppUser, id: number) {
   const notJoined = days.filter((d) => d.status === "Not joined").length;
   const perDay = days.length ? gross / days.length : 0;
   const deductions = Math.round(perDay * notJoined);
+  // A paid row's advance is already in its frozen figures; an unpaid one is looked up.
+  const advance = salary.status === "Done" ? Number(salary.advance_deduction) || 0 : await advanceFor(db, Number(salary.employee_id), month, year);
   await db.prepare(
-    "UPDATE salaries SET paid_days = ?, deductions = ?, net_salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-  ).bind(days.length - notJoined, deductions, Math.round(gross - deductions + adjustment), id).run();
+    "UPDATE salaries SET paid_days = ?, deductions = ?, advance_deduction = ?, net_salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+  ).bind(days.length - notJoined, deductions, advance, Math.round(gross - deductions + adjustment - advance), id).run();
   if (granted) {
     await notify(db, Number(salary.user_id), "Salary paid in full",
       `Your ${monthName(month)} ${year} salary is paid in full; ${granted} day${granted === 1 ? "" : "s"} are marked as paid by admin.`);
@@ -765,14 +882,16 @@ async function generatePayroll(db: D1Database, actor: AppUser, body: Record<stri
       + days.filter((d) => d.status === "Half day" || d.status === "No check-in").length * 0.5;
     const deductions = Math.round(perDay * deductionDays);
     const paidDays = Math.round((workingDays - deductionDays) * 100) / 100;
+    const advance = await advanceFor(db, employeeId, month, year);
     const result = await db.prepare(
-      `INSERT INTO salaries (employee_id, salary_month, salary_year, working_days, paid_days, paid_leave_days, unpaid_leave_days, absent_days, gross_salary, deductions, net_salary, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
+      `INSERT INTO salaries (employee_id, salary_month, salary_year, working_days, paid_days, paid_leave_days, unpaid_leave_days, absent_days, gross_salary, deductions, advance_deduction, net_salary, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
        ON CONFLICT(employee_id, salary_month, salary_year) DO UPDATE SET working_days = excluded.working_days, paid_days = excluded.paid_days,
        paid_leave_days = excluded.paid_leave_days, unpaid_leave_days = excluded.unpaid_leave_days, absent_days = excluded.absent_days,
-       gross_salary = excluded.gross_salary, deductions = excluded.deductions,
-       net_salary = excluded.gross_salary - excluded.deductions + salaries.adjustment, updated_at = CURRENT_TIMESTAMP`,
-    ).bind(employeeId, month, year, workingDays, paidDays, paidLeaveDays, unpaidLeaveDays, absentDays, gross, deductions, gross - deductions).run();
+       gross_salary = excluded.gross_salary, deductions = excluded.deductions, advance_deduction = excluded.advance_deduction,
+       net_salary = excluded.gross_salary - excluded.deductions + salaries.adjustment - excluded.advance_deduction, updated_at = CURRENT_TIMESTAMP
+       WHERE salaries.status != 'Done'`,
+    ).bind(employeeId, month, year, workingDays, paidDays, paidLeaveDays, unpaidLeaveDays, absentDays, gross, deductions, advance, gross - deductions - advance).run();
     const salary = await db.prepare("SELECT * FROM salaries WHERE employee_id = ? AND salary_month = ? AND salary_year = ?").bind(employeeId, month, year).first<Record<string, unknown>>();
     if (salary) await upsertSlip(db, salary, employee, settings);
     await notify(db, Number(employee.user_id), "Salary slip generated", `Salary slip for ${monthName(month)} ${year} is ready.`);
@@ -803,14 +922,26 @@ async function updateSalary(db: D1Database, actor: AppUser, id: number, body: Re
       : await liveSalary(db, { ...existing, adjustment });
     await db.prepare(
       `UPDATE salaries SET adjustment = ?, adjustment_note = ?, gross_salary = ?, working_days = ?, paid_days = ?,
-         deductions = ?, net_salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+         deductions = ?, advance_deduction = ?, net_salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     ).bind(adjustment, adjustment ? note : null, current.gross_salary, current.working_days, current.paid_days,
-      current.deductions, current.net_salary, id).run();
+      current.deductions, Number(current.advance_deduction) || 0, current.net_salary, id).run();
     const period = `${monthName(Number(existing.salary_month))} ${existing.salary_year}`;
     await notify(db, Number(existing.user_id), "Salary updated",
       adjustment ? `Your ${period} salary was ${adjustment > 0 ? "increased" : "reduced"} by ${money(Math.abs(adjustment))}: ${note}` : `The adjustment on your ${period} salary was removed.`);
     await audit(db, actor, "Salary adjusted", "salaries", id, `${adjustment} ${note ?? ""}`.trim());
     return json({ ok: true, net_salary: current.net_salary });
+  }
+
+  // Marking paid freezes what the screen showed at that moment — the live
+  // attendance figures, adjustment and advance — not whatever was stored when
+  // the month was first prepared.
+  if (status === "Done" && String(existing.status) !== "Done") {
+    const live = await liveSalary(db, existing);
+    await db.prepare(
+      `UPDATE salaries SET gross_salary = ?, working_days = ?, paid_days = ?, deductions = ?, advance_deduction = ?, net_salary = ?
+       WHERE id = ?`,
+    ).bind(live.gross_salary, live.working_days, live.paid_days, live.deductions, Number(live.advance_deduction) || 0, live.net_salary, id).run();
+    Object.assign(existing, live);
   }
 
   const newStatus = status || String(existing.status);
@@ -1124,6 +1255,7 @@ function slipTemplate(salary: Record<string, unknown>, employee: Record<string, 
     ["Absent days", salary.absent_days],
     ["Gross salary", money(Number(salary.gross_salary))],
     ["Deductions", money(Number(salary.deductions))],
+    ...(Number(salary.advance_deduction) ? [["Advance recovered", `−${money(Number(salary.advance_deduction))}`]] : []),
     ...(Number(salary.adjustment) ? [
       [Number(salary.adjustment) > 0 ? "Addition" : "Further deduction", `${Number(salary.adjustment) > 0 ? "+" : "−"}${money(Math.abs(Number(salary.adjustment)))}`],
       ["Reason", salary.adjustment_note || "-"],
@@ -1279,6 +1411,7 @@ async function monthGrid(db: D1Database, user: AppUser, url: URL) {
   const salaryRow = await db.prepare("SELECT adjustment, adjustment_note FROM salaries WHERE employee_id = ? AND salary_month = ? AND salary_year = ?")
     .bind(employeeId, month, year).first<{ adjustment: number; adjustment_note: string | null }>();
   const adjustment = Number(salaryRow?.adjustment) || 0;
+  const advance = await advanceFor(db, Number(employeeId), month, year);
 
   // Employees may see their own breakdown (it is shown in their Payroll section).
   return json({
@@ -1294,7 +1427,8 @@ async function monthGrid(db: D1Database, user: AppUser, url: URL) {
       deductions: Math.round(perDay * deductionDays),
       adjustment,
       adjustment_note: salaryRow?.adjustment_note ?? null,
-      net: Math.round(gross - Math.round(perDay * deductionDays) + adjustment),
+      advance,
+      net: Math.round(gross - Math.round(perDay * deductionDays) + adjustment - advance),
     },
     employees,
   });

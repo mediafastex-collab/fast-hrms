@@ -146,6 +146,7 @@ type Salary = {
   payment_proof?: string;
   adjustment?: number;
   adjustment_note?: string | null;
+  advance_deduction?: number;
 };
 
 type DashboardSummary = {
@@ -1344,7 +1345,7 @@ type GridResponse = {
   employee: { id: number; full_name: string; joining_date: string; monthly_salary?: number };
   days: GridDay[];
   // Salary figures are only present for admins.
-  summary: { totalDays: number; deductionDays: number; paidDays: number; perDay?: number; gross?: number; deductions?: number; net?: number; adjustment?: number; adjustment_note?: string | null };
+  summary: { totalDays: number; deductionDays: number; paidDays: number; perDay?: number; gross?: number; deductions?: number; net?: number; adjustment?: number; adjustment_note?: string | null; advance?: number };
   employees?: Employee[];
 };
 
@@ -1410,6 +1411,12 @@ function MonthGrid({ isAdmin, showSalary = false, month, year, employeeId, reloa
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Paid days</p><p className="text-lg font-bold text-emerald-600">{data.summary.paidDays}</p></div>
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Deduction days</p><p className="text-lg font-bold text-rose-600">{data.summary.deductionDays}</p></div>
               <div className="rounded-xl border border-line p-3"><p className="text-[11px] font-semibold uppercase text-ink-3">Deductions</p><p className="tnum text-lg font-bold text-rose-600">-{currency.format(data.summary.deductions ?? 0)}</p></div>
+              {data.summary.advance ? (
+                <div className="rounded-xl border border-line p-3">
+                  <p className="text-[11px] font-semibold uppercase text-ink-3">Advance recovered</p>
+                  <p className="tnum text-lg font-bold text-rose-600">−{currency.format(data.summary.advance)}</p>
+                </div>
+              ) : null}
               {data.summary.adjustment ? (
                 <div className="rounded-xl border border-line p-3" title={data.summary.adjustment_note ?? undefined}>
                   <p className="text-[11px] font-semibold uppercase text-ink-3">{data.summary.adjustment > 0 ? "Addition" : "Extra deduction"}</p>
@@ -2267,6 +2274,186 @@ function Leave({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
+type SalaryAdvance = {
+  id: number; employee_id: number; employee_name: string; amount: number; given_on: string; note?: string | null;
+  deduct: number; deduct_month?: number | null; deduct_year?: number | null; salary_status?: string | null;
+};
+
+// The month after a date, as the default salary to recover an advance from.
+function monthAfterYmd(ymd: string) {
+  const y = Number(ymd.slice(0, 4)), m = Number(ymd.slice(5, 7));
+  return m === 12 ? { month: 1, year: y + 1 } : { month: m + 1, year: y };
+}
+
+// The next few salary months from a date, for the "deduct from" picker.
+function salaryMonthsFrom(ymd: string, count = 6) {
+  const start = monthAfterYmd(ymd);
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(start.year, start.month - 1 + i, 1);
+    return { month: d.getMonth() + 1, year: d.getFullYear() };
+  });
+}
+
+function advanceStatus(a: SalaryAdvance) {
+  if (!a.deduct || !a.deduct_month || !a.deduct_year) return { label: "Not deducted", tone: "bg-sunk text-ink-2" };
+  const period = `${monthNames[a.deduct_month - 1].slice(0, 3)} ${a.deduct_year}`;
+  return a.salary_status === "Done"
+    ? { label: `Recovered · ${period} salary`, tone: "bg-emerald-50 text-emerald-700" }
+    : { label: `Deduct from ${period} salary`, tone: "bg-amber-50 text-amber-700" };
+}
+
+// Advances: money paid ahead of salary, and whether it comes back out of a
+// later salary. The admin records and decides; the employee can read theirs.
+function AdvancesPanel({ isAdmin, employees, onClose, onChanged }: {
+  isAdmin: boolean; employees: Employee[]; onClose: () => void; onChanged: () => void;
+}) {
+  const [items, setItems] = useState<SalaryAdvance[] | null>(null);
+  const [form, setForm] = useState({ employee_id: "", amount: "", given_on: today, note: "", deduct: true, target: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const active = employees.filter((e) => e.employment_status === "Active");
+  const choices = salaryMonthsFrom(form.given_on);
+  const target = form.target || `${choices[0].year}-${choices[0].month}`;
+
+  async function load() {
+    const d = await api<{ advances: SalaryAdvance[] }>("/advances");
+    setItems(d.advances);
+  }
+  useEffect(() => { load().catch((err) => setError(err.message)); }, []);
+
+  async function add(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    const [year, month] = target.split("-").map(Number);
+    try {
+      await api("/advances", { method: "POST", body: JSON.stringify({
+        employee_id: Number(form.employee_id), amount: Number(form.amount), given_on: form.given_on, note: form.note,
+        deduct: form.deduct, deduct_month: month, deduct_year: year,
+      }) });
+      setForm({ ...form, amount: "", note: "", target: "" });
+      await load(); onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save");
+    }
+    setBusy(false);
+  }
+
+  async function change(a: SalaryAdvance, deduct: boolean, monthYear?: string) {
+    setError("");
+    const [year, month] = (monthYear ?? `${a.deduct_year ?? monthAfterYmd(a.given_on).year}-${a.deduct_month ?? monthAfterYmd(a.given_on).month}`).split("-").map(Number);
+    try {
+      await api(`/advances/${a.id}`, { method: "PUT", body: JSON.stringify({ deduct, deduct_month: month, deduct_year: year }) });
+      await load(); onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change");
+    }
+  }
+
+  async function remove(a: SalaryAdvance) {
+    if (!window.confirm(`Remove the ${currency.format(a.amount)} advance to ${a.employee_name}?`)) return;
+    setError("");
+    try {
+      await api(`/advances/${a.id}`, { method: "DELETE" });
+      await load(); onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove");
+    }
+  }
+
+  return (
+    <div className="modal-scrim items-start justify-center overflow-y-auto p-4">
+      <div className="card my-8 w-full max-w-2xl p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-xl text-ink">Advances</h3>
+            <p className="mt-0.5 text-xs text-ink-3">Money paid ahead of salary. Choose whether it comes off a later salary.</p>
+          </div>
+          <button type="button" aria-label="Close" className="rounded-lg p-1.5 text-ink-4 hover:bg-sunk" onClick={onClose}><X size={20} /></button>
+        </div>
+        {error ? <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{error}</div> : null}
+
+        {isAdmin ? (
+          <form onSubmit={add} className="mt-4 space-y-3 rounded-xl border border-line p-4">
+            <p className="text-[13.5px] font-semibold text-ink">Record an advance</p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Field label="Employee">
+                <select required className="input" value={form.employee_id} onChange={(e) => setForm({ ...form, employee_id: e.target.value })}>
+                  <option value="">Select…</option>
+                  {active.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+                </select>
+              </Field>
+              <Field label="Amount (₹)">
+                <input required className="input" type="number" min="1" step="1" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0" />
+              </Field>
+              <Field label="Paid on">
+                <input required className="input" type="date" value={form.given_on} onChange={(e) => setForm({ ...form, given_on: e.target.value, target: "" })} />
+              </Field>
+            </div>
+            <Field label="Note (optional)">
+              <input className="input" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="e.g. Medical emergency" />
+            </Field>
+            <div>
+              <p className="label">Deduct from salary?</p>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex gap-1 rounded-full bg-sunk p-1">
+                  {([[true, "Yes"], [false, "No"]] as const).map(([v, label]) => (
+                    <button key={label} type="button" onClick={() => setForm({ ...form, deduct: v })}
+                      className={classNames("rounded-full px-4 py-1 text-xs font-semibold transition",
+                        form.deduct === v ? "bg-white text-ink shadow-sm" : "text-ink-3 hover:text-ink")}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {form.deduct ? (
+                  <select className="input h-9 w-auto py-0 text-sm" value={target} onChange={(e) => setForm({ ...form, target: e.target.value })}>
+                    {choices.map((c) => <option key={`${c.year}-${c.month}`} value={`${c.year}-${c.month}`}>From {monthNames[c.month - 1]} {c.year} salary</option>)}
+                  </select>
+                ) : <span className="text-[12.5px] text-ink-3">Recorded only — salary is not reduced.</span>}
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Save advance"}</button>
+            </div>
+          </form>
+        ) : null}
+
+        <div className="mt-4 divide-y divide-line rounded-xl border border-line">
+          {items === null ? <p className="px-4 py-8 text-center text-sm text-ink-4">Loading…</p> : null}
+          {items && !items.length ? <p className="px-4 py-8 text-center text-sm text-ink-3">No advances yet.</p> : null}
+          {items?.map((a) => {
+            const st = advanceStatus(a);
+            const locked = a.salary_status === "Done" && !!a.deduct;
+            return (
+              <div key={a.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[14px] font-semibold text-ink">
+                    {isAdmin ? `${a.employee_name} · ` : ""}<span className="tnum">{currency.format(a.amount)}</span>
+                  </p>
+                  <p className="text-[12px] text-ink-3">Paid {prettyDate(a.given_on)}{a.note ? ` · ${a.note}` : ""}</p>
+                </div>
+                <span className={classNames("badge", st.tone)}>{st.label}</span>
+                {isAdmin && !locked ? (
+                  <div className="flex items-center gap-1.5">
+                    {a.deduct ? (
+                      <select className="input h-8 w-auto py-0 text-xs" value={`${a.deduct_year}-${a.deduct_month}`} onChange={(e) => change(a, true, e.target.value)}>
+                        {salaryMonthsFrom(a.given_on).map((c) => <option key={`${c.year}-${c.month}`} value={`${c.year}-${c.month}`}>{monthNames[c.month - 1].slice(0, 3)} {c.year}</option>)}
+                      </select>
+                    ) : null}
+                    <button type="button" className="btn btn-ghost px-2.5 py-1 text-xs" onClick={() => change(a, !a.deduct)}>
+                      {a.deduct ? "Don't deduct" : "Deduct"}
+                    </button>
+                    <button type="button" aria-label="Remove advance" className="btn btn-ghost px-2 py-1 text-xs text-rose-600" onClick={() => remove(a)}><Trash2 size={13} /></button>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Shrinks a payment screenshot to something a database row can carry.
 async function shrinkProof(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -2302,6 +2489,7 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
   const [paying, setPaying] = useState<Salary | null>(null);
   // Editing pay: an amount added (bonus) or taken off (extra deduction), with a reason.
   const [adjusting, setAdjusting] = useState<Salary | null>(null);
+  const [advancesOpen, setAdvancesOpen] = useState(false);
   const [adjust, setAdjust] = useState({ kind: "add" as "add" | "deduct", amount: "", note: "" });
   const [proof, setProof] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2402,6 +2590,7 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
     <section className="space-y-5">
       <PageTitle
         title={isAdmin ? "Payroll" : "Payslips"}
+        action={<button type="button" className="btn btn-soft" onClick={() => setAdvancesOpen(true)}><Banknote size={15} />{isAdmin ? "Advances" : "My advances"}</button>}
         description={isAdmin
           ? "Salary is worked out from attendance and leave. Check it, pay it, mark it paid."
           : "Your salary for each month. Click a month to see how it was worked out."}
@@ -2444,6 +2633,7 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
                       <span className="tnum block text-[12.5px] text-ink-3">
                         {row.paid_days} of {row.working_days} days paid
                         {row.deductions > 0 ? ` · −${currency.format(row.deductions)}` : ""}
+                        {row.advance_deduction ? ` · −${currency.format(row.advance_deduction)} advance` : ""}
                         {row.adjustment ? ` · ${row.adjustment > 0 ? "+" : "−"}${currency.format(Math.abs(row.adjustment))} ${row.adjustment_note ?? ""}` : ""}
                       </span>
                     </span>
@@ -2512,7 +2702,7 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
                   placeholder={adjust.kind === "add" ? "e.g. Diwali bonus" : "e.g. Salary advance"} />
               </Field>
               <div className="tnum rounded-lg bg-sunk px-4 py-3 text-[13px] text-ink-2">
-                From attendance {currency.format(before)}
+                {adjusting.advance_deduction ? "After attendance and advance" : "From attendance"} {currency.format(before)}
                 {amount ? ` ${adjust.kind === "deduct" ? "−" : "+"} ${currency.format(amount)}` : ""}
                 {" = "}<span className="font-bold text-ink">{currency.format(after)}</span>
               </div>
@@ -2530,6 +2720,10 @@ function Payroll({ isAdmin }: { isAdmin: boolean }) {
           </div>
         );
       })() : null}
+
+      {advancesOpen ? (
+        <AdvancesPanel isAdmin={isAdmin} employees={employees} onClose={() => setAdvancesOpen(false)} onChanged={() => load().catch(() => undefined)} />
+      ) : null}
 
       {paying ? (
         <div className="modal-scrim items-center justify-center p-4">
